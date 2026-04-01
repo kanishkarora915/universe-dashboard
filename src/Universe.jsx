@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useMarketData } from "./useMarketData";
 
 const ACCENT = "#0A84FF";
 const BG = "#0A0A0F";
@@ -479,10 +480,11 @@ const Stat = ({ label, value, color = "#fff", sub }) => (
 
 // \u2500\u2500 TAB: LIVE DATA \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-function LiveDataTab() {
+function LiveDataTab({ liveData }) {
+  const data = liveData || mockLive;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      {[{ name: "NIFTY", d: mockLive.nifty }, { name: "BANKNIFTY", d: mockLive.banknifty }].map(({ name, d }) => (
+      {[{ name: "NIFTY", d: data.nifty }, { name: "BANKNIFTY", d: data.banknifty }].map(({ name, d }) => (
         <Card key={name}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
             <span style={{ color: ACCENT, fontWeight: 900, fontSize: 18, letterSpacing: 1 }}>{name}</span>
@@ -804,7 +806,8 @@ function WeeklyTab() {
 
 // \u2500\u2500 TAB: UNUSUAL ACTIVITY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-function UnusualTab() {
+function UnusualTab({ unusualData }) {
+  const alerts = unusualData && unusualData.length > 0 ? unusualData : mockUnusual;
   const alertColor = { CRITICAL: RED, HIGH: ORANGE, MEDIUM: YELLOW };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -814,7 +817,7 @@ function UnusualTab() {
           Triggers: Volume {">"} 3x avg \u00B7 OI Change {">"} 5L \u00B7 Premium {">"} 30% swing \u00B7 PCR shift {">"} 0.15 \u00B7 VIX spike {">"} 5% \u00B7 GEX Flip
         </div>
       </Card>
-      {mockUnusual.map((u, i) => (
+      {alerts.map((u, i) => (
         <Card key={i} style={{ borderColor: alertColor[u.alert] + "44" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
             <div>
@@ -890,6 +893,7 @@ function PromptTab() {
 export default function Universe() {
   const [activeTab, setActiveTab] = useState("live");
   const [time, setTime] = useState(new Date());
+  const { live, unusual, connected } = useMarketData();
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
@@ -905,12 +909,12 @@ export default function Universe() {
 
   const renderTab = () => {
     switch (activeTab) {
-      case "live":    return <LiveDataTab />;
+      case "live":    return <LiveDataTab liveData={live} />;
       case "signals": return <SignalsTab />;
       case "intraday":return <IntradayTab />;
       case "nextday": return <NextDayTab />;
       case "weekly":  return <WeeklyTab />;
-      case "unusual": return <UnusualTab />;
+      case "unusual": return <UnusualTab unusualData={unusual} />;
       case "prompt":  return <PromptTab />;
       default:        return null;
     }
@@ -933,6 +937,7 @@ export default function Universe() {
           }} />
           <span style={{ color: "#fff", fontWeight: 900, fontSize: 20, letterSpacing: 3 }}>UNIVERSE</span>
           <span style={{ color: "#2a2a3a", fontSize: 11 }}>NSE Intelligence</span>
+          {connected && <span style={{ color: GREEN, fontSize: 9, fontWeight: 700, marginLeft: 8, padding: "2px 8px", background: GREEN + "15", borderRadius: 10 }}>LIVE</span>}
         </div>
         <div style={{ textAlign: "right" }}>
           <div style={{ color: ACCENT, fontWeight: 700, fontSize: 14 }}>{istTime}</div>
