@@ -1,19 +1,17 @@
 import { useState, useEffect } from "react";
 import Universe from "./Universe";
 import Login from "./Login";
-import { fetchStatus } from "./api";
+import { fetchStatus, logout } from "./api";
 
 function App() {
   const [authenticated, setAuthenticated] = useState(false);
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
-    // Check URL params for auth callback
     const params = new URLSearchParams(window.location.search);
     const authParam = params.get("auth");
 
     if (authParam === "success") {
-      // Clean URL
       window.history.replaceState({}, "", "/");
       setAuthenticated(true);
       setChecking(false);
@@ -27,7 +25,6 @@ function App() {
       return;
     }
 
-    // Check backend status
     fetchStatus()
       .then((data) => {
         setAuthenticated(data.authenticated && data.engine_running);
@@ -38,6 +35,15 @@ function App() {
         setChecking(false);
       });
   }, []);
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } catch (e) {
+      // ignore
+    }
+    setAuthenticated(false);
+  };
 
   if (checking) {
     return (
@@ -52,7 +58,7 @@ function App() {
     );
   }
 
-  return authenticated ? <Universe /> : <Login />;
+  return authenticated ? <Universe onLogout={handleLogout} /> : <Login />;
 }
 
 export default App;

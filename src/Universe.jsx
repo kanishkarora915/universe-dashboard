@@ -890,7 +890,7 @@ function PromptTab() {
 
 // \u2500\u2500 MAIN APP \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-export default function Universe() {
+export default function Universe({ onLogout }) {
   const [activeTab, setActiveTab] = useState("live");
   const [time, setTime] = useState(new Date());
   const { live, unusual, connected } = useMarketData();
@@ -939,11 +939,22 @@ export default function Universe() {
           <span style={{ color: "#2a2a3a", fontSize: 11 }}>NSE Intelligence</span>
           {connected && <span style={{ color: GREEN, fontSize: 9, fontWeight: 700, marginLeft: 8, padding: "2px 8px", background: GREEN + "15", borderRadius: 10 }}>LIVE</span>}
         </div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{ color: ACCENT, fontWeight: 700, fontSize: 14 }}>{istTime}</div>
-          <div style={{ color: isMarketOpen ? GREEN : "#444", fontSize: 10, fontWeight: 700 }}>
-            {isMarketOpen ? "\u25CF MARKET OPEN" : "\u25CF MARKET CLOSED"}
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ color: ACCENT, fontWeight: 700, fontSize: 14 }}>{istTime}</div>
+            <div style={{ color: isMarketOpen ? GREEN : "#444", fontSize: 10, fontWeight: 700 }}>
+              {isMarketOpen ? "\u25CF MARKET OPEN" : "\u25CF MARKET CLOSED"}
+            </div>
           </div>
+          {onLogout && (
+            <button onClick={onLogout} style={{
+              background: RED + "18", color: RED, border: `1px solid ${RED}33`,
+              borderRadius: 8, padding: "6px 14px", cursor: "pointer",
+              fontSize: 11, fontWeight: 700, whiteSpace: "nowrap",
+            }}>
+              Logout
+            </button>
+          )}
         </div>
       </div>
 
