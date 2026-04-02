@@ -545,10 +545,17 @@ function LiveDataTab({ liveData }) {
 
 // \u2500\u2500 TAB: SIGNALS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-function SignalsTab() {
+function SignalsTab({ realSignals }) {
+  const hasReal = realSignals && realSignals.length > 0;
+  const sigs = hasReal ? realSignals : mockSignals;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      {mockSignals.map(s => (
+      {!hasReal && (
+        <div style={{ background: "#FF9F0A15", border: "1px solid #FF9F0A33", borderRadius: 10, padding: "10px 16px", textAlign: "center" }}>
+          <span style={{ color: "#FF9F0A", fontSize: 12, fontWeight: 600 }}>No active signals right now — showing sample format. Score 5+ needed to generate.</span>
+        </div>
+      )}
+      {sigs.map(s => (
         <Card key={s.id}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
             <div>
@@ -940,7 +947,7 @@ function PromptTab() {
 export default function Universe({ onLogout }) {
   const [activeTab, setActiveTab] = useState("live");
   const [time, setTime] = useState(new Date());
-  const { live, unusual, intraday, nextday, weekly, connected } = useMarketData();
+  const { live, unusual, intraday, nextday, weekly, signals, connected } = useMarketData();
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
@@ -957,7 +964,7 @@ export default function Universe({ onLogout }) {
   const renderTab = () => {
     switch (activeTab) {
       case "live":    return <LiveDataTab liveData={live} />;
-      case "signals": return <SignalsTab />;
+      case "signals": return <SignalsTab realSignals={signals} />;
       case "intraday":return <IntradayTab realData={intraday} />;
       case "nextday": return <NextDayTab realData={nextday} />;
       case "weekly":  return <WeeklyTab realData={weekly} />;

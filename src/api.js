@@ -46,6 +46,12 @@ export async function fetchUnusual() {
   return res.json();
 }
 
+export async function fetchSignals() {
+  const res = await fetch("/api/signals");
+  if (!res.ok) return [];
+  return res.json();
+}
+
 export async function fetchIntraday() {
   const res = await fetch("/api/intraday");
   if (!res.ok) return null;

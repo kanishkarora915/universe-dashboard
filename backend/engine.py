@@ -311,6 +311,295 @@ class MarketEngine:
     def get_unusual(self) -> list:
         return list(reversed(self.unusual_alerts[-50:]))
 
+    # ── SIGNAL SCORING ENGINE (9-point) ────────────────────────────────
+
+    def get_signals(self) -> list:
+        """Auto-generate trading signals with 9-point scoring for NIFTY & BANKNIFTY."""
+        signals = []
+        signal_id = 1
+
+        for index in ["NIFTY", "BANKNIFTY"]:
+            try:
+                spot_token = self.spot_tokens.get(index)
+                if not spot_token:
+                    continue
+
+                spot = self.prices.get(spot_token, {})
+                ltp = spot.get("ltp", 0)
+                if ltp <= 0:
+                    continue
+
+                prev_close = self.spot_prev_close.get(index, ltp)
+                chain = self.chains.get(index, {})
+                cfg = INDEX_CONFIG[index]
+                change_pct = round((ltp - prev_close) / prev_close * 100, 2) if prev_close else 0
+
+                # ── Fetch technicals (reuse intraday compute) ──
+                try:
+                    candles = self.kite.historical_data(
+                        spot_token, datetime.now() - timedelta(days=2), datetime.now(), "5minute"
+                    )
+                except Exception:
+                    candles = []
+
+                if not candles or len(candles) < 30:
+                    continue
+
+                closes = [c["close"] for c in candles]
+                highs = [c["high"] for c in candles]
+                lows = [c["low"] for c in candles]
+
+                ema20 = self._ema(closes, 20)
+                ema50 = self._ema(closes, 50) if len(closes) >= 50 else ema20
+                rsi = self._compute_rsi(closes, 14)
+                macd_line, signal_line, histogram = self._compute_macd(closes)
+                supertrend, st_dir = self._compute_supertrend(highs, lows, closes, 10, 3)
+
+                pcr = compute_pcr(chain)
+                max_pain = compute_max_pain(chain, ltp)
+                big_ce, big_pe = find_big_walls(chain)
+                big_ce_oi = chain.get(big_ce, {}).get("ce_oi", 0)
+                big_pe_oi = chain.get(big_pe, {}).get("pe_oi", 0)
+                total_ce_oi = sum(s.get("ce_oi", 0) for s in chain.values())
+                total_pe_oi = sum(s.get("pe_oi", 0) for s in chain.values())
+                vix = self.prices.get(self.spot_tokens.get("VIX"), {}).get("ltp", 0)
+                atm_iv = self._get_atm_iv(index, ltp)
+                ivr = compute_ivr(atm_iv) if atm_iv > 0 else 50
+
+                # ── Determine direction ──
+                bearish_count = 0
+                bullish_count = 0
+                if ltp < ema20:
+                    bearish_count += 1
+                else:
+                    bullish_count += 1
+                if rsi < 45:
+                    bearish_count += 1
+                elif rsi > 55:
+                    bullish_count += 1
+                if histogram < 0:
+                    bearish_count += 1
+                else:
+                    bullish_count += 1
+                if pcr < 0.85:
+                    bearish_count += 1
+                elif pcr > 1.15:
+                    bullish_count += 1
+
+                is_bearish = bearish_count > bullish_count
+                direction = "BEARISH" if is_bearish else "BULLISH"
+                signal_type = "BUY PUT" if is_bearish else "BUY CALL"
+
+                # ── Score 9 conditions ──
+                reasoning = []
+                score = 0
+
+                # 1. EMA 20+50 confluence (1 pt)
+                if is_bearish:
+                    passed = ltp < ema20 and ltp < ema50
+                    reasoning.append({
+                        "pass": True if passed else ("warn" if ltp < ema20 else False),
+                        "text": f"LTP {ltp:.0f} {'below' if ltp < ema20 else 'above'} EMA20 ({ema20:.0f}) and {'below' if ltp < ema50 else 'above'} EMA50 ({ema50:.0f})"
+                    })
+                else:
+                    passed = ltp > ema20 and ltp > ema50
+                    reasoning.append({
+                        "pass": True if passed else ("warn" if ltp > ema20 else False),
+                        "text": f"LTP {ltp:.0f} {'above' if ltp > ema20 else 'below'} EMA20 ({ema20:.0f}) and {'above' if ltp > ema50 else 'below'} EMA50 ({ema50:.0f})"
+                    })
+                if passed:
+                    score += 1
+
+                # 2. RSI momentum (1 pt)
+                if is_bearish:
+                    passed = rsi < 45
+                    reasoning.append({
+                        "pass": True if rsi < 40 else ("warn" if rsi < 50 else False),
+                        "text": f"RSI at {rsi:.1f} — {'bearish momentum confirmed' if rsi < 40 else 'neutral zone' if rsi < 55 else 'bullish divergence risk'}"
+                    })
+                else:
+                    passed = rsi > 55
+                    reasoning.append({
+                        "pass": True if rsi > 60 else ("warn" if rsi > 50 else False),
+                        "text": f"RSI at {rsi:.1f} — {'bullish momentum confirmed' if rsi > 60 else 'neutral zone' if rsi > 45 else 'bearish divergence risk'}"
+                    })
+                if passed:
+                    score += 1
+
+                # 3. MACD histogram (1 pt)
+                if is_bearish:
+                    passed = histogram < 0
+                    reasoning.append({
+                        "pass": True if histogram < -1 else ("warn" if histogram < 0 else False),
+                        "text": f"MACD histogram {histogram:.2f} — {'bearish confirmed' if histogram < 0 else 'bullish, against bias'}"
+                    })
+                else:
+                    passed = histogram > 0
+                    reasoning.append({
+                        "pass": True if histogram > 1 else ("warn" if histogram > 0 else False),
+                        "text": f"MACD histogram {histogram:.2f} — {'bullish confirmed' if histogram > 0 else 'bearish, against bias'}"
+                    })
+                if passed:
+                    score += 1
+
+                # 4. Supertrend / Price structure (1 pt)
+                if is_bearish:
+                    passed = st_dir < 0
+                    reasoning.append({
+                        "pass": True if passed else "warn",
+                        "text": f"Supertrend {supertrend:.0f} {'SELL signal — bearish structure' if st_dir < 0 else 'BUY signal — conflicting'}"
+                    })
+                else:
+                    passed = st_dir > 0
+                    reasoning.append({
+                        "pass": True if passed else "warn",
+                        "text": f"Supertrend {supertrend:.0f} {'BUY signal — bullish structure' if st_dir > 0 else 'SELL signal — conflicting'}"
+                    })
+                if passed:
+                    score += 1
+
+                # 5. OI buildup at key strikes (1 pt)
+                if is_bearish:
+                    passed = big_ce_oi > 2000000  # 20L+ OI at resistance
+                    reasoning.append({
+                        "pass": True if passed else "warn",
+                        "text": f"Big CE OI wall {int(big_ce)} — {big_ce_oi/100000:.1f}L contracts — {'strong resistance cap' if passed else 'moderate resistance'}"
+                    })
+                else:
+                    passed = big_pe_oi > 2000000
+                    reasoning.append({
+                        "pass": True if passed else "warn",
+                        "text": f"Big PE OI wall {int(big_pe)} — {big_pe_oi/100000:.1f}L contracts — {'strong support zone' if passed else 'moderate support'}"
+                    })
+                if passed:
+                    score += 1
+
+                # 6. PCR extreme (1 pt)
+                if is_bearish:
+                    passed = pcr < 0.80
+                    reasoning.append({
+                        "pass": True if pcr < 0.75 else ("warn" if pcr < 0.90 else False),
+                        "text": f"PCR {pcr} — {'bearish extreme, CE writers dominating' if pcr < 0.75 else 'mild bearish tilt' if pcr < 0.90 else 'neutral/bullish zone'}"
+                    })
+                else:
+                    passed = pcr > 1.15
+                    reasoning.append({
+                        "pass": True if pcr > 1.25 else ("warn" if pcr > 1.0 else False),
+                        "text": f"PCR {pcr} — {'bullish extreme, PE writers dominating' if pcr > 1.25 else 'mild bullish tilt' if pcr > 1.0 else 'neutral/bearish zone'}"
+                    })
+                if passed:
+                    score += 1
+
+                # 7. Big CE/PE writing at key strike (1 pt)
+                if is_bearish:
+                    nearest_ce_above = 0
+                    for strike in sorted(chain.keys()):
+                        if strike > ltp:
+                            ce_oi = chain[strike].get("ce_oi", 0)
+                            if ce_oi > 1000000:
+                                nearest_ce_above = strike
+                                break
+                    passed = nearest_ce_above > 0 and (nearest_ce_above - ltp) < cfg["strike_gap"] * 3
+                    reasoning.append({
+                        "pass": True if passed else "warn",
+                        "text": f"CE writing at {int(nearest_ce_above) if nearest_ce_above else 'N/A'} — {'close overhead cap, bearish' if passed else 'no immediate cap'}"
+                    })
+                else:
+                    nearest_pe_below = 0
+                    for strike in sorted(chain.keys(), reverse=True):
+                        if strike < ltp:
+                            pe_oi = chain[strike].get("pe_oi", 0)
+                            if pe_oi > 1000000:
+                                nearest_pe_below = strike
+                                break
+                    passed = nearest_pe_below > 0 and (ltp - nearest_pe_below) < cfg["strike_gap"] * 3
+                    reasoning.append({
+                        "pass": True if passed else "warn",
+                        "text": f"PE writing at {int(nearest_pe_below) if nearest_pe_below else 'N/A'} — {'close floor support, bullish' if passed else 'no immediate support'}"
+                    })
+                if passed:
+                    score += 1
+
+                # 8. IVR safe zone 20-60 (1 pt)
+                passed = 20 <= ivr <= 60
+                reasoning.append({
+                    "pass": True if passed else ("warn" if ivr < 75 else False),
+                    "text": f"IVR {ivr}% — {'safe zone for option buying' if passed else 'too low, avoid' if ivr < 20 else 'expensive, premium crush risk'}"
+                })
+                if passed:
+                    score += 1
+
+                # 9. VIX / Market structure (1 pt)
+                passed = vix < 20
+                reasoning.append({
+                    "pass": True if vix < 16 else ("warn" if vix < 22 else False),
+                    "text": f"VIX {vix:.2f} — {'normal range, safe' if vix < 16 else 'elevated but manageable' if vix < 20 else 'HIGH — be cautious'}"
+                })
+                if passed:
+                    score += 1
+
+                # ── Skip if score too low ──
+                if score < 4:
+                    continue
+
+                # ── Compute strike, entry, targets, SL ──
+                atm = round(ltp / cfg["strike_gap"]) * cfg["strike_gap"]
+                if is_bearish:
+                    strike = atm  # ATM PE
+                    opt_type_label = "PE"
+                    strike_key = atm
+                    prem = chain.get(strike_key, {}).get("pe_ltp", 0)
+                else:
+                    strike = atm  # ATM CE
+                    opt_type_label = "CE"
+                    strike_key = atm
+                    prem = chain.get(strike_key, {}).get("ce_ltp", 0)
+
+                if prem <= 0:
+                    prem = 150  # default if no premium data
+
+                entry_low = round(prem * 0.95)
+                entry_high = round(prem * 1.05)
+                sl = round(prem * 0.60)  # 40% SL
+                t1 = round(prem * 1.30)
+                t2 = round(prem * 1.65)
+                rr = round((t1 - prem) / (prem - sl), 1) if (prem - sl) > 0 else 0
+
+                # Expiry
+                expiry_date = self.nearest_expiry.get(index)
+                expiry_str = expiry_date.strftime("%d %b") if expiry_date else "This Week"
+
+                # Status
+                status = "ACTIVE"
+                if score < 5:
+                    status = "WATCHLIST"
+
+                now = datetime.now()
+
+                signals.append({
+                    "id": signal_id,
+                    "time": now.strftime("%I:%M %p"),
+                    "instrument": index,
+                    "type": signal_type,
+                    "strike": f"{int(strike)} {opt_type_label}",
+                    "expiry": expiry_str,
+                    "entry": f"{entry_low}\u2013{entry_high}",
+                    "t1": str(t1),
+                    "t2": str(t2),
+                    "sl": str(sl),
+                    "score": score,
+                    "maxScore": 9,
+                    "rr": f"1:{rr}",
+                    "status": status,
+                    "reasoning": reasoning,
+                })
+                signal_id += 1
+
+            except Exception as e:
+                print(f"[SIGNALS] Error computing signal for {index}: {e}")
+
+        return signals
+
     def get_historical(self, symbol: str, interval: str = "5minute", days: int = 5) -> list:
         try:
             to_date = datetime.now()

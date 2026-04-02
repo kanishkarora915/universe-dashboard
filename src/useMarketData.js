@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { fetchLive, fetchUnusual, fetchIntraday, fetchNextDay, fetchWeekly } from "./api";
+import { fetchLive, fetchUnusual, fetchIntraday, fetchNextDay, fetchWeekly, fetchSignals } from "./api";
 
 export function useMarketData() {
   const [live, setLive] = useState(null);
@@ -12,6 +12,7 @@ export function useMarketData() {
   const [intraday, setIntraday] = useState(null);
   const [nextday, setNextday] = useState(null);
   const [weekly, setWeekly] = useState(null);
+  const [signals, setSignals] = useState([]);
   const [connected, setConnected] = useState(false);
   const wsRef = useRef(null);
   const pollRef = useRef(null);
@@ -22,16 +23,18 @@ export function useMarketData() {
 
   const fetchAllTabData = useCallback(async () => {
     try {
-      const [intradayData, nextdayData, weeklyData, unusualData] = await Promise.all([
+      const [intradayData, nextdayData, weeklyData, unusualData, signalsData] = await Promise.all([
         fetchIntraday().catch(() => null),
         fetchNextDay().catch(() => null),
         fetchWeekly().catch(() => null),
         fetchUnusual().catch(() => []),
+        fetchSignals().catch(() => []),
       ]);
       if (intradayData) setIntraday(intradayData);
       if (nextdayData) setNextday(nextdayData);
       if (weeklyData) setWeekly(weeklyData);
       if (Array.isArray(unusualData) && unusualData.length > 0) setUnusual(unusualData);
+      if (Array.isArray(signalsData) && signalsData.length > 0) setSignals(signalsData);
     } catch (err) {
       // Backend not available
     }
@@ -117,5 +120,5 @@ export function useMarketData() {
     };
   }, [connectWS, fetchAllTabData]);
 
-  return { live, unusual, intraday, nextday, weekly, connected };
+  return { live, unusual, intraday, nextday, weekly, signals, connected };
 }

@@ -179,6 +179,14 @@ async def unusual():
     return engine.get_unusual()
 
 
+@app.get("/api/signals")
+async def signals():
+    """Returns auto-generated signals with 9-point scoring."""
+    if not engine or not engine.running:
+        return JSONResponse({"error": "Engine not running"}, status_code=503)
+    return engine.get_signals()
+
+
 @app.get("/api/intraday")
 async def intraday():
     """Returns real-time computed technical indicators for intraday tab."""
