@@ -318,6 +318,90 @@ class MarketEngine:
     def get_unusual(self) -> list:
         return list(reversed(self.unusual_alerts[-50:]))
 
+    def get_oi_change_summary(self) -> dict:
+        """Aggregated OI change data for OI Change tab."""
+        result = {}
+        for index in ["NIFTY", "BANKNIFTY"]:
+            chain = self.chains.get(index, {})
+            spot_token = self.spot_tokens.get(index)
+            ltp = self.prices.get(spot_token, {}).get("ltp", 0)
+            cfg = INDEX_CONFIG[index]
+            atm = round(ltp / cfg["strike_gap"]) * cfg["strike_gap"] if ltp > 0 else 0
+
+            strikes_data = []
+            total_ce_oi = 0
+            total_pe_oi = 0
+            total_ce_oi_change_pos = 0
+            total_ce_oi_change_neg = 0
+            total_pe_oi_change_pos = 0
+            total_pe_oi_change_neg = 0
+
+            for strike in sorted(chain.keys()):
+                data = chain[strike]
+                ce_oi = data.get("ce_oi", 0)
+                pe_oi = data.get("pe_oi", 0)
+                ce_ltp = data.get("ce_ltp", 0)
+                pe_ltp = data.get("pe_ltp", 0)
+                ce_vol = data.get("ce_volume", 0)
+                pe_vol = data.get("pe_volume", 0)
+
+                # OI change from initial fetch (stored in prev_oi at startup)
+                ce_token = None
+                pe_token = None
+                for tok, info in self.token_to_info.items():
+                    if info["index"] == index and info["strike"] == strike:
+                        if info["opt_type"] == "CE":
+                            ce_token = tok
+                        else:
+                            pe_token = tok
+
+                ce_oi_initial = self.prev_oi.get(ce_token, ce_oi) if ce_token else ce_oi
+                pe_oi_initial = self.prev_oi.get(pe_token, pe_oi) if pe_token else pe_oi
+                ce_oi_change = ce_oi - ce_oi_initial
+                pe_oi_change = pe_oi - pe_oi_initial
+
+                total_ce_oi += ce_oi
+                total_pe_oi += pe_oi
+                if ce_oi_change > 0:
+                    total_ce_oi_change_pos += ce_oi_change
+                else:
+                    total_ce_oi_change_neg += ce_oi_change
+                if pe_oi_change > 0:
+                    total_pe_oi_change_pos += pe_oi_change
+                else:
+                    total_pe_oi_change_neg += pe_oi_change
+
+                strikes_data.append({
+                    "strike": strike,
+                    "isATM": strike == atm,
+                    "ceOI": ce_oi,
+                    "peOI": pe_oi,
+                    "ceOIChange": ce_oi_change,
+                    "peOIChange": pe_oi_change,
+                    "ceLTP": ce_ltp,
+                    "peLTP": pe_ltp,
+                    "ceVol": ce_vol,
+                    "peVol": pe_vol,
+                })
+
+            result[index.lower()] = {
+                "strikes": strikes_data,
+                "ltp": ltp,
+                "atm": atm,
+                "totalCEOI": total_ce_oi,
+                "totalPEOI": total_pe_oi,
+                "ceOIChangePos": total_ce_oi_change_pos,
+                "ceOIChangeNeg": total_ce_oi_change_neg,
+                "peOIChangePos": total_pe_oi_change_pos,
+                "peOIChangeNeg": total_pe_oi_change_neg,
+                "netOIChange": (total_ce_oi_change_pos + total_ce_oi_change_neg +
+                                total_pe_oi_change_pos + total_pe_oi_change_neg),
+                "pcr": round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 0,
+                "timestamp": ist_now().strftime("%I:%M:%S %p IST"),
+            }
+
+        return result
+
     # ── SIGNAL SCORING ENGINE (9-point) ────────────────────────────────
 
     def get_signals(self) -> list:

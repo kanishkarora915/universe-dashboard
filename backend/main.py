@@ -179,6 +179,14 @@ async def unusual():
     return engine.get_unusual()
 
 
+@app.get("/api/oi-summary")
+async def oi_summary():
+    """Returns aggregated OI change data for OI Change tab."""
+    if not engine or not engine.running:
+        return JSONResponse({"error": "Engine not running"}, status_code=503)
+    return engine.get_oi_change_summary()
+
+
 @app.get("/api/signals")
 async def signals():
     """Returns auto-generated signals with 9-point scoring."""

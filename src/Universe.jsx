@@ -1,5 +1,8 @@
 import { useState, useEffect } from "react";
 import { useMarketData } from "./useMarketData";
+import OIChangeTab from "./OIChangeTab";
+import PnLTracker from "./PnLTracker";
+import { exportSignalsToPDF } from "./pdfExport";
 
 const ACCENT = "#0A84FF";
 const BG = "#0A0A0F";
@@ -18,6 +21,8 @@ const TABS = [
   { id: "nextday", icon: "\uD83D\uDD2D", label: "Next Day" },
   { id: "weekly",  icon: "\uD83D\uDCC5", label: "Weekly" },
   { id: "unusual", icon: "\uD83D\uDEA8", label: "Unusual Activity" },
+  { id: "oichange",icon: "\uD83D\uDCC8", label: "OI Change" },
+  { id: "pnl",     icon: "\uD83D\uDCB0", label: "PnL Tracker" },
   { id: "prompt",  icon: "\uD83E\uDD16", label: "Claude Prompt" },
 ];
 
@@ -396,6 +401,12 @@ function SignalsTab({ realSignals }) {
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <button onClick={() => exportSignalsToPDF(realSignals)} style={{
+          background: ACCENT + "22", color: ACCENT, border: `1px solid ${ACCENT}44`,
+          borderRadius: 8, padding: "5px 14px", cursor: "pointer", fontSize: 11, fontWeight: 700,
+        }}>Export PDF</button>
+      </div>
       {realSignals.map(s => (
         <Card key={s.id}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
@@ -806,7 +817,7 @@ function PromptTab() {
 export default function Universe({ onLogout }) {
   const [activeTab, setActiveTab] = useState("live");
   const [time, setTime] = useState(new Date());
-  const { live, unusual, intraday, nextday, weekly, signals, connected } = useMarketData();
+  const { live, unusual, intraday, nextday, weekly, signals, oiSummary, connected } = useMarketData();
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
@@ -828,6 +839,8 @@ export default function Universe({ onLogout }) {
       case "nextday": return <NextDayTab realData={nextday} />;
       case "weekly":  return <WeeklyTab realData={weekly} />;
       case "unusual": return <UnusualTab unusualData={unusual} />;
+      case "oichange":return <OIChangeTab oiData={oiSummary} />;
+      case "pnl":     return <PnLTracker signals={signals} />;
       case "prompt":  return <PromptTab />;
       default:        return null;
     }

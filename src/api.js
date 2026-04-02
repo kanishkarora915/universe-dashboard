@@ -46,6 +46,12 @@ export async function fetchUnusual() {
   return res.json();
 }
 
+export async function fetchOISummary() {
+  const res = await fetch("/api/oi-summary");
+  if (!res.ok) return null;
+  return res.json();
+}
+
 export async function fetchSignals() {
   const res = await fetch("/api/signals");
   if (!res.ok) return [];
