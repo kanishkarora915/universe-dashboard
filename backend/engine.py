@@ -13,6 +13,13 @@ from collections import defaultdict
 from typing import Optional, Callable
 
 import numpy as np
+import pytz
+
+IST = pytz.timezone("Asia/Kolkata")
+
+def ist_now():
+    """Always return IST time regardless of server timezone."""
+    return datetime.now(IST)
 import pandas as pd
 from scipy.stats import norm
 from kiteconnect import KiteConnect, KiteTicker
@@ -337,7 +344,7 @@ class MarketEngine:
                 # ── Fetch technicals (reuse intraday compute) ──
                 try:
                     candles = self.kite.historical_data(
-                        spot_token, datetime.now() - timedelta(days=2), datetime.now(), "5minute"
+                        spot_token, ist_now() - timedelta(days=2), ist_now(), "5minute"
                     )
                 except Exception:
                     candles = []
@@ -574,7 +581,7 @@ class MarketEngine:
                 if score < 5:
                     status = "WATCHLIST"
 
-                now = datetime.now()
+                now = ist_now()
 
                 signals.append({
                     "id": signal_id,
@@ -602,7 +609,7 @@ class MarketEngine:
 
     def get_historical(self, symbol: str, interval: str = "5minute", days: int = 5) -> list:
         try:
-            to_date = datetime.now()
+            to_date = ist_now()
             from_date = to_date - timedelta(days=days)
             data = self.kite.historical_data(int(symbol), from_date, to_date, interval)
             return [{"date": str(d["date"]), "open": d["open"], "high": d["high"],
@@ -623,7 +630,7 @@ class MarketEngine:
             try:
                 # Fetch 5-min candles for today + yesterday
                 candles = self.kite.historical_data(
-                    spot_token, datetime.now() - timedelta(days=2), datetime.now(), "5minute"
+                    spot_token, ist_now() - timedelta(days=2), ist_now(), "5minute"
                 )
                 if not candles or len(candles) < 10:
                     result[index] = self._empty_technicals(index)
@@ -635,7 +642,7 @@ class MarketEngine:
                 volumes = [c["volume"] for c in candles]
 
                 # VWAP (today's candles only)
-                today_candles = [c for c in candles if c["date"].date() == datetime.now().date()]
+                today_candles = [c for c in candles if c["date"].date() == ist_now().date()]
                 if today_candles:
                     cum_vol = 0
                     cum_tp_vol = 0
@@ -672,7 +679,7 @@ class MarketEngine:
                     bb_lower = bb_mid
 
                 # Pivot Points from yesterday's data
-                yesterday_candles = [c for c in candles if c["date"].date() < datetime.now().date()]
+                yesterday_candles = [c for c in candles if c["date"].date() < ist_now().date()]
                 if yesterday_candles:
                     yh = max(c["high"] for c in yesterday_candles)
                     yl = min(c["low"] for c in yesterday_candles)
@@ -800,8 +807,8 @@ class MarketEngine:
     def get_nextday(self) -> dict:
         """Compute real next-day levels from option chain + technicals."""
         live = self.get_live_data()
-        result = {"date": f"Tomorrow — {(datetime.now() + timedelta(days=1)).strftime('%d %b %Y')}",
-                  "generatedAt": datetime.now().strftime("%I:%M %p IST")}
+        result = {"date": f"Tomorrow — {(ist_now() + timedelta(days=1)).strftime('%d %b %Y')}",
+                  "generatedAt": ist_now().strftime("%I:%M %p IST")}
 
         for index in ["NIFTY", "BANKNIFTY"]:
             key = "nifty" if index == "NIFTY" else "banknifty"
@@ -937,7 +944,7 @@ class MarketEngine:
         oi_analysis.append(f"NIFTY PCR: {nifty.get('pcr', 0)} — {'bearish tilt' if nifty.get('pcr', 0) < 0.85 else 'bullish tilt' if nifty.get('pcr', 0) > 1.15 else 'neutral zone'}")
         oi_analysis.append(f"VIX: {vix} — {'HIGH caution' if vix > 18 else 'normal range, safe for buying' if vix < 16 else 'elevated, be careful'}")
 
-        today = datetime.now()
+        today = ist_now()
         week_start = today - timedelta(days=today.weekday())
         week_end = week_start + timedelta(days=4)
 
@@ -1120,7 +1127,7 @@ class MarketEngine:
                 continue
 
             expiries = sorted(set(i["expiry"] for i in opts))
-            today = datetime.now().date()
+            today = ist_now().date()
             future_expiries = [e for e in expiries if e >= today]
             if not future_expiries:
                 print(f"[ENGINE] No future expiries for {index}")
@@ -1225,31 +1232,67 @@ class MarketEngine:
 
     def _check_unusual(self, token, tick, info):
         oi = tick.get("oi", 0)
-        prev_oi = self.prev_oi.get(token, oi)
-        oi_change = oi - prev_oi
-        self.prev_oi[token] = oi
+        ltp = tick.get("last_price", 0)
+        prev_close = tick.get("close", 0) or tick.get("ohlc", {}).get("close", 0)
+        volume = tick.get("volume_traded", tick.get("volume", 0))
 
-        if abs(oi_change) > 100000:  # 1L threshold (was 5L — too high)
-            now = datetime.now().strftime("%I:%M %p")
+        prev_oi = self.prev_oi.get(token, oi)
+        prev_ltp = self.prev_oi.get(f"{token}_ltp", ltp)
+        oi_change = oi - prev_oi
+        prem_change = round(ltp - prev_ltp, 2) if prev_ltp else 0
+
+        self.prev_oi[token] = oi
+        self.prev_oi[f"{token}_ltp"] = ltp
+
+        if abs(oi_change) > 100000:  # 1L threshold
+            now_ist = ist_now()
+            now = now_ist.strftime("%I:%M %p IST")
             instrument = f"{info['index']} {int(info['strike'])} {info['opt_type']}"
             oi_change_lakhs = round(oi_change / 100000, 1)
-            alert_type = "BIG WRITING" if oi_change > 0 else "BIG UNWINDING"
+
+            # Determine type from OI + premium direction
+            if oi_change > 0 and prem_change <= 0:
+                alert_type = "BIG WRITING"  # OI up + premium down = writing
+            elif oi_change > 0 and prem_change > 0:
+                alert_type = "BIG BUYING"   # OI up + premium up = fresh buying
+            elif oi_change < 0 and prem_change >= 0:
+                alert_type = "SHORT COVERING"  # OI down + premium up
+            else:
+                alert_type = "LONG UNWINDING"  # OI down + premium down
+
             alert_level = "CRITICAL" if abs(oi_change) > 500000 else "HIGH" if abs(oi_change) > 200000 else "MEDIUM"
 
-            signal = f"{'OI buildup' if oi_change > 0 else 'OI unwinding'} of {abs(oi_change_lakhs)}L contracts"
-            if info["opt_type"] == "CE" and oi_change > 0:
-                signal += f" — bearish, resistance cap at {int(info['strike'])}"
-            elif info["opt_type"] == "PE" and oi_change > 0:
-                signal += f" — bullish, support building at {int(info['strike'])}"
+            # Detailed signal
+            total_oi_lakhs = round(oi / 100000, 1)
+            signal = f"{alert_type}: {abs(oi_change_lakhs)}L contracts"
+            if info["opt_type"] == "CE":
+                if oi_change > 0 and prem_change <= 0:
+                    signal = f"CE writing at {int(info['strike'])} ({abs(oi_change_lakhs)}L) - bearish, resistance cap. Total OI: {total_oi_lakhs}L"
+                elif oi_change > 0 and prem_change > 0:
+                    signal = f"Fresh CE buying at {int(info['strike'])} ({abs(oi_change_lakhs)}L) - bullish bet. Premium +{prem_change} pts"
+                else:
+                    signal = f"CE unwinding at {int(info['strike'])} ({abs(oi_change_lakhs)}L) - resistance weakening"
+            else:
+                if oi_change > 0 and prem_change <= 0:
+                    signal = f"PE writing at {int(info['strike'])} ({abs(oi_change_lakhs)}L) - bullish, support building. Total OI: {total_oi_lakhs}L"
+                elif oi_change > 0 and prem_change > 0:
+                    signal = f"Fresh PE buying at {int(info['strike'])} ({abs(oi_change_lakhs)}L) - bearish directional bet. Premium +{prem_change} pts"
+                else:
+                    signal = f"PE unwinding at {int(info['strike'])} ({abs(oi_change_lakhs)}L) - support weakening"
+
+            prem_str = f"{'+' if prem_change > 0 else ''}{prem_change} pts" if prem_change != 0 else f"LTP: {ltp}"
 
             alert = {
-                "time": now, "instrument": instrument, "type": alert_type,
-                "oiChange": f"{'+' if oi_change > 0 else ''}{oi_change_lakhs}L contracts",
-                "premChange": f"{round(tick.get('last_price', 0) - tick.get('close', 0), 1)} pts" if tick.get('close') else "0 pts",
-                "alert": alert_level, "signal": signal,
+                "time": now,
+                "instrument": instrument,
+                "type": alert_type,
+                "oiChange": f"{'+' if oi_change > 0 else ''}{oi_change_lakhs}L contracts (Total: {total_oi_lakhs}L)",
+                "premChange": prem_str,
+                "alert": alert_level,
+                "signal": signal,
             }
             self.unusual_alerts.append(alert)
-            print(f"[UNUSUAL] {alert_level}: {instrument} — {alert_type} — {oi_change_lakhs}L")
+            print(f"[UNUSUAL] {now} {alert_level}: {instrument} - {alert_type} - {oi_change_lakhs}L OI, prem {prem_str}")
 
     def _get_atm_iv(self, index, spot):
         chain = self.chains.get(index, {})
@@ -1270,9 +1313,9 @@ class MarketEngine:
     def _days_to_expiry(self, index="NIFTY"):
         expiry = self.nearest_expiry.get(index)
         if expiry:
-            delta = (expiry - datetime.now().date()).days
+            delta = (expiry - ist_now().date()).days
             return max(delta, 1)
-        today = datetime.now()
+        today = ist_now()
         days_ahead = 3 - today.weekday()
         if days_ahead <= 0:
             days_ahead += 7
@@ -1289,7 +1332,7 @@ class MarketEngine:
             "channel": "live",
             "data": live_data,
             "unusual": unusual,
-            "ts": datetime.now().strftime("%H:%M:%S"),
+            "ts": ist_now().strftime("%H:%M:%S"),
         }
 
         with self._ws_lock:
