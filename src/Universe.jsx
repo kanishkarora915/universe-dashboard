@@ -481,9 +481,15 @@ const Stat = ({ label, value, color = "#fff", sub }) => (
 // \u2500\u2500 TAB: LIVE DATA \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 function LiveDataTab({ liveData }) {
-  const data = liveData || mockLive;
+  const data = liveData && liveData.nifty && liveData.nifty.ltp > 0 ? liveData : mockLive;
+  const isReal = liveData && liveData.nifty && liveData.nifty.ltp > 0;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {!isReal && (
+        <div style={{ background: "#FF9F0A15", border: "1px solid #FF9F0A33", borderRadius: 10, padding: "10px 16px", textAlign: "center" }}>
+          <span style={{ color: "#FF9F0A", fontSize: 12, fontWeight: 600 }}>Showing cached data — Login to Kite for real-time feed</span>
+        </div>
+      )}
       {[{ name: "NIFTY", d: data.nifty }, { name: "BANKNIFTY", d: data.banknifty }].map(({ name, d }) => (
         <Card key={name}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -807,7 +813,8 @@ function WeeklyTab() {
 // \u2500\u2500 TAB: UNUSUAL ACTIVITY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 function UnusualTab({ unusualData }) {
-  const alerts = unusualData && unusualData.length > 0 ? unusualData : mockUnusual;
+  const hasReal = unusualData && unusualData.length > 0;
+  const alerts = hasReal ? unusualData : mockUnusual;
   const alertColor = { CRITICAL: RED, HIGH: ORANGE, MEDIUM: YELLOW };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
