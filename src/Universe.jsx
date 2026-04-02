@@ -21,166 +21,6 @@ const TABS = [
   { id: "prompt",  icon: "\uD83E\uDD16", label: "Claude Prompt" },
 ];
 
-const mockLive = {
-  nifty: {
-    ltp: 23180.45, change: -142.3, changePct: -0.61,
-    high: 23380.1, low: 23140.2, pcr: 0.78, ivr: 42,
-    totalCE_OI: 87432000, totalPE_OI: 68210000,
-    maxPain: 23200, bigCallStrike: 23300, bigPutStrike: 23000,
-    vix: 14.82, trend: "BEARISH", regime: "TRENDING DOWN",
-  },
-  banknifty: {
-    ltp: 48920.6, change: -380.15, changePct: -0.77,
-    high: 49420.0, low: 48780.5, pcr: 0.72, ivr: 38,
-    totalCE_OI: 124800000, totalPE_OI: 98600000,
-    maxPain: 49000, bigCallStrike: 49500, bigPutStrike: 48500,
-    vix: 14.82, trend: "BEARISH", regime: "TRENDING DOWN",
-  },
-};
-
-const mockSignals = [
-  {
-    id: 1, time: "10:32 AM", instrument: "NIFTY", type: "BUY PUT",
-    strike: "23100 PE", expiry: "10 Apr", entry: "185\u2013195",
-    t1: "240", t2: "310", sl: "130", score: 7, maxScore: 9,
-    rr: "1:3.2", status: "ACTIVE",
-    reasoning: [
-      { pass: true,   text: "Bearish M-Pattern confirmed on 15min \u2014 double top at 23380" },
-      { pass: true,   text: "LTP below 20 EMA (23280) and 50 EMA (23420) \u2014 both negative" },
-      { pass: true,   text: "PCR dropped to 0.78 \u2014 CE writers dominating flow" },
-      { pass: true,   text: "Max Pain 23200 \u2014 LTP below, bearish gravitational pull" },
-      { pass: true,   text: "IVR 42% \u2014 safe zone, premium fairly priced for buying" },
-      { pass: true,   text: "Big CE OI wall 23300 \u2014 9.2L contracts, strong resistance cap" },
-      { pass: true,   text: "FII net short index futures \u2014 confirmed morning flow" },
-      { pass: "warn", text: "VIX stable at 14.82 \u2014 no panic spike, moderate confidence" },
-      { pass: false,  text: "VIX not spiking \u2014 premium expansion may be slow" },
-    ],
-  },
-  {
-    id: 2, time: "09:18 AM", instrument: "BANKNIFTY", type: "BUY PUT",
-    strike: "48500 PE", expiry: "10 Apr", entry: "310\u2013330",
-    t1: "420", t2: "560", sl: "210", score: 6, maxScore: 9,
-    rr: "1:2.8", status: "CLOSED \u2705",
-    reasoning: [
-      { pass: true,   text: "BankNifty rejected from 49400 resistance \u2014 4th consecutive rejection" },
-      { pass: true,   text: "GEX Flip Detected \u2014 gamma exposure flipped negative at 49000" },
-      { pass: true,   text: "PCR at 0.72 \u2014 extreme bearish tilt in options chain" },
-      { pass: true,   text: "IVR 38% \u2014 safe zone for option buying" },
-      { pass: true,   text: "CE OI writing surge at 49500 \u2014 12.4L contracts, institutional cap" },
-      { pass: true,   text: "VWAP rejection confirmed on 5min chart at 49150" },
-      { pass: "warn", text: "MACD not yet crossed bearish \u2014 confirmation still pending" },
-      { pass: "warn", text: "Broader Nifty needs to confirm breakdown for full conviction" },
-      { pass: false,  text: "HDFC Bank showing relative strength \u2014 divergence risk present" },
-    ],
-  },
-];
-
-const mockNextDay = {
-  date: "Tomorrow \u2014 2 Apr 2026", generatedAt: "2:45 PM IST",
-  nifty: {
-    bias: "BEARISH", pivot: 23210, maxPain: 23200,
-    rangeHigh: 23320, rangeLow: 23020,
-    resistance: [
-      { level: 23280, reason: "20 EMA \u2014 dynamic resistance" },
-      { level: 23350, reason: "Previous day high \u2014 supply zone" },
-      { level: 23450, reason: "Fibonacci 0.618 retracement" },
-    ],
-    support: [
-      { level: 23090, reason: "Fibonacci 0.382 \u2014 key demand zone" },
-      { level: 22820, reason: "Fibonacci 0.5 \u2014 strong weekly support" },
-      { level: 22600, reason: "200 EMA on daily \u2014 macro support" },
-    ],
-    bigCEWall: "23300 CE \u2014 9.2L OI \u2014 DO NOT buy calls above this",
-    bigPEWall: "23000 PE \u2014 7.8L OI \u2014 Strong support zone",
-    unusual:   "23200 CE \u2014 Huge writing in last 30 min of session",
-    opening:   "Gap down likely if Nifty closes below 23150 today",
-    strategy:  "Buy PE on any pullback to 23200\u201323250 range. Avoid CE buying until 23450 reclaimed.",
-    plan: [
-      "9:15\u20139:30 AM \u2192 Watch gap fill attempt, don't trade first 5 candles",
-      "9:30\u201310:30 AM \u2192 If 23090 breaks with volume, add PE aggressively",
-      "10:30 AM\u20132:00 PM \u2192 Trail stop to entry after T1 hit",
-      "2:00\u20132:30 PM \u2192 VIX above 15 at this time = last PE entry window",
-    ],
-  },
-  banknifty: {
-    bias: "BEARISH", pivot: 48950, maxPain: 49000,
-    rangeHigh: 49250, rangeLow: 48400,
-    resistance: [
-      { level: 49200, reason: "VWAP resistance from yesterday" },
-      { level: 49500, reason: "Institutional CE wall \u2014 12.4L OI" },
-      { level: 49800, reason: "Weekly supply zone" },
-    ],
-    support: [
-      { level: 48500, reason: "Big PE wall \u2014 9.1L OI battleground" },
-      { level: 48200, reason: "Previous swing low support" },
-      { level: 47800, reason: "Weekly demand zone" },
-    ],
-    bigCEWall: "49500 CE \u2014 12.4L OI \u2014 Institutional cap confirmed",
-    bigPEWall: "48500 PE \u2014 9.1L OI \u2014 Key battleground",
-    unusual:   "49000 CE \u2014 3x avg volume spike detected EOD",
-    opening:   "Flat to negative open expected",
-    strategy:  "Sell on rise to 49100\u201349200. Buy PE on breakdown below 48700.",
-    plan: [
-      "9:15 AM \u2192 Check SGX Nifty overnight cue",
-      "If HDFC Bank above 1780 \u2192 bullish divergence risk, reduce PE size",
-      "Below 48500 \u2192 panic selling possible, large PE move expected",
-      "No new positions after 2:00 PM on Friday \u2014 weekend risk",
-    ],
-  },
-};
-
-const mockWeekly = {
-  week: "31 Mar \u2013 4 Apr 2026",
-  niftyBias: "BEARISH", bnBias: "BEARISH",
-  niftyRange: { high: 23500, low: 22600 },
-  bnRange: { high: 49800, low: 47800 },
-  oiAnalysis: [
-    "23000 PE highest OI \u2014 key support for bulls this week",
-    "23500 CE max writing \u2014 strong ceiling, resistance confirmed",
-    "PCR at 0.78 \u2014 moderate bearish tilt, not extreme yet",
-    "IVR normal zone \u2014 weekly options fairly priced for buying",
-  ],
-  fii: "\u2212\u20B92,840 Cr (index futures net short)",
-  dii: "+\u20B91,920 Cr (cash buying, absorbing FII selling)",
-  verdict: "FII dominant bearish vs DII absorbing \u2014 tug of war at 23000",
-  macro: [
-    "Friday: US Non-Farm Payroll \u2014 high global volatility expected",
-    "RBI MPC outcome week \u2014 hawkish surprise = sharp bearish",
-    "Q4 FY26 earnings season begins \u2014 stock-specific volatility",
-  ],
-  plan: [
-    { day: "Monday",    col: ACCENT,  text: "Wait and watch \u2014 observe open + first 30 min before any entry" },
-    { day: "Tuesday",   col: ACCENT,  text: "Core trade window \u2014 look for clean signal with score 7+" },
-    { day: "Wednesday", col: GREEN,   text: "Best momentum day \u2014 add to winning positions if trend is clear" },
-    { day: "Thursday",  col: RED,     text: "\u26A0\uFE0F Theta decay aggressive \u2014 NO option buying after 2 PM" },
-    { day: "Friday",    col: ORANGE,  text: "\uD83D\uDEAB No new positions \u2014 NFP + weekend risk, exit all by 1 PM" },
-  ],
-  niftyMoB: 23000, bnMoB: 48000,
-};
-
-const mockUnusual = [
-  {
-    time: "02:38 PM", instrument: "NIFTY 23200 CE", type: "BIG WRITING",
-    oiChange: "+4.2L contracts", premChange: "\u221218 pts", alert: "HIGH",
-    signal: "Institutional CE writing \u2014 bearish bias confirmed",
-  },
-  {
-    time: "01:54 PM", instrument: "NIFTY 23000 PE", type: "BIG BUYING",
-    oiChange: "+6.8L contracts", premChange: "+32 pts", alert: "CRITICAL",
-    signal: "Smart money loading PE \u2014 strong directional bearish bet",
-  },
-  {
-    time: "11:22 AM", instrument: "BANKNIFTY 49500 CE", type: "BIG WRITING",
-    oiChange: "+8.1L contracts", premChange: "\u221224 pts", alert: "HIGH",
-    signal: "Institutional cap confirmed at 49500 \u2014 do not buy CE above this",
-  },
-  {
-    time: "10:05 AM", instrument: "BANKNIFTY 48500 PE", type: "UNUSUAL VOLUME",
-    oiChange: "+3.1L contracts", premChange: "+45 pts", alert: "MEDIUM",
-    signal: "3x avg volume \u2014 possible institutional hedge or directional bet",
-  },
-];
-
 const MASTER_PROMPT = `# UNIVERSE \u2014 MASTER CLAUDE PROMPT
 ## Nifty & BankNifty Options Intelligence Engine
 ## Broker: Zerodha Kite Connect | Market: NSE India
@@ -481,15 +321,16 @@ const Stat = ({ label, value, color = "#fff", sub }) => (
 // \u2500\u2500 TAB: LIVE DATA \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 function LiveDataTab({ liveData }) {
-  const data = liveData && liveData.nifty && liveData.nifty.ltp > 0 ? liveData : mockLive;
-  const isReal = liveData && liveData.nifty && liveData.nifty.ltp > 0;
+  if (!liveData || !liveData.nifty || liveData.nifty.ltp <= 0) {
+    return (<div style={{ textAlign: "center", padding: 60, color: "#555" }}>
+      <div style={{ fontSize: 40, marginBottom: 12 }}>⚡</div>
+      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, color: "#888" }}>No Live Data</div>
+      <div style={{ fontSize: 12 }}>Login to Kite → data will appear here in real-time</div>
+    </div>);
+  }
+  const data = liveData;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      {!isReal && (
-        <div style={{ background: "#FF9F0A15", border: "1px solid #FF9F0A33", borderRadius: 10, padding: "10px 16px", textAlign: "center" }}>
-          <span style={{ color: "#FF9F0A", fontSize: 12, fontWeight: 600 }}>Showing cached data — Login to Kite for real-time feed</span>
-        </div>
-      )}
       {[{ name: "NIFTY", d: data.nifty }, { name: "BANKNIFTY", d: data.banknifty }].map(({ name, d }) => (
         <Card key={name}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -546,16 +387,16 @@ function LiveDataTab({ liveData }) {
 // \u2500\u2500 TAB: SIGNALS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 function SignalsTab({ realSignals }) {
-  const hasReal = realSignals && realSignals.length > 0;
-  const sigs = hasReal ? realSignals : mockSignals;
+  if (!realSignals || realSignals.length === 0) {
+    return (<div style={{ textAlign: "center", padding: 60, color: "#555" }}>
+      <div style={{ fontSize: 40, marginBottom: 12 }}>🎯</div>
+      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, color: "#888" }}>No Active Signals</div>
+      <div style={{ fontSize: 12, lineHeight: 1.6 }}>Signal engine scores 9 conditions every 30 seconds.<br/>Score 5+ needed to generate a signal. Login to Kite to activate.</div>
+    </div>);
+  }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      {!hasReal && (
-        <div style={{ background: "#FF9F0A15", border: "1px solid #FF9F0A33", borderRadius: 10, padding: "10px 16px", textAlign: "center" }}>
-          <span style={{ color: "#FF9F0A", fontSize: 12, fontWeight: 600 }}>No active signals right now — showing sample format. Score 5+ needed to generate.</span>
-        </div>
-      )}
-      {sigs.map(s => (
+      {realSignals.map(s => (
         <Card key={s.id}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
             <div>
@@ -713,7 +554,14 @@ function IntradayTab({ realData }) {
 // \u2500\u2500 TAB: NEXT DAY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 function NextDayTab({ realData }) {
-  const d = realData && realData.nifty ? realData : mockNextDay;
+  if (!realData || !realData.nifty) {
+    return (<div style={{ textAlign: "center", padding: 60, color: "#555" }}>
+      <div style={{ fontSize: 40, marginBottom: 12 }}>🔭</div>
+      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, color: "#888" }}>No Next Day Data</div>
+      <div style={{ fontSize: 12 }}>Login to Kite → levels will be computed from real option chain</div>
+    </div>);
+  }
+  const d = realData;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", background: "#0D0D15", borderRadius: 10, border: `1px solid ${ACCENT}33` }}>
@@ -794,7 +642,14 @@ function NextDayTab({ realData }) {
 // \u2500\u2500 TAB: WEEKLY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 function WeeklyTab({ realData }) {
-  const w = realData && realData.niftyBias ? realData : mockWeekly;
+  if (!realData || !realData.niftyBias) {
+    return (<div style={{ textAlign: "center", padding: 60, color: "#555" }}>
+      <div style={{ fontSize: 40, marginBottom: 12 }}>📅</div>
+      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, color: "#888" }}>No Weekly Data</div>
+      <div style={{ fontSize: 12 }}>Login to Kite → weekly outlook computed from real OI data</div>
+    </div>);
+  }
+  const w = realData;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <Card>
@@ -860,8 +715,7 @@ function WeeklyTab({ realData }) {
 // \u2500\u2500 TAB: UNUSUAL ACTIVITY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 function UnusualTab({ unusualData }) {
-  const hasReal = unusualData && unusualData.length > 0;
-  const alerts = hasReal ? unusualData : mockUnusual;
+  const alerts = unusualData && unusualData.length > 0 ? unusualData : [];
   const alertColor = { CRITICAL: RED, HIGH: ORANGE, MEDIUM: YELLOW };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -871,6 +725,11 @@ function UnusualTab({ unusualData }) {
           Triggers: Volume {">"} 3x avg \u00B7 OI Change {">"} 5L \u00B7 Premium {">"} 30% swing \u00B7 PCR shift {">"} 0.15 \u00B7 VIX spike {">"} 5% \u00B7 GEX Flip
         </div>
       </Card>
+      {alerts.length === 0 && (
+        <div style={{ textAlign: "center", padding: 40, color: "#555" }}>
+          <div style={{ fontSize: 14, color: "#666" }}>No unusual activity detected yet. OI changes {">"} 1L will appear here in real-time.</div>
+        </div>
+      )}
       {alerts.map((u, i) => (
         <Card key={i} style={{ borderColor: alertColor[u.alert] + "44" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
