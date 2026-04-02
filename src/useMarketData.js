@@ -1,18 +1,41 @@
 /**
- * useMarketData — Custom hook for real-time market data.
- * Connects to WebSocket for live ticks, falls back to REST polling.
+ * useMarketData — Custom hook for ALL real-time market data.
+ * Fetches: live data, intraday technicals, next day levels, weekly outlook, unusual activity.
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { fetchLive, fetchUnusual } from "./api";
+import { fetchLive, fetchUnusual, fetchIntraday, fetchNextDay, fetchWeekly } from "./api";
 
 export function useMarketData() {
   const [live, setLive] = useState(null);
   const [unusual, setUnusual] = useState([]);
+  const [intraday, setIntraday] = useState(null);
+  const [nextday, setNextday] = useState(null);
+  const [weekly, setWeekly] = useState(null);
   const [connected, setConnected] = useState(false);
   const wsRef = useRef(null);
   const pollRef = useRef(null);
   const reconnectRef = useRef(null);
+  const slowPollRef = useRef(null);
+
+  // ── Fetch all tab data (called once + every 30s) ──────────────────────
+
+  const fetchAllTabData = useCallback(async () => {
+    try {
+      const [intradayData, nextdayData, weeklyData, unusualData] = await Promise.all([
+        fetchIntraday().catch(() => null),
+        fetchNextDay().catch(() => null),
+        fetchWeekly().catch(() => null),
+        fetchUnusual().catch(() => []),
+      ]);
+      if (intradayData) setIntraday(intradayData);
+      if (nextdayData) setNextday(nextdayData);
+      if (weeklyData) setWeekly(weeklyData);
+      if (Array.isArray(unusualData) && unusualData.length > 0) setUnusual(unusualData);
+    } catch (err) {
+      // Backend not available
+    }
+  }, []);
 
   // ── WebSocket connection ──────────────────────────────────────────────
 
@@ -27,7 +50,6 @@ export function useMarketData() {
       ws.onopen = () => {
         console.log("[WS] Connected");
         setConnected(true);
-        // Clear polling if WS connects
         if (pollRef.current) {
           clearInterval(pollRef.current);
           pollRef.current = null;
@@ -43,9 +65,7 @@ export function useMarketData() {
           if (msg.unusual && msg.unusual.length > 0) {
             setUnusual(msg.unusual);
           }
-        } catch (err) {
-          // ignore parse errors
-        }
+        } catch (err) {}
       };
 
       ws.onclose = () => {
@@ -53,14 +73,10 @@ export function useMarketData() {
         setConnected(false);
         wsRef.current = null;
         startPolling();
-        // Reconnect after 3 seconds
         reconnectRef.current = setTimeout(connectWS, 3000);
       };
 
-      ws.onerror = () => {
-        ws.close();
-      };
-
+      ws.onerror = () => { ws.close(); };
     } catch (err) {
       console.log("[WS] Connection failed, using polling");
       startPolling();
@@ -71,36 +87,35 @@ export function useMarketData() {
 
   const startPolling = useCallback(() => {
     if (pollRef.current) return;
-    console.log("[POLL] Starting REST polling (3s interval)");
-
     const poll = async () => {
       try {
         const liveData = await fetchLive();
         if (liveData && !liveData.error) setLive(liveData);
-
         const unusualData = await fetchUnusual();
         if (Array.isArray(unusualData)) setUnusual(unusualData);
-      } catch (err) {
-        // Backend not available
-      }
+      } catch (err) {}
     };
-
-    poll(); // Initial fetch
+    poll();
     pollRef.current = setInterval(poll, 3000);
   }, []);
 
   // ── Lifecycle ─────────────────────────────────────────────────────────
 
   useEffect(() => {
-    // Try WebSocket first, fall back to polling
+    // Connect WebSocket for live data
     connectWS();
+
+    // Fetch all tab data immediately + every 30 seconds
+    fetchAllTabData();
+    slowPollRef.current = setInterval(fetchAllTabData, 30000);
 
     return () => {
       if (wsRef.current) wsRef.current.close();
       if (pollRef.current) clearInterval(pollRef.current);
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
+      if (slowPollRef.current) clearInterval(slowPollRef.current);
     };
-  }, [connectWS]);
+  }, [connectWS, fetchAllTabData]);
 
-  return { live, unusual, connected };
+  return { live, unusual, intraday, nextday, weekly, connected };
 }

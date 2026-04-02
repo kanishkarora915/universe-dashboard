@@ -179,6 +179,30 @@ async def unusual():
     return engine.get_unusual()
 
 
+@app.get("/api/intraday")
+async def intraday():
+    """Returns real-time computed technical indicators for intraday tab."""
+    if not engine or not engine.running:
+        return JSONResponse({"error": "Engine not running"}, status_code=503)
+    return engine.get_intraday()
+
+
+@app.get("/api/nextday")
+async def nextday():
+    """Returns real support/resistance/walls/strategy for next day tab."""
+    if not engine or not engine.running:
+        return JSONResponse({"error": "Engine not running"}, status_code=503)
+    return engine.get_nextday()
+
+
+@app.get("/api/weekly")
+async def weekly():
+    """Returns real weekly analysis from option chain data."""
+    if not engine or not engine.running:
+        return JSONResponse({"error": "Engine not running"}, status_code=503)
+    return engine.get_weekly()
+
+
 # ── WebSocket Route ──────────────────────────────────────────────────────
 
 @app.websocket("/ws/ticks")

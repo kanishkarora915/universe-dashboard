@@ -3,8 +3,6 @@
  * REST endpoints + WebSocket connection to FastAPI backend.
  */
 
-// ── REST API ────────────────────────────────────────────────────────────
-
 export async function fetchStatus() {
   const res = await fetch("/api/status");
   return res.json();
@@ -45,5 +43,23 @@ export async function fetchHistorical(token, interval = "5minute", days = 5) {
 export async function fetchUnusual() {
   const res = await fetch("/api/unusual");
   if (!res.ok) return [];
+  return res.json();
+}
+
+export async function fetchIntraday() {
+  const res = await fetch("/api/intraday");
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function fetchNextDay() {
+  const res = await fetch("/api/nextday");
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function fetchWeekly() {
+  const res = await fetch("/api/weekly");
+  if (!res.ok) return null;
   return res.json();
 }

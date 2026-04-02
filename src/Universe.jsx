@@ -596,7 +596,7 @@ function SignalsTab() {
 
 // \u2500\u2500 TAB: INTRADAY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-function IntradayTab() {
+function IntradayTab({ realData }) {
   const sessions = [
     { label: "\uD83D\uDFE2 Morning Session", time: "9:15\u201310:30 AM", color: GREEN,
       desc: "Trend establishment window. Best setups form here. Wait for 15-min candle confirmation before entry. Never trade first 5 candles blind." },
@@ -616,16 +616,46 @@ function IntradayTab() {
     { icon: "\u2705", col: GREEN, text: "EMA 9 crosses 20 with volume surge \u2192 Strong directional signal" },
     { icon: "\u2705", col: GREEN, text: "Score \u2265 7 in morning session 9:30\u201310:30 AM \u2192 Prime setup, full conviction" },
   ];
-  const techLevels = [
-    { label: "NIFTY VWAP",          value: "23,195",       color: ACCENT },
-    { label: "NIFTY Supertrend",     value: "23,280 \u2193 SELL", color: RED   },
-    { label: "NIFTY RSI (14)",       value: "38.4 \u2014 Weak",  color: YELLOW },
-    { label: "NIFTY MACD",          value: "Bearish Cross", color: RED   },
-    { label: "BANKNIFTY VWAP",       value: "48,960",       color: ACCENT },
-    { label: "BANKNIFTY Supertrend", value: "49,200 \u2193 SELL", color: RED   },
-    { label: "BANKNIFTY RSI (14)",   value: "35.8 \u2014 Weak",  color: YELLOW },
-    { label: "BANKNIFTY MACD",       value: "Bearish Cross", color: RED   },
+
+  // Build REAL tech levels from API data
+  const n = realData?.NIFTY || {};
+  const b = realData?.BANKNIFTY || {};
+  const hasReal = n.vwap > 0;
+  const rsiColor = (v) => v < 30 || v > 70 ? RED : v < 45 ? YELLOW : GREEN;
+  const macdColor = (l) => l === "Bullish Cross" ? GREEN : RED;
+
+  const techLevels = hasReal ? [
+    { label: "NIFTY VWAP",          value: n.vwap?.toLocaleString("en-IN") || "N/A", color: ACCENT },
+    { label: "NIFTY Supertrend",     value: n.supertrendLabel || "N/A", color: n.supertrendLabel?.includes("BUY") ? GREEN : RED },
+    { label: "NIFTY RSI (14)",       value: `${n.rsi} \u2014 ${n.rsiLabel}`, color: rsiColor(n.rsi) },
+    { label: "NIFTY MACD",          value: n.macdLabel || "N/A", color: macdColor(n.macdLabel) },
+    { label: "BANKNIFTY VWAP",       value: b.vwap?.toLocaleString("en-IN") || "N/A", color: ACCENT },
+    { label: "BANKNIFTY Supertrend", value: b.supertrendLabel || "N/A", color: b.supertrendLabel?.includes("BUY") ? GREEN : RED },
+    { label: "BANKNIFTY RSI (14)",   value: `${b.rsi} \u2014 ${b.rsiLabel}`, color: rsiColor(b.rsi) },
+    { label: "BANKNIFTY MACD",       value: b.macdLabel || "N/A", color: macdColor(b.macdLabel) },
+  ] : [
+    { label: "NIFTY VWAP", value: "Loading...", color: "#555" },
+    { label: "NIFTY Supertrend", value: "Loading...", color: "#555" },
+    { label: "NIFTY RSI", value: "Loading...", color: "#555" },
+    { label: "NIFTY MACD", value: "Loading...", color: "#555" },
+    { label: "BANKNIFTY VWAP", value: "Loading...", color: "#555" },
+    { label: "BANKNIFTY Supertrend", value: "Loading...", color: "#555" },
+    { label: "BANKNIFTY RSI", value: "Loading...", color: "#555" },
+    { label: "BANKNIFTY MACD", value: "Loading...", color: "#555" },
   ];
+
+  // Pivot levels
+  const pivotLevels = hasReal ? [
+    { label: "NIFTY Pivot", value: n.pivot?.toLocaleString("en-IN"), color: PURPLE },
+    { label: "NIFTY R1/R2", value: `${n.r1?.toLocaleString("en-IN")} / ${n.r2?.toLocaleString("en-IN")}`, color: RED },
+    { label: "NIFTY S1/S2", value: `${n.s1?.toLocaleString("en-IN")} / ${n.s2?.toLocaleString("en-IN")}`, color: GREEN },
+    { label: "NIFTY EMA 9/20", value: `${n.ema9?.toLocaleString("en-IN")} / ${n.ema20?.toLocaleString("en-IN")}`, color: ACCENT },
+    { label: "BN Pivot", value: b.pivot?.toLocaleString("en-IN"), color: PURPLE },
+    { label: "BN R1/R2", value: `${b.r1?.toLocaleString("en-IN")} / ${b.r2?.toLocaleString("en-IN")}`, color: RED },
+    { label: "BN S1/S2", value: `${b.s1?.toLocaleString("en-IN")} / ${b.s2?.toLocaleString("en-IN")}`, color: GREEN },
+    { label: "BN EMA 9/20", value: `${b.ema9?.toLocaleString("en-IN")} / ${b.ema20?.toLocaleString("en-IN")}`, color: ACCENT },
+  ] : [];
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <Card>
@@ -652,21 +682,31 @@ function IntradayTab() {
         ))}
       </Card>
       <Card>
-        <Label>Key Technical Levels Today</Label>
+        <Label>Key Technical Levels Today {hasReal ? "(REAL)" : "(Loading...)"}</Label>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           {techLevels.map(t => (
             <Stat key={t.label} label={t.label} value={t.value} color={t.color} />
           ))}
         </div>
       </Card>
+      {pivotLevels.length > 0 && (
+        <Card>
+          <Label>Pivot Points + EMAs (REAL)</Label>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            {pivotLevels.map(t => (
+              <Stat key={t.label} label={t.label} value={t.value} color={t.color} />
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
 
 // \u2500\u2500 TAB: NEXT DAY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-function NextDayTab() {
-  const d = mockNextDay;
+function NextDayTab({ realData }) {
+  const d = realData && realData.nifty ? realData : mockNextDay;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", background: "#0D0D15", borderRadius: 10, border: `1px solid ${ACCENT}33` }}>
@@ -746,8 +786,8 @@ function NextDayTab() {
 
 // \u2500\u2500 TAB: WEEKLY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-function WeeklyTab() {
-  const w = mockWeekly;
+function WeeklyTab({ realData }) {
+  const w = realData && realData.niftyBias ? realData : mockWeekly;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <Card>
@@ -900,7 +940,7 @@ function PromptTab() {
 export default function Universe({ onLogout }) {
   const [activeTab, setActiveTab] = useState("live");
   const [time, setTime] = useState(new Date());
-  const { live, unusual, connected } = useMarketData();
+  const { live, unusual, intraday, nextday, weekly, connected } = useMarketData();
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
@@ -918,9 +958,9 @@ export default function Universe({ onLogout }) {
     switch (activeTab) {
       case "live":    return <LiveDataTab liveData={live} />;
       case "signals": return <SignalsTab />;
-      case "intraday":return <IntradayTab />;
-      case "nextday": return <NextDayTab />;
-      case "weekly":  return <WeeklyTab />;
+      case "intraday":return <IntradayTab realData={intraday} />;
+      case "nextday": return <NextDayTab realData={nextday} />;
+      case "weekly":  return <WeeklyTab realData={weekly} />;
       case "unusual": return <UnusualTab unusualData={unusual} />;
       case "prompt":  return <PromptTab />;
       default:        return null;

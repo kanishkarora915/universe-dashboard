@@ -322,6 +322,364 @@ class MarketEngine:
             print(f"[ENGINE] Historical fetch error: {e}")
             return []
 
+    # ── INTRADAY — Real technicals from historical candles ──────────────
+
+    def get_intraday(self) -> dict:
+        """Compute REAL technical indicators from historical candle data."""
+        result = {}
+        for index in ["NIFTY", "BANKNIFTY"]:
+            spot_token = self.spot_tokens.get(index)
+            if not spot_token:
+                continue
+            try:
+                # Fetch 5-min candles for today + yesterday
+                candles = self.kite.historical_data(
+                    spot_token, datetime.now() - timedelta(days=2), datetime.now(), "5minute"
+                )
+                if not candles or len(candles) < 10:
+                    result[index] = self._empty_technicals(index)
+                    continue
+
+                closes = [c["close"] for c in candles]
+                highs = [c["high"] for c in candles]
+                lows = [c["low"] for c in candles]
+                volumes = [c["volume"] for c in candles]
+
+                # VWAP (today's candles only)
+                today_candles = [c for c in candles if c["date"].date() == datetime.now().date()]
+                if today_candles:
+                    cum_vol = 0
+                    cum_tp_vol = 0
+                    for c in today_candles:
+                        tp = (c["high"] + c["low"] + c["close"]) / 3
+                        cum_tp_vol += tp * c["volume"]
+                        cum_vol += c["volume"]
+                    vwap = round(cum_tp_vol / cum_vol, 2) if cum_vol else closes[-1]
+                else:
+                    vwap = closes[-1]
+
+                # RSI 14
+                rsi = self._compute_rsi(closes, 14)
+
+                # MACD (12,26,9)
+                macd_line, signal_line, histogram = self._compute_macd(closes)
+
+                # Supertrend (10, 3)
+                supertrend, st_direction = self._compute_supertrend(highs, lows, closes, 10, 3)
+
+                # EMA 9, 20, 50
+                ema9 = self._ema(closes, 9)
+                ema20 = self._ema(closes, 20)
+                ema50 = self._ema(closes, 50) if len(closes) >= 50 else 0
+
+                # Bollinger Bands
+                bb_mid = ema20
+                if len(closes) >= 20:
+                    std20 = float(np.std(closes[-20:]))
+                    bb_upper = round(bb_mid + 2 * std20, 2)
+                    bb_lower = round(bb_mid - 2 * std20, 2)
+                else:
+                    bb_upper = bb_mid
+                    bb_lower = bb_mid
+
+                # Pivot Points from yesterday's data
+                yesterday_candles = [c for c in candles if c["date"].date() < datetime.now().date()]
+                if yesterday_candles:
+                    yh = max(c["high"] for c in yesterday_candles)
+                    yl = min(c["low"] for c in yesterday_candles)
+                    yc = yesterday_candles[-1]["close"]
+                    pivot = round((yh + yl + yc) / 3, 2)
+                    r1 = round(2 * pivot - yl, 2)
+                    r2 = round(pivot + (yh - yl), 2)
+                    r3 = round(yh + 2 * (pivot - yl), 2)
+                    s1 = round(2 * pivot - yh, 2)
+                    s2 = round(pivot - (yh - yl), 2)
+                    s3 = round(yl - 2 * (yh - pivot), 2)
+                else:
+                    pivot = closes[-1]
+                    r1 = r2 = r3 = s1 = s2 = s3 = 0
+
+                rsi_label = "Oversold" if rsi < 30 else "Overbought" if rsi > 70 else "Weak" if rsi < 45 else "Strong" if rsi > 55 else "Neutral"
+                macd_label = "Bullish Cross" if histogram > 0 else "Bearish Cross"
+                st_label = f"{round(supertrend)} {'↑ BUY' if st_direction > 0 else '↓ SELL'}"
+
+                result[index] = {
+                    "vwap": vwap,
+                    "rsi": round(rsi, 1),
+                    "rsiLabel": rsi_label,
+                    "macd": round(macd_line, 2),
+                    "macdSignal": round(signal_line, 2),
+                    "macdHist": round(histogram, 2),
+                    "macdLabel": macd_label,
+                    "supertrend": round(supertrend, 2),
+                    "supertrendLabel": st_label,
+                    "ema9": round(ema9, 2),
+                    "ema20": round(ema20, 2),
+                    "ema50": round(ema50, 2),
+                    "bbUpper": bb_upper,
+                    "bbLower": bb_lower,
+                    "pivot": pivot,
+                    "r1": r1, "r2": r2, "r3": r3,
+                    "s1": s1, "s2": s2, "s3": s3,
+                }
+            except Exception as e:
+                print(f"[ENGINE] Intraday compute error for {index}: {e}")
+                result[index] = self._empty_technicals(index)
+
+        return result
+
+    def _empty_technicals(self, index):
+        return {"vwap": 0, "rsi": 0, "rsiLabel": "N/A", "macd": 0, "macdSignal": 0,
+                "macdHist": 0, "macdLabel": "N/A", "supertrend": 0, "supertrendLabel": "N/A",
+                "ema9": 0, "ema20": 0, "ema50": 0, "bbUpper": 0, "bbLower": 0,
+                "pivot": 0, "r1": 0, "r2": 0, "r3": 0, "s1": 0, "s2": 0, "s3": 0}
+
+    def _compute_rsi(self, closes, period=14):
+        if len(closes) < period + 1:
+            return 50
+        deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+        gains = [d if d > 0 else 0 for d in deltas]
+        losses = [-d if d < 0 else 0 for d in deltas]
+        avg_gain = sum(gains[:period]) / period
+        avg_loss = sum(losses[:period]) / period
+        for i in range(period, len(gains)):
+            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        if avg_loss == 0:
+            return 100
+        rs = avg_gain / avg_loss
+        return 100 - (100 / (1 + rs))
+
+    def _compute_macd(self, closes, fast=12, slow=26, signal=9):
+        if len(closes) < slow + signal:
+            return 0, 0, 0
+        ema_fast = self._ema(closes, fast)
+        ema_slow = self._ema(closes, slow)
+        macd_val = ema_fast - ema_slow
+        # Simplified signal line
+        macd_series = []
+        fast_ema_series = self._ema_series(closes, fast)
+        slow_ema_series = self._ema_series(closes, slow)
+        for i in range(len(slow_ema_series)):
+            macd_series.append(fast_ema_series[i + (len(fast_ema_series) - len(slow_ema_series))] - slow_ema_series[i])
+        if len(macd_series) >= signal:
+            signal_val = sum(macd_series[-signal:]) / signal
+        else:
+            signal_val = macd_val
+        return macd_val, signal_val, macd_val - signal_val
+
+    def _compute_supertrend(self, highs, lows, closes, period=10, multiplier=3):
+        if len(closes) < period:
+            return closes[-1] if closes else 0, 1
+        atr_vals = []
+        for i in range(1, len(closes)):
+            tr = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+            atr_vals.append(tr)
+        if len(atr_vals) < period:
+            return closes[-1], 1
+        atr = sum(atr_vals[-period:]) / period
+        hl2 = (highs[-1] + lows[-1]) / 2
+        upper = hl2 + multiplier * atr
+        lower = hl2 - multiplier * atr
+        direction = 1 if closes[-1] > lower else -1
+        st = lower if direction > 0 else upper
+        return st, direction
+
+    def _ema(self, data, period):
+        if len(data) < period:
+            return data[-1] if data else 0
+        k = 2 / (period + 1)
+        ema = sum(data[:period]) / period
+        for val in data[period:]:
+            ema = val * k + ema * (1 - k)
+        return ema
+
+    def _ema_series(self, data, period):
+        if len(data) < period:
+            return data[:]
+        k = 2 / (period + 1)
+        result = []
+        ema = sum(data[:period]) / period
+        result.append(ema)
+        for val in data[period:]:
+            ema = val * k + ema * (1 - k)
+            result.append(ema)
+        return result
+
+    # ── NEXT DAY — Real levels from option chain ─────────────────────────
+
+    def get_nextday(self) -> dict:
+        """Compute real next-day levels from option chain + technicals."""
+        live = self.get_live_data()
+        result = {"date": f"Tomorrow — {(datetime.now() + timedelta(days=1)).strftime('%d %b %Y')}",
+                  "generatedAt": datetime.now().strftime("%I:%M %p IST")}
+
+        for index in ["NIFTY", "BANKNIFTY"]:
+            key = "nifty" if index == "NIFTY" else "banknifty"
+            ld = live.get(key, {})
+            chain = self.chains.get(index, {})
+            ltp = ld.get("ltp", 0)
+            pcr = ld.get("pcr", 0)
+            big_ce = ld.get("bigCallStrike", 0)
+            big_pe = ld.get("bigPutStrike", 0)
+            max_pain = ld.get("maxPain", 0)
+            vix = ld.get("vix", 0)
+            cfg = INDEX_CONFIG[index]
+
+            # Compute real pivot from today's OHLC
+            spot_token = self.spot_tokens.get(index)
+            spot = self.prices.get(spot_token, {})
+            h = spot.get("high", ltp)
+            l = spot.get("low", ltp)
+            c = ltp
+            pivot = round((h + l + c) / 3, 2)
+            r1 = round(2 * pivot - l, 2)
+            r2 = round(pivot + (h - l), 2)
+            r3 = round(h + 2 * (pivot - l), 2)
+            s1 = round(2 * pivot - h, 2)
+            s2 = round(pivot - (h - l), 2)
+            s3 = round(l - 2 * (h - pivot), 2)
+
+            # Bias from PCR + price action
+            if pcr < 0.75:
+                bias = "BEARISH"
+            elif pcr > 1.2:
+                bias = "BULLISH"
+            else:
+                change_pct = ld.get("changePct", 0)
+                bias = "BULLISH" if change_pct > 0.3 else "BEARISH" if change_pct < -0.3 else "NEUTRAL"
+
+            # Big OI walls for context
+            big_ce_oi = 0
+            big_pe_oi = 0
+            for strike, data in chain.items():
+                if strike == big_ce:
+                    big_ce_oi = data.get("ce_oi", 0)
+                if strike == big_pe:
+                    big_pe_oi = data.get("pe_oi", 0)
+
+            # Range estimate from ATR-like calc
+            day_range = h - l if h > l else cfg["strike_gap"] * 2
+            range_high = round(ltp + day_range * 0.6, 0)
+            range_low = round(ltp - day_range * 0.6, 0)
+
+            # Opening bias
+            if ld.get("changePct", 0) > 0.5:
+                opening = "Gap up likely — bullish momentum from today's close"
+            elif ld.get("changePct", 0) < -0.5:
+                opening = "Gap down likely — selling pressure continued from today"
+            else:
+                opening = "Flat open expected — consolidation zone"
+
+            # Strategy
+            if bias == "BEARISH":
+                strategy = f"Buy PE on pullback to {round(pivot)}–{round(r1)} range. Avoid CE buying until {int(big_ce)} reclaimed."
+            elif bias == "BULLISH":
+                strategy = f"Buy CE on dips to {round(s1)}–{round(pivot)} range. Avoid PE unless {int(big_pe)} breaks."
+            else:
+                strategy = f"Wait for directional breakout. Range-bound between {round(s1)} and {round(r1)}."
+
+            result[key] = {
+                "bias": bias, "pivot": pivot, "maxPain": max_pain,
+                "rangeHigh": range_high, "rangeLow": range_low,
+                "resistance": [
+                    {"level": r1, "reason": f"R1 Pivot — first resistance from today's range"},
+                    {"level": r2, "reason": f"R2 Pivot — extended resistance zone"},
+                    {"level": int(big_ce), "reason": f"Big CE Wall — {round(big_ce_oi / 100000, 1)}L OI resistance cap"},
+                ],
+                "support": [
+                    {"level": s1, "reason": f"S1 Pivot — first support from today's range"},
+                    {"level": s2, "reason": f"S2 Pivot — deeper support zone"},
+                    {"level": int(big_pe), "reason": f"Big PE Wall — {round(big_pe_oi / 100000, 1)}L OI support zone"},
+                ],
+                "bigCEWall": f"{int(big_ce)} CE — {round(big_ce_oi / 100000, 1)}L OI — resistance cap",
+                "bigPEWall": f"{int(big_pe)} PE — {round(big_pe_oi / 100000, 1)}L OI — support zone",
+                "unusual": f"Max Pain at {int(max_pain)} — watch for pin towards this level",
+                "opening": opening,
+                "strategy": strategy,
+                "plan": [
+                    f"9:15–9:30 AM → Watch opening direction, don't trade first 5 candles",
+                    f"9:30–10:30 AM → If {index} {'breaks below ' + str(round(s1)) if bias == 'BEARISH' else 'holds above ' + str(round(s1))}, take directional trade",
+                    f"10:30 AM–2:00 PM → Trail stop to entry after T1 hit, respect VWAP",
+                    f"2:00–2:30 PM → VIX {'above 18 = caution' if vix > 15 else 'stable = safe to hold'}, last entry window",
+                ],
+            }
+
+        return result
+
+    # ── WEEKLY — Real analysis from option chain ─────────────────────────
+
+    def get_weekly(self) -> dict:
+        """Compute real weekly outlook from current option chain data."""
+        live = self.get_live_data()
+        nifty = live.get("nifty", {})
+        bn = live.get("banknifty", {})
+
+        nifty_ltp = nifty.get("ltp", 0)
+        bn_ltp = bn.get("ltp", 0)
+        vix = nifty.get("vix", 0)
+
+        # Weekly ranges (estimate from current day range * 5)
+        n_spot = self.prices.get(self.spot_tokens.get("NIFTY"), {})
+        b_spot = self.prices.get(self.spot_tokens.get("BANKNIFTY"), {})
+        n_day_range = (n_spot.get("high", nifty_ltp) - n_spot.get("low", nifty_ltp)) or 200
+        b_day_range = (b_spot.get("high", bn_ltp) - b_spot.get("low", bn_ltp)) or 500
+
+        # Bias from PCR
+        n_bias = "BEARISH" if nifty.get("pcr", 1) < 0.8 else "BULLISH" if nifty.get("pcr", 1) > 1.2 else "SIDEWAYS"
+        b_bias = "BEARISH" if bn.get("pcr", 1) < 0.8 else "BULLISH" if bn.get("pcr", 1) > 1.2 else "SIDEWAYS"
+
+        # OI analysis from chains
+        oi_analysis = []
+        for idx in ["NIFTY", "BANKNIFTY"]:
+            chain = self.chains.get(idx, {})
+            big_ce, big_pe = find_big_walls(chain)
+            pcr = compute_pcr(chain)
+            total_ce = sum(s.get("ce_oi", 0) for s in chain.values())
+            total_pe = sum(s.get("pe_oi", 0) for s in chain.values())
+            max_pain = compute_max_pain(chain, self.prices.get(self.spot_tokens.get(idx), {}).get("ltp", 0))
+
+            big_ce_oi = chain.get(big_ce, {}).get("ce_oi", 0)
+            big_pe_oi = chain.get(big_pe, {}).get("pe_oi", 0)
+
+            oi_analysis.append(f"{idx}: {int(big_pe)} PE highest OI ({round(big_pe_oi/100000,1)}L) — key support")
+            oi_analysis.append(f"{idx}: {int(big_ce)} CE highest OI ({round(big_ce_oi/100000,1)}L) — resistance cap")
+
+        oi_analysis.append(f"NIFTY PCR: {nifty.get('pcr', 0)} — {'bearish tilt' if nifty.get('pcr', 0) < 0.85 else 'bullish tilt' if nifty.get('pcr', 0) > 1.15 else 'neutral zone'}")
+        oi_analysis.append(f"VIX: {vix} — {'HIGH caution' if vix > 18 else 'normal range, safe for buying' if vix < 16 else 'elevated, be careful'}")
+
+        today = datetime.now()
+        week_start = today - timedelta(days=today.weekday())
+        week_end = week_start + timedelta(days=4)
+
+        # Make-or-Break levels from big PE walls
+        n_mob = nifty.get("bigPutStrike", nifty_ltp - 200)
+        b_mob = bn.get("bigPutStrike", bn_ltp - 500)
+
+        return {
+            "week": f"{week_start.strftime('%d %b')} – {week_end.strftime('%d %b %Y')}",
+            "niftyBias": n_bias, "bnBias": b_bias,
+            "niftyRange": {"high": round(nifty_ltp + n_day_range * 2), "low": round(nifty_ltp - n_day_range * 2)},
+            "bnRange": {"high": round(bn_ltp + b_day_range * 2), "low": round(bn_ltp - b_day_range * 2)},
+            "oiAnalysis": oi_analysis,
+            "fii": "Check NSE FII/DII data for latest flow",
+            "dii": "Check NSE FII/DII data for latest flow",
+            "verdict": f"PCR-based: {'Bears dominating' if nifty.get('pcr', 1) < 0.8 else 'Bulls in control' if nifty.get('pcr', 1) > 1.2 else 'Tug of war — wait for direction'}",
+            "macro": [
+                f"VIX at {vix} — {'HIGH volatility week expected' if vix > 18 else 'normal volatility'}",
+                f"Nifty PCR {nifty.get('pcr', 0)} | BankNifty PCR {bn.get('pcr', 0)}",
+                "Check economic calendar for RBI/Fed/NFP events this week",
+            ],
+            "plan": [
+                {"day": "Monday", "col": "#0A84FF", "text": "Wait and watch — observe open + first 30 min before entry"},
+                {"day": "Tuesday", "col": "#0A84FF", "text": "Core trade window — look for clean signal with strong OI confirmation"},
+                {"day": "Wednesday", "col": "#30D158", "text": "Best momentum day — add to winning positions if trend clear"},
+                {"day": "Thursday", "col": "#FF453A", "text": "⚠️ Theta decay aggressive — NO option buying after 2 PM"},
+                {"day": "Friday", "col": "#FF9F0A", "text": "🚫 No new positions — weekend risk, exit all by 1 PM"},
+            ],
+            "niftyMoB": n_mob, "bnMoB": b_mob,
+        }
+
     # ── INITIAL DATA FETCH (REST API) ────────────────────────────────────
 
     def _fetch_initial_data(self):
@@ -582,12 +940,12 @@ class MarketEngine:
         oi_change = oi - prev_oi
         self.prev_oi[token] = oi
 
-        if abs(oi_change) > 500000:
+        if abs(oi_change) > 100000:  # 1L threshold (was 5L — too high)
             now = datetime.now().strftime("%I:%M %p")
             instrument = f"{info['index']} {int(info['strike'])} {info['opt_type']}"
             oi_change_lakhs = round(oi_change / 100000, 1)
             alert_type = "BIG WRITING" if oi_change > 0 else "BIG UNWINDING"
-            alert_level = "CRITICAL" if abs(oi_change) > 1000000 else "HIGH"
+            alert_level = "CRITICAL" if abs(oi_change) > 500000 else "HIGH" if abs(oi_change) > 200000 else "MEDIUM"
 
             signal = f"{'OI buildup' if oi_change > 0 else 'OI unwinding'} of {abs(oi_change_lakhs)}L contracts"
             if info["opt_type"] == "CE" and oi_change > 0:
