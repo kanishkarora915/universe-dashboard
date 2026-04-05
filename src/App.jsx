@@ -27,7 +27,8 @@ function App() {
 
     fetchStatus()
       .then((data) => {
-        setAuthenticated(data.authenticated && data.engine_running);
+        // Show dashboard if engine running OR cached data exists
+        setAuthenticated(data.authenticated || data.has_cached_data || data.engine_running);
         setChecking(false);
       })
       .catch(() => {

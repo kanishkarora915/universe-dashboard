@@ -156,9 +156,11 @@ async def callback(request: Request, request_token: str = Query(...), status: st
 
 @app.get("/api/status")
 async def get_status():
+    has_cache = get_cached("live") is not None
     return {
-        "authenticated": session["access_token"] is not None,
+        "authenticated": session["access_token"] is not None or has_cache,
         "engine_running": engine is not None and engine.running,
+        "has_cached_data": has_cache,
         "api_key": session["api_key"][:4] + "****" if session["api_key"] else None,
     }
 
