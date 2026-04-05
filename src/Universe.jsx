@@ -725,15 +725,92 @@ function WeeklyTab({ realData }) {
 
 // \u2500\u2500 TAB: UNUSUAL ACTIVITY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
-function UnusualTab({ unusualData }) {
+function UnusualTab({ unusualData, oiData }) {
   const alerts = unusualData && unusualData.length > 0 ? unusualData : [];
   const alertColor = { CRITICAL: RED, HIGH: ORANGE, MEDIUM: YELLOW };
+
+  // Aggregate OI flow from oiData
+  const fmtL = (n) => n ? `${(Math.abs(n) / 100000).toFixed(1)}L` : "0";
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+
+      {/* OI FLOW AGGREGATION — auto-updating */}
+      {oiData && ["nifty", "banknifty"].map(key => {
+        const d = oiData[key];
+        if (!d) return null;
+        const label = key === "nifty" ? "NIFTY" : "BANKNIFTY";
+        const ceNetOI = d.ceOIChangePos + d.ceOIChangeNeg;
+        const peNetOI = d.peOIChangePos + d.peOIChangeNeg;
+        const totalNet = ceNetOI + peNetOI;
+
+        return (
+          <Card key={key} style={{ background: "#0D0D15", border: `1px solid ${ACCENT}33` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <span style={{ color: ACCENT, fontWeight: 900, fontSize: 14 }}>{label} OI FLOW</span>
+              <span style={{ color: "#444", fontSize: 10 }}>LTP: {d.ltp?.toLocaleString("en-IN")} | {d.timestamp}</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 8 }}>
+              {/* CE Side */}
+              <div style={{ background: RED + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${RED}22` }}>
+                <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1, marginBottom: 6 }}>CALL STRIKES</div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                  <span style={{ color: GREEN, fontSize: 12, fontWeight: 700 }}>+OI: {fmtL(d.ceOIChangePos)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                  <span style={{ color: RED, fontSize: 12, fontWeight: 700 }}>-OI: {fmtL(d.ceOIChangeNeg)}</span>
+                </div>
+                <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 4, marginTop: 4 }}>
+                  <span style={{ color: ceNetOI >= 0 ? GREEN : RED, fontSize: 13, fontWeight: 900 }}>
+                    Net: {ceNetOI >= 0 ? "+" : ""}{fmtL(ceNetOI)}
+                  </span>
+                  <span style={{ color: "#555", fontSize: 10, marginLeft: 6 }}>
+                    {ceNetOI > 0 ? "CE writing = Bearish" : ceNetOI < 0 ? "CE unwinding = Bullish" : "Neutral"}
+                  </span>
+                </div>
+              </div>
+              {/* PE Side */}
+              <div style={{ background: GREEN + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${GREEN}22` }}>
+                <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1, marginBottom: 6 }}>PUT STRIKES</div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                  <span style={{ color: GREEN, fontSize: 12, fontWeight: 700 }}>+OI: {fmtL(d.peOIChangePos)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                  <span style={{ color: RED, fontSize: 12, fontWeight: 700 }}>-OI: {fmtL(d.peOIChangeNeg)}</span>
+                </div>
+                <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 4, marginTop: 4 }}>
+                  <span style={{ color: peNetOI >= 0 ? GREEN : RED, fontSize: 13, fontWeight: 900 }}>
+                    Net: {peNetOI >= 0 ? "+" : ""}{fmtL(peNetOI)}
+                  </span>
+                  <span style={{ color: "#555", fontSize: 10, marginLeft: 6 }}>
+                    {peNetOI > 0 ? "PE writing = Bullish" : peNetOI < 0 ? "PE unwinding = Bearish" : "Neutral"}
+                  </span>
+                </div>
+              </div>
+              {/* Net verdict */}
+              <div style={{ background: PURPLE + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${PURPLE}22`, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center" }}>
+                <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1, marginBottom: 6 }}>NET OI VERDICT</div>
+                <div style={{ color: totalNet >= 0 ? GREEN : RED, fontSize: 18, fontWeight: 900 }}>
+                  {totalNet >= 0 ? "+" : ""}{fmtL(totalNet)}
+                </div>
+                <div style={{ color: PURPLE, fontSize: 11, fontWeight: 700, marginTop: 4 }}>
+                  {ceNetOI > 0 && peNetOI > 0 ? "Range Bound (Both writing)" :
+                   ceNetOI > 0 && peNetOI <= 0 ? "BEARISH (CE write + PE unwind)" :
+                   ceNetOI <= 0 && peNetOI > 0 ? "BULLISH (CE unwind + PE write)" :
+                   "Directional (Both unwinding)"}
+                </div>
+                <div style={{ color: "#444", fontSize: 10, marginTop: 4 }}>PCR: {d.pcr}</div>
+              </div>
+            </div>
+          </Card>
+        );
+      })}
+
+      {/* Alerts Header */}
       <Card style={{ background: RED + "0A", border: `1px solid ${RED}33` }}>
-        <div style={{ color: RED, fontWeight: 700, fontSize: 13, marginBottom: 4 }}>\uD83D\uDEA8 UNUSUAL ACTIVITY MONITOR</div>
+        <div style={{ color: RED, fontWeight: 700, fontSize: 13, marginBottom: 4 }}>LIVE OI CHANGE ALERTS</div>
         <div style={{ color: "#555", fontSize: 11, lineHeight: 1.6 }}>
-          Triggers: Volume {">"} 3x avg \u00B7 OI Change {">"} 5L \u00B7 Premium {">"} 30% swing \u00B7 PCR shift {">"} 0.15 \u00B7 VIX spike {">"} 5% \u00B7 GEX Flip
+          Real-time alerts when OI change {">"} 1L on any strike. Auto-classified: Writing / Buying / Short Covering / Long Unwinding
         </div>
       </Card>
       {alerts.length === 0 && (
@@ -838,7 +915,7 @@ export default function Universe({ onLogout }) {
       case "intraday":return <IntradayTab realData={intraday} />;
       case "nextday": return <NextDayTab realData={nextday} />;
       case "weekly":  return <WeeklyTab realData={weekly} />;
-      case "unusual": return <UnusualTab unusualData={unusual} />;
+      case "unusual": return <UnusualTab unusualData={unusual} oiData={oiSummary} />;
       case "oichange":return <OIChangeTab oiData={oiSummary} />;
       case "pnl":     return <PnLTracker signals={signals} />;
       case "prompt":  return <PromptTab />;
