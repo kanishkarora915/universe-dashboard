@@ -30,6 +30,30 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "")  # Set on Render, e.g. https://univ
 # Build path for static files
 DIST_DIR = Path(__file__).parent.parent / "dist"
 
+# ── Data cache (persists across sessions) ────────────────────────────────
+
+CACHE_FILE = Path(__file__).parent / "data_cache.json"
+
+def load_cache() -> dict:
+    try:
+        if CACHE_FILE.exists():
+            return json.loads(CACHE_FILE.read_text())
+    except Exception:
+        pass
+    return {}
+
+def save_cache(key: str, data):
+    try:
+        cache = load_cache()
+        cache[key] = data
+        CACHE_FILE.write_text(json.dumps(cache))
+    except Exception:
+        pass
+
+def get_cached(key: str):
+    cache = load_cache()
+    return cache.get(key)
+
 # ── Global state ─────────────────────────────────────────────────────────
 
 session = {
@@ -151,18 +175,30 @@ async def logout():
 
 # ── Data Routes ──────────────────────────────────────────────────────────
 
+def _get_or_cache(key, fetcher):
+    """Get live data from engine, cache it. If engine down, return cached."""
+    if engine and engine.running:
+        try:
+            data = fetcher()
+            save_cache(key, data)
+            return data
+        except Exception as e:
+            print(f"[CACHE] Fetch error for {key}: {e}")
+    # Engine not running — serve last cached data
+    cached = get_cached(key)
+    if cached:
+        return cached
+    return JSONResponse({"error": "No data available. Login to Kite."}, status_code=503)
+
+
 @app.get("/api/live")
 async def live_data():
-    if not engine or not engine.running:
-        return JSONResponse({"error": "Engine not running"}, status_code=503)
-    return engine.get_live_data()
+    return _get_or_cache("live", lambda: engine.get_live_data())
 
 
 @app.get("/api/option-chain/{index}")
 async def option_chain(index: str):
-    if not engine or not engine.running:
-        return JSONResponse({"error": "Engine not running"}, status_code=503)
-    return engine.get_option_chain(index.upper())
+    return _get_or_cache(f"chain_{index}", lambda: engine.get_option_chain(index.upper()))
 
 
 @app.get("/api/historical/{token}/{interval}")
@@ -174,49 +210,32 @@ async def historical(token: str, interval: str = "5minute", days: int = 5):
 
 @app.get("/api/unusual")
 async def unusual():
-    if not engine or not engine.running:
-        return JSONResponse({"error": "Engine not running"}, status_code=503)
-    return engine.get_unusual()
+    return _get_or_cache("unusual", lambda: engine.get_unusual())
 
 
 @app.get("/api/oi-summary")
 async def oi_summary():
-    """Returns aggregated OI change data for OI Change tab."""
-    if not engine or not engine.running:
-        return JSONResponse({"error": "Engine not running"}, status_code=503)
-    return engine.get_oi_change_summary()
+    return _get_or_cache("oi_summary", lambda: engine.get_oi_change_summary())
 
 
 @app.get("/api/signals")
 async def signals():
-    """Returns auto-generated signals with 9-point scoring."""
-    if not engine or not engine.running:
-        return JSONResponse({"error": "Engine not running"}, status_code=503)
-    return engine.get_signals()
+    return _get_or_cache("signals", lambda: engine.get_signals())
 
 
 @app.get("/api/intraday")
 async def intraday():
-    """Returns real-time computed technical indicators for intraday tab."""
-    if not engine or not engine.running:
-        return JSONResponse({"error": "Engine not running"}, status_code=503)
-    return engine.get_intraday()
+    return _get_or_cache("intraday", lambda: engine.get_intraday())
 
 
 @app.get("/api/nextday")
 async def nextday():
-    """Returns real support/resistance/walls/strategy for next day tab."""
-    if not engine or not engine.running:
-        return JSONResponse({"error": "Engine not running"}, status_code=503)
-    return engine.get_nextday()
+    return _get_or_cache("nextday", lambda: engine.get_nextday())
 
 
 @app.get("/api/weekly")
 async def weekly():
-    """Returns real weekly analysis from option chain data."""
-    if not engine or not engine.running:
-        return JSONResponse({"error": "Engine not running"}, status_code=503)
-    return engine.get_weekly()
+    return _get_or_cache("weekly", lambda: engine.get_weekly())
 
 
 # ── WebSocket Route ──────────────────────────────────────────────────────
