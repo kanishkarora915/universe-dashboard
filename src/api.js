@@ -75,3 +75,15 @@ export async function fetchWeekly() {
   if (!res.ok) return null;
   return res.json();
 }
+
+export async function fetchSellerSummary() {
+  const res = await fetch("/api/seller-summary");
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function fetchTradeAnalysis() {
+  const res = await fetch("/api/trade-analysis");
+  if (!res.ok) return null;
+  return res.json();
+}

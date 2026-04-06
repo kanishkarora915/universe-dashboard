@@ -21,6 +21,8 @@ const TABS = [
   { id: "nextday", icon: "\uD83D\uDD2D", label: "Next Day" },
   { id: "weekly",  icon: "\uD83D\uDCC5", label: "Weekly" },
   { id: "unusual", icon: "\uD83D\uDEA8", label: "Unusual Activity" },
+  { id: "sellers", icon: "\uD83E\uDD88", label: "Sellers" },
+  { id: "tradeai", icon: "\uD83E\uDDE0", label: "Trade AI" },
   { id: "oichange",icon: "\uD83D\uDCC8", label: "OI Change" },
   { id: "pnl",     icon: "\uD83D\uDCB0", label: "PnL Tracker" },
   { id: "prompt",  icon: "\uD83E\uDD16", label: "Claude Prompt" },
@@ -848,6 +850,294 @@ function UnusualTab({ unusualData, oiData }) {
   );
 }
 
+// ── TAB: SELLERS ─────────────────────────────────────────────────────
+
+function SellersTab({ data }) {
+  const fmtL = (n) => n ? `${(Math.abs(n) / 100000).toFixed(1)}L` : "0";
+  const actColor = { WRITING: ORANGE, SHORT_COVER: PURPLE, BUYING: GREEN, LONG_UNWIND: RED, NEUTRAL: "#444" };
+  const actLabel = { WRITING: "Writing", SHORT_COVER: "Short Cover", BUYING: "Buying", LONG_UNWIND: "Long Unwind", NEUTRAL: "Neutral" };
+
+  if (!data) return <div style={{ textAlign: "center", padding: 60, color: "#555" }}>Loading seller data...</div>;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {["nifty", "banknifty"].map(key => {
+        const d = data[key];
+        if (!d) return null;
+        const label = key === "nifty" ? "NIFTY" : "BANKNIFTY";
+        const biasColor = d.sellerBias === "BULLISH" ? GREEN : d.sellerBias === "BEARISH" ? RED : YELLOW;
+
+        return (
+          <div key={key} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {/* SELLER FLOW SUMMARY CARD */}
+            <Card style={{ background: "#0D0D15", border: `1px solid ${ORANGE}33` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <span style={{ color: ORANGE, fontWeight: 900, fontSize: 14 }}>{label} SELLER FLOW</span>
+                <span style={{ color: "#444", fontSize: 10 }}>LTP: {d.ltp?.toLocaleString("en-IN")} | {d.timestamp}</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 8 }}>
+                {/* CE Writers */}
+                <div style={{ background: RED + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${RED}22` }}>
+                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1, marginBottom: 8 }}>CE SELLERS</div>
+                  <div style={{ marginBottom: 4 }}>
+                    <span style={{ color: ORANGE, fontSize: 12, fontWeight: 700 }}>Writing: {fmtL(d.ceWritingOI)}</span>
+                  </div>
+                  <div style={{ marginBottom: 4 }}>
+                    <span style={{ color: PURPLE, fontSize: 12, fontWeight: 700 }}>Short Cover: {fmtL(d.ceShortCoverOI)}</span>
+                  </div>
+                  <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 4, marginTop: 4 }}>
+                    <span style={{ color: "#888", fontSize: 10 }}>Net: </span>
+                    <span style={{ color: d.ceWritingOI > d.ceShortCoverOI ? ORANGE : PURPLE, fontSize: 13, fontWeight: 900 }}>
+                      {d.ceWritingOI > d.ceShortCoverOI ? "Writers Adding" : "Covering"}
+                    </span>
+                  </div>
+                  <div style={{ color: RED, fontSize: 10, marginTop: 2 }}>CE write = Resistance</div>
+                </div>
+                {/* PE Writers */}
+                <div style={{ background: GREEN + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${GREEN}22` }}>
+                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1, marginBottom: 8 }}>PE SELLERS</div>
+                  <div style={{ marginBottom: 4 }}>
+                    <span style={{ color: ORANGE, fontSize: 12, fontWeight: 700 }}>Writing: {fmtL(d.peWritingOI)}</span>
+                  </div>
+                  <div style={{ marginBottom: 4 }}>
+                    <span style={{ color: PURPLE, fontSize: 12, fontWeight: 700 }}>Short Cover: {fmtL(d.peShortCoverOI)}</span>
+                  </div>
+                  <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 4, marginTop: 4 }}>
+                    <span style={{ color: "#888", fontSize: 10 }}>Net: </span>
+                    <span style={{ color: d.peWritingOI > d.peShortCoverOI ? ORANGE : PURPLE, fontSize: 13, fontWeight: 900 }}>
+                      {d.peWritingOI > d.peShortCoverOI ? "Writers Adding" : "Covering"}
+                    </span>
+                  </div>
+                  <div style={{ color: GREEN, fontSize: 10, marginTop: 2 }}>PE write = Support</div>
+                </div>
+                {/* SELLER VERDICT */}
+                <div style={{ background: biasColor + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${biasColor}22`, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center" }}>
+                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1, marginBottom: 6 }}>SELLER VERDICT</div>
+                  <div style={{ color: biasColor, fontSize: 18, fontWeight: 900 }}>{d.sellerBias}</div>
+                  <div style={{ color: "#666", fontSize: 10, marginTop: 6, textAlign: "center" }}>
+                    CE Write: {fmtL(d.ceWritingOI)} | PE Write: {fmtL(d.peWritingOI)}
+                  </div>
+                  <div style={{ color: "#555", fontSize: 10, marginTop: 4 }}>
+                    Net Seller OI: {fmtL(d.netSellerOI)}
+                  </div>
+                </div>
+              </div>
+            </Card>
+
+            {/* PER-STRIKE SELLER TABLE */}
+            <Card style={{ background: "#0D0D15", border: `1px solid ${BORDER}` }}>
+              <div style={{ color: ORANGE, fontWeight: 700, fontSize: 13, marginBottom: 10 }}>{label} STRIKE-WISE SELLER ACTIVITY</div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ borderBottom: `1px solid ${BORDER}` }}>
+                      <th style={{ padding: "6px 8px", color: "#555", textAlign: "left", fontWeight: 700 }}>STRIKE</th>
+                      <th style={{ padding: "6px 8px", color: RED, textAlign: "right", fontWeight: 700 }}>CE OI Chg</th>
+                      <th style={{ padding: "6px 8px", color: RED, textAlign: "right", fontWeight: 700 }}>CE Prem</th>
+                      <th style={{ padding: "6px 8px", color: RED, textAlign: "center", fontWeight: 700 }}>CE Activity</th>
+                      <th style={{ padding: "6px 8px", color: GREEN, textAlign: "right", fontWeight: 700 }}>PE OI Chg</th>
+                      <th style={{ padding: "6px 8px", color: GREEN, textAlign: "right", fontWeight: 700 }}>PE Prem</th>
+                      <th style={{ padding: "6px 8px", color: GREEN, textAlign: "center", fontWeight: 700 }}>PE Activity</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {d.strikes?.map((st, i) => (
+                      <tr key={i} style={{
+                        borderBottom: `1px solid ${BORDER}44`,
+                        background: st.isATM ? ACCENT + "11" : "transparent",
+                      }}>
+                        <td style={{ padding: "5px 8px", color: st.isATM ? ACCENT : "#ccc", fontWeight: st.isATM ? 900 : 400 }}>
+                          {st.strike} {st.isATM ? "ATM" : ""}
+                        </td>
+                        <td style={{ padding: "5px 8px", textAlign: "right", color: st.ceOIChange > 0 ? GREEN : st.ceOIChange < 0 ? RED : "#555", fontWeight: 700 }}>
+                          {st.ceOIChange > 0 ? "+" : ""}{fmtL(st.ceOIChange)}
+                        </td>
+                        <td style={{ padding: "5px 8px", textAlign: "right", color: st.cePremChange > 0 ? GREEN : st.cePremChange < 0 ? RED : "#555" }}>
+                          {st.cePremChange > 0 ? "+" : ""}{st.cePremChange?.toFixed(1)}
+                        </td>
+                        <td style={{ padding: "5px 8px", textAlign: "center" }}>
+                          <span style={{
+                            background: actColor[st.ceActivity] + "22",
+                            color: actColor[st.ceActivity],
+                            padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700,
+                          }}>{actLabel[st.ceActivity]}</span>
+                        </td>
+                        <td style={{ padding: "5px 8px", textAlign: "right", color: st.peOIChange > 0 ? GREEN : st.peOIChange < 0 ? RED : "#555", fontWeight: 700 }}>
+                          {st.peOIChange > 0 ? "+" : ""}{fmtL(st.peOIChange)}
+                        </td>
+                        <td style={{ padding: "5px 8px", textAlign: "right", color: st.pePremChange > 0 ? GREEN : st.pePremChange < 0 ? RED : "#555" }}>
+                          {st.pePremChange > 0 ? "+" : ""}{st.pePremChange?.toFixed(1)}
+                        </td>
+                        <td style={{ padding: "5px 8px", textAlign: "center" }}>
+                          <span style={{
+                            background: actColor[st.peActivity] + "22",
+                            color: actColor[st.peActivity],
+                            padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700,
+                          }}>{actLabel[st.peActivity]}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {(!d.strikes || d.strikes.length === 0) && (
+                <div style={{ textAlign: "center", padding: 20, color: "#555", fontSize: 12 }}>No strike activity yet. Data will appear when market is active.</div>
+              )}
+            </Card>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── TAB: TRADE AI ───────────────────────────────────────────────────
+
+function TradeAITab({ data }) {
+  const fmtL = (n) => n ? `${(Math.abs(n) / 100000).toFixed(1)}L` : "0";
+
+  if (!data) return <div style={{ textAlign: "center", padding: 60, color: "#555" }}>Loading trade analysis...</div>;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* Header */}
+      <Card style={{ background: ACCENT + "0A", border: `1px solid ${ACCENT}33` }}>
+        <div style={{ color: ACCENT, fontWeight: 700, fontSize: 13, marginBottom: 4 }}>TRADE AI - SMART MONEY ANALYSIS</div>
+        <div style={{ color: "#555", fontSize: 11, lineHeight: 1.6 }}>
+          Combines Unusual Activity + Seller OI Flow to identify high-probability trade setups. Sellers use 20x margin capital = Smart Money signal.
+        </div>
+      </Card>
+
+      {["nifty", "banknifty"].map(key => {
+        const d = data[key];
+        if (!d) return null;
+        const label = key === "nifty" ? "NIFTY" : "BANKNIFTY";
+        const biasColor = d.sellerBias === "BULLISH" ? GREEN : d.sellerBias === "BEARISH" ? RED : YELLOW;
+
+        return (
+          <div key={key} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {/* MARKET STRUCTURE */}
+            <Card style={{ background: "#0D0D15", border: `1px solid ${biasColor}33` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ color: biasColor, fontWeight: 900, fontSize: 16 }}>{label}</span>
+                  <span style={{
+                    background: biasColor + "22", color: biasColor,
+                    padding: "3px 12px", borderRadius: 6, fontSize: 12, fontWeight: 900,
+                  }}>SELLER BIAS: {d.sellerBias}</span>
+                </div>
+                <span style={{ color: "#444", fontSize: 11 }}>LTP: {d.ltp?.toLocaleString("en-IN")} | ATM: {d.atm} | {d.timestamp}</span>
+              </div>
+
+              {/* Seller Stats Grid */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 12 }}>
+                <div style={{ background: ORANGE + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${ORANGE}22` }}>
+                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1 }}>CE WRITERS</div>
+                  <div style={{ color: ORANGE, fontSize: 16, fontWeight: 900, marginTop: 4 }}>{fmtL(d.sellerStats?.ceWriting)}</div>
+                  <div style={{ color: RED, fontSize: 9, marginTop: 2 }}>= Resistance building</div>
+                </div>
+                <div style={{ background: ORANGE + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${ORANGE}22` }}>
+                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1 }}>PE WRITERS</div>
+                  <div style={{ color: ORANGE, fontSize: 16, fontWeight: 900, marginTop: 4 }}>{fmtL(d.sellerStats?.peWriting)}</div>
+                  <div style={{ color: GREEN, fontSize: 9, marginTop: 2 }}>= Support building</div>
+                </div>
+                <div style={{ background: PURPLE + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${PURPLE}22` }}>
+                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1 }}>SHORT COVERING</div>
+                  <div style={{ color: PURPLE, fontSize: 14, fontWeight: 900, marginTop: 4 }}>
+                    CE: {fmtL(d.sellerStats?.ceShortCover)} | PE: {fmtL(d.sellerStats?.peShortCover)}
+                  </div>
+                  <div style={{ color: PURPLE, fontSize: 9, marginTop: 2 }}>= Sellers exiting</div>
+                </div>
+              </div>
+
+              {/* Key Levels */}
+              {d.keyLevels && (d.keyLevels.resistance?.length > 0 || d.keyLevels.support?.length > 0) && (
+                <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+                  {d.keyLevels.resistance?.length > 0 && (
+                    <div style={{ flex: 1, background: RED + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${RED}22` }}>
+                      <div style={{ color: RED, fontSize: 10, fontWeight: 700, marginBottom: 4 }}>RESISTANCE (CE Writing)</div>
+                      <div style={{ color: "#fff", fontSize: 14, fontWeight: 900 }}>{d.keyLevels.resistance.join(" > ")}</div>
+                    </div>
+                  )}
+                  {d.keyLevels.support?.length > 0 && (
+                    <div style={{ flex: 1, background: GREEN + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${GREEN}22` }}>
+                      <div style={{ color: GREEN, fontSize: 10, fontWeight: 700, marginBottom: 4 }}>SUPPORT (PE Writing)</div>
+                      <div style={{ color: "#fff", fontSize: 14, fontWeight: 900 }}>{d.keyLevels.support.join(" > ")}</div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </Card>
+
+            {/* REASONS */}
+            {d.reasons?.length > 0 && (
+              <Card style={{ background: "#0D0D15", border: `1px solid ${BORDER}` }}>
+                <div style={{ color: YELLOW, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>WHY? - ANALYSIS REASONS</div>
+                {d.reasons.map((r, i) => (
+                  <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "flex-start" }}>
+                    <span style={{ color: YELLOW, fontSize: 11, flexShrink: 0 }}>{i + 1}.</span>
+                    <span style={{ color: "#ccc", fontSize: 11, lineHeight: 1.5 }}>{r}</span>
+                  </div>
+                ))}
+              </Card>
+            )}
+
+            {/* TRADE RECOMMENDATIONS */}
+            {d.recommendations?.length > 0 && (
+              <Card style={{ background: ACCENT + "08", border: `1px solid ${ACCENT}44` }}>
+                <div style={{ color: ACCENT, fontWeight: 900, fontSize: 14, marginBottom: 10 }}>TRADE RECOMMENDATIONS</div>
+                {d.recommendations.map((rec, i) => {
+                  const confColor = rec.confidence === "HIGH" ? GREEN : rec.confidence === "MEDIUM" ? YELLOW : "#555";
+                  return (
+                    <div key={i} style={{
+                      background: "#111118", borderRadius: 8, padding: "12px 14px", marginBottom: 8,
+                      border: `1px solid ${confColor}33`,
+                    }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{
+                            background: confColor + "22", color: confColor,
+                            padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 900,
+                          }}>{rec.action}</span>
+                          <span style={{ color: "#fff", fontSize: 14, fontWeight: 900 }}>@ {rec.strike}</span>
+                        </div>
+                        <span style={{
+                          background: confColor + "22", color: confColor,
+                          padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700,
+                        }}>{rec.confidence}</span>
+                      </div>
+                      <div style={{ color: "#999", fontSize: 11, lineHeight: 1.5 }}>{rec.reason}</div>
+                    </div>
+                  );
+                })}
+              </Card>
+            )}
+
+            {/* RECENT UNUSUAL ALERTS */}
+            {d.recentAlerts?.length > 0 && (
+              <Card style={{ background: "#0D0D15", border: `1px solid ${BORDER}` }}>
+                <div style={{ color: RED, fontWeight: 700, fontSize: 12, marginBottom: 8 }}>RECENT UNUSUAL ACTIVITY - {label}</div>
+                {d.recentAlerts.map((u, i) => (
+                  <div key={i} style={{
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                    padding: "6px 0", borderBottom: i < d.recentAlerts.length - 1 ? `1px solid ${BORDER}44` : "none",
+                  }}>
+                    <div>
+                      <span style={{ color: ORANGE, fontSize: 11, fontWeight: 700 }}>{u.type}</span>
+                      <span style={{ color: "#888", fontSize: 11 }}> - {u.instrument}</span>
+                    </div>
+                    <span style={{ color: "#666", fontSize: 10 }}>{u.oiChange}</span>
+                  </div>
+                ))}
+              </Card>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // \u2500\u2500 TAB: CLAUDE PROMPT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 function PromptTab() {
@@ -894,7 +1184,7 @@ function PromptTab() {
 export default function Universe({ onLogout }) {
   const [activeTab, setActiveTab] = useState("live");
   const [time, setTime] = useState(new Date());
-  const { live, unusual, intraday, nextday, weekly, signals, oiSummary, connected } = useMarketData();
+  const { live, unusual, intraday, nextday, weekly, signals, oiSummary, sellerData, tradeAnalysis, connected } = useMarketData();
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
@@ -916,6 +1206,8 @@ export default function Universe({ onLogout }) {
       case "nextday": return <NextDayTab realData={nextday} />;
       case "weekly":  return <WeeklyTab realData={weekly} />;
       case "unusual": return <UnusualTab unusualData={unusual} oiData={oiSummary} />;
+      case "sellers": return <SellersTab data={sellerData} />;
+      case "tradeai": return <TradeAITab data={tradeAnalysis} />;
       case "oichange":return <OIChangeTab oiData={oiSummary} />;
       case "pnl":     return <PnLTracker signals={signals} />;
       case "prompt":  return <PromptTab />;

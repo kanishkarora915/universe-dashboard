@@ -205,6 +205,7 @@ class MarketEngine:
         self.spot_prev_close = {}
         self.prev_oi = {}
         self.initial_oi = {}  # Stores OI at market open — never overwritten
+        self.initial_ltp = {}  # Stores LTP at market open — for seller classification
         self.option_symbols = {}   # {token: "NFO:SYMBOL"} for quote fetching
 
         # ── Expiry tracking ──
@@ -398,6 +399,253 @@ class MarketEngine:
                 "netOIChange": (total_ce_oi_change_pos + total_ce_oi_change_neg +
                                 total_pe_oi_change_pos + total_pe_oi_change_neg),
                 "pcr": round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 0,
+                "timestamp": ist_now().strftime("%I:%M:%S %p IST"),
+            }
+
+        return result
+
+    # ── SELLER ACTIVITY SUMMARY ───────────────────────────────────────
+
+    def get_seller_summary(self) -> dict:
+        """Per-strike seller (writer) activity: Writing / Short Covering / Buying / Long Unwinding."""
+        result = {}
+        for index in ["NIFTY", "BANKNIFTY"]:
+            chain = self.chains.get(index, {})
+            spot_token = self.spot_tokens.get(index)
+            ltp = self.prices.get(spot_token, {}).get("ltp", 0)
+            cfg = INDEX_CONFIG[index]
+            atm = round(ltp / cfg["strike_gap"]) * cfg["strike_gap"] if ltp > 0 else 0
+
+            strikes_data = []
+            # Seller aggregates
+            total_ce_writing = 0
+            total_pe_writing = 0
+            total_ce_shortcover = 0
+            total_pe_shortcover = 0
+            # Buyer aggregates
+            total_ce_buying = 0
+            total_pe_buying = 0
+            total_ce_longunwind = 0
+            total_pe_longunwind = 0
+
+            for strike in sorted(chain.keys()):
+                data = chain[strike]
+                ce_oi = data.get("ce_oi", 0)
+                pe_oi = data.get("pe_oi", 0)
+                ce_ltp = data.get("ce_ltp", 0)
+                pe_ltp = data.get("pe_ltp", 0)
+
+                # Find tokens
+                ce_token = None
+                pe_token = None
+                for tok, info in self.token_to_info.items():
+                    if info["index"] == index and info["strike"] == strike:
+                        if info["opt_type"] == "CE":
+                            ce_token = tok
+                        else:
+                            pe_token = tok
+
+                # OI change from open
+                ce_oi_initial = self.initial_oi.get(ce_token, ce_oi) if ce_token else ce_oi
+                pe_oi_initial = self.initial_oi.get(pe_token, pe_oi) if pe_token else pe_oi
+                ce_oi_change = ce_oi - ce_oi_initial
+                pe_oi_change = pe_oi - pe_oi_initial
+
+                # Premium change from open
+                ce_ltp_initial = self.initial_ltp.get(ce_token, ce_ltp) if ce_token else ce_ltp
+                pe_ltp_initial = self.initial_ltp.get(pe_token, pe_ltp) if pe_token else pe_ltp
+                ce_prem_change = round(ce_ltp - ce_ltp_initial, 2)
+                pe_prem_change = round(pe_ltp - pe_ltp_initial, 2)
+
+                # Classify CE activity
+                ce_activity = "NEUTRAL"
+                if ce_oi_change > 0 and ce_prem_change <= 0:
+                    ce_activity = "WRITING"
+                    total_ce_writing += ce_oi_change
+                elif ce_oi_change > 0 and ce_prem_change > 0:
+                    ce_activity = "BUYING"
+                    total_ce_buying += ce_oi_change
+                elif ce_oi_change < 0 and ce_prem_change >= 0:
+                    ce_activity = "SHORT_COVER"
+                    total_ce_shortcover += abs(ce_oi_change)
+                elif ce_oi_change < 0 and ce_prem_change < 0:
+                    ce_activity = "LONG_UNWIND"
+                    total_ce_longunwind += abs(ce_oi_change)
+
+                # Classify PE activity
+                pe_activity = "NEUTRAL"
+                if pe_oi_change > 0 and pe_prem_change <= 0:
+                    pe_activity = "WRITING"
+                    total_pe_writing += pe_oi_change
+                elif pe_oi_change > 0 and pe_prem_change > 0:
+                    pe_activity = "BUYING"
+                    total_pe_buying += pe_oi_change
+                elif pe_oi_change < 0 and pe_prem_change >= 0:
+                    pe_activity = "SHORT_COVER"
+                    total_pe_shortcover += abs(pe_oi_change)
+                elif pe_oi_change < 0 and pe_prem_change < 0:
+                    pe_activity = "LONG_UNWIND"
+                    total_pe_longunwind += abs(pe_oi_change)
+
+                # Only include strikes with non-zero activity
+                if ce_oi_change != 0 or pe_oi_change != 0:
+                    strikes_data.append({
+                        "strike": strike,
+                        "isATM": strike == atm,
+                        "ceOI": ce_oi,
+                        "peOI": pe_oi,
+                        "ceOIChange": ce_oi_change,
+                        "peOIChange": pe_oi_change,
+                        "ceLTP": ce_ltp,
+                        "peLTP": pe_ltp,
+                        "cePremChange": ce_prem_change,
+                        "pePremChange": pe_prem_change,
+                        "ceActivity": ce_activity,
+                        "peActivity": pe_activity,
+                    })
+
+            # Seller bias
+            net_seller_oi = total_ce_writing + total_pe_writing
+            if total_ce_writing > total_pe_writing * 1.2:
+                seller_bias = "BEARISH"
+            elif total_pe_writing > total_ce_writing * 1.2:
+                seller_bias = "BULLISH"
+            else:
+                seller_bias = "NEUTRAL"
+
+            result[index.lower()] = {
+                "strikes": strikes_data,
+                "ltp": ltp,
+                "atm": atm,
+                # Seller metrics
+                "ceWritingOI": total_ce_writing,
+                "peWritingOI": total_pe_writing,
+                "ceShortCoverOI": total_ce_shortcover,
+                "peShortCoverOI": total_pe_shortcover,
+                "netSellerOI": net_seller_oi,
+                "sellerBias": seller_bias,
+                # Buyer metrics
+                "ceBuyingOI": total_ce_buying,
+                "peBuyingOI": total_pe_buying,
+                "ceLongUnwindOI": total_ce_longunwind,
+                "peLongUnwindOI": total_pe_longunwind,
+                "timestamp": ist_now().strftime("%I:%M:%S %p IST"),
+            }
+
+        return result
+
+    # ── TRADE ANALYSIS (combines unusual + seller data) ───────────────
+
+    def get_trade_analysis(self) -> dict:
+        """Combines seller activity + unusual alerts to generate trade recommendations."""
+        seller = self.get_seller_summary()
+        unusual = self.get_unusual()
+        result = {}
+
+        for index in ["NIFTY", "BANKNIFTY"]:
+            key = index.lower()
+            s = seller.get(key, {})
+            ltp = s.get("ltp", 0)
+            atm = s.get("atm", 0)
+            cfg = INDEX_CONFIG[index]
+
+            ce_writing = s.get("ceWritingOI", 0)
+            pe_writing = s.get("peWritingOI", 0)
+            ce_sc = s.get("ceShortCoverOI", 0)
+            pe_sc = s.get("peShortCoverOI", 0)
+            ce_buying = s.get("ceBuyingOI", 0)
+            pe_buying = s.get("peBuyingOI", 0)
+            bias = s.get("sellerBias", "NEUTRAL")
+
+            # Find max writing strikes (resistance/support)
+            strikes = s.get("strikes", [])
+            ce_writing_strikes = sorted(
+                [st for st in strikes if st["ceActivity"] == "WRITING"],
+                key=lambda x: x["ceOIChange"], reverse=True
+            )[:3]
+            pe_writing_strikes = sorted(
+                [st for st in strikes if st["peActivity"] == "WRITING"],
+                key=lambda x: x["peOIChange"], reverse=True
+            )[:3]
+
+            # Filter unusual alerts for this index
+            idx_unusual = [u for u in unusual if index in u.get("instrument", "")]
+            writing_alerts = [u for u in idx_unusual if u.get("type") in ["BIG WRITING"]]
+            sc_alerts = [u for u in idx_unusual if u.get("type") in ["SHORT COVERING"]]
+
+            # Build reasons
+            reasons = []
+            recommendations = []
+
+            # Determine market structure
+            if bias == "BEARISH":
+                reasons.append(f"CE writers dominating: {ce_writing/100000:.1f}L vs PE writers: {pe_writing/100000:.1f}L")
+                if ce_writing_strikes:
+                    resistance = ce_writing_strikes[0]["strike"]
+                    reasons.append(f"Heavy CE writing at {int(resistance)} = strong resistance")
+                    recommendations.append({
+                        "action": "SELL CE" if ltp < resistance else "BUY PE",
+                        "strike": int(resistance),
+                        "reason": f"Sellers capping upside at {int(resistance)}. CE writing OI: {ce_writing_strikes[0]['ceOIChange']/100000:.1f}L",
+                        "confidence": "HIGH" if ce_writing > pe_writing * 2 else "MEDIUM",
+                    })
+                if pe_sc > 0:
+                    reasons.append(f"PE short covering: {pe_sc/100000:.1f}L = support weakening")
+
+            elif bias == "BULLISH":
+                reasons.append(f"PE writers dominating: {pe_writing/100000:.1f}L vs CE writers: {ce_writing/100000:.1f}L")
+                if pe_writing_strikes:
+                    support = pe_writing_strikes[0]["strike"]
+                    reasons.append(f"Heavy PE writing at {int(support)} = strong support")
+                    recommendations.append({
+                        "action": "BUY CE" if ltp > support else "SELL PE",
+                        "strike": int(support),
+                        "reason": f"Sellers defending support at {int(support)}. PE writing OI: {pe_writing_strikes[0]['peOIChange']/100000:.1f}L",
+                        "confidence": "HIGH" if pe_writing > ce_writing * 2 else "MEDIUM",
+                    })
+                if ce_sc > 0:
+                    reasons.append(f"CE short covering: {ce_sc/100000:.1f}L = resistance weakening")
+
+            else:
+                reasons.append(f"CE writing: {ce_writing/100000:.1f}L, PE writing: {pe_writing/100000:.1f}L — balanced")
+                if ce_writing_strikes and pe_writing_strikes:
+                    resistance = ce_writing_strikes[0]["strike"]
+                    support = pe_writing_strikes[0]["strike"]
+                    reasons.append(f"Range: {int(support)}-{int(resistance)}")
+                    recommendations.append({
+                        "action": "SELL STRADDLE/STRANGLE",
+                        "strike": int(atm),
+                        "reason": f"Range bound between {int(support)}-{int(resistance)}. Both CE & PE sellers active.",
+                        "confidence": "MEDIUM",
+                    })
+
+            # Add unusual alert context
+            for wa in writing_alerts[:2]:
+                reasons.append(f"Unusual: {wa['type']} on {wa['instrument']} ({wa['oiChange']})")
+
+            # Identify key levels
+            key_levels = {}
+            if ce_writing_strikes:
+                key_levels["resistance"] = [int(st["strike"]) for st in ce_writing_strikes]
+            if pe_writing_strikes:
+                key_levels["support"] = [int(st["strike"]) for st in pe_writing_strikes]
+
+            result[key] = {
+                "ltp": ltp,
+                "atm": int(atm),
+                "sellerBias": bias,
+                "reasons": reasons,
+                "recommendations": recommendations,
+                "keyLevels": key_levels,
+                "sellerStats": {
+                    "ceWriting": ce_writing,
+                    "peWriting": pe_writing,
+                    "ceShortCover": ce_sc,
+                    "peShortCover": pe_sc,
+                    "ceBuying": ce_buying,
+                    "peBuying": pe_buying,
+                },
+                "recentAlerts": idx_unusual[:5],
                 "timestamp": ist_now().strftime("%I:%M:%S %p IST"),
             }
 
@@ -1153,9 +1401,10 @@ class MarketEngine:
                                     "sell_qty": q.get("total_sell_quantity", 0),
                                 }
 
-                                # Store initial OI for unusual detection
+                                # Store initial OI and LTP for unusual detection + seller classification
                                 self.prev_oi[tok] = q.get("oi", 0)
                                 self.initial_oi[tok] = q.get("oi", 0)
+                                self.initial_ltp[tok] = q.get("last_price", 0)
                                 break
 
                     time.sleep(0.4)  # Rate limit

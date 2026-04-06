@@ -220,6 +220,16 @@ async def oi_summary():
     return _get_or_cache("oi_summary", lambda: engine.get_oi_change_summary())
 
 
+@app.get("/api/seller-summary")
+async def seller_summary():
+    return _get_or_cache("seller_summary", lambda: engine.get_seller_summary())
+
+
+@app.get("/api/trade-analysis")
+async def trade_analysis():
+    return _get_or_cache("trade_analysis", lambda: engine.get_trade_analysis())
+
+
 @app.get("/api/signals")
 async def signals():
     return _get_or_cache("signals", lambda: engine.get_signals())
