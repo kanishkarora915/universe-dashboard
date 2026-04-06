@@ -23,6 +23,7 @@ const TABS = [
   { id: "unusual", icon: "\uD83D\uDEA8", label: "Unusual Activity" },
   { id: "sellers", icon: "\uD83E\uDD88", label: "Sellers" },
   { id: "tradeai", icon: "\uD83E\uDDE0", label: "Trade AI" },
+  { id: "hidden",  icon: "\uD83D\uDD75\uFE0F", label: "Hidden Shift" },
   { id: "oichange",icon: "\uD83D\uDCC8", label: "OI Change" },
   { id: "pnl",     icon: "\uD83D\uDCB0", label: "PnL Tracker" },
   { id: "prompt",  icon: "\uD83E\uDD16", label: "Claude Prompt" },
@@ -1140,6 +1141,177 @@ function TradeAITab({ data }) {
 
 // \u2500\u2500 TAB: CLAUDE PROMPT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
+// ── TAB: HIDDEN SHIFT — Institutional OI Cooking Detection ──────────────
+
+function HiddenShiftTab({ data }) {
+  const fmtL = (n) => n ? `${(Math.abs(n) / 100000).toFixed(1)}L` : "0";
+  const sevColor = { HIGH: RED, MEDIUM: ORANGE, LOW: "#555" };
+  const patternColor = { 1: "#FF6B35", 2: PURPLE, 3: ACCENT, 4: YELLOW };
+
+  if (!data) return (
+    <div style={{ textAlign: "center", padding: 60, color: "#555" }}>
+      <div style={{ fontSize: 40, marginBottom: 12 }}>🕵️</div>
+      <div style={{ fontSize: 14, color: "#666" }}>Loading Hidden Shift detector...</div>
+      <div style={{ fontSize: 11, color: "#444", marginTop: 8 }}>OI snapshots taken every 30 min. First detection after ~30 min of market open.</div>
+    </div>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <Card style={{ background: "#0D0D15", border: `1px solid ${RED}33` }}>
+        <div style={{ color: RED, fontWeight: 900, fontSize: 14, marginBottom: 4 }}>HIDDEN SHIFT — Institutional OI Cooking Detector</div>
+        <div style={{ color: "#555", fontSize: 11, lineHeight: 1.6 }}>
+          Detects when institutions "cook" OI BEFORE a price move. Compares current OI vs ~30-60 min ago snapshot.
+          Optimized for option BUYERS — CE/PE buy signals only.
+        </div>
+      </Card>
+
+      {["nifty", "banknifty"].map(key => {
+        const d = data[key];
+        if (!d) return null;
+        const label = key === "nifty" ? "NIFTY" : "BANKNIFTY";
+        const sigColor = d.overallSignal?.includes("CE") ? GREEN : d.overallSignal?.includes("PE") ? RED : "#555";
+        const confColor = d.confidence === "HIGH" ? GREEN : d.confidence === "MEDIUM" ? YELLOW : "#555";
+
+        return (
+          <div key={key} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {/* VERDICT */}
+            <Card style={{ background: sigColor + "08", border: `1px solid ${sigColor}44` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ color: "#fff", fontWeight: 900, fontSize: 16 }}>{label}</span>
+                  <span style={{ background: sigColor + "22", color: sigColor, padding: "4px 14px", borderRadius: 6, fontSize: 13, fontWeight: 900 }}>{d.overallSignal}</span>
+                  <span style={{ background: confColor + "22", color: confColor, padding: "3px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{d.confidence}</span>
+                </div>
+                <span style={{ color: "#444", fontSize: 10 }}>{d.timestamp} | Snap: {d.snapshotAge}m ago</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 12 }}>
+                <div style={{ background: "#111118", borderRadius: 8, padding: "6px 10px", textAlign: "center" }}>
+                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>LTP NOW</div>
+                  <div style={{ color: "#fff", fontSize: 14, fontWeight: 900 }}>{d.ltp?.toLocaleString("en-IN")}</div>
+                </div>
+                <div style={{ background: "#111118", borderRadius: 8, padding: "6px 10px", textAlign: "center" }}>
+                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>~1HR AGO</div>
+                  <div style={{ color: "#fff", fontSize: 14, fontWeight: 900 }}>{d.refPrice?.toLocaleString("en-IN")}</div>
+                </div>
+                <div style={{ background: "#111118", borderRadius: 8, padding: "6px 10px", textAlign: "center" }}>
+                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>MOVE</div>
+                  <div style={{ color: d.priceDirection === "UP" ? GREEN : d.priceDirection === "DOWN" ? RED : "#888", fontSize: 14, fontWeight: 900 }}>
+                    {d.priceDirection === "UP" ? "+" : d.priceDirection === "DOWN" ? "-" : ""}{d.priceMove} pts
+                  </div>
+                </div>
+                <div style={{ background: "#111118", borderRadius: 8, padding: "6px 10px", textAlign: "center" }}>
+                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>PCR</div>
+                  <div style={{ color: "#fff", fontSize: 14, fontWeight: 900 }}>{d.refPCR} → {d.currentPCR}</div>
+                </div>
+              </div>
+              <div style={{ background: sigColor + "11", borderRadius: 8, padding: "10px 14px", border: `1px solid ${sigColor}33` }}>
+                <div style={{ color: sigColor, fontSize: 12, fontWeight: 700, marginBottom: 4 }}>VERDICT</div>
+                <div style={{ color: "#ccc", fontSize: 12, lineHeight: 1.6 }}>{d.verdict}</div>
+              </div>
+            </Card>
+
+            {/* PATTERN CARDS */}
+            {d.patterns?.length > 0 ? d.patterns.map((p, i) => {
+              const pColor = patternColor[p.id] || ORANGE;
+              return (
+                <Card key={i} style={{ background: "#0D0D15", border: `1px solid ${pColor}33` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 20 }}>{p.emoji}</span>
+                      <span style={{ color: pColor, fontWeight: 900, fontSize: 14 }}>P{p.id}: {p.name}</span>
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <span style={{ background: sevColor[p.severity] + "22", color: sevColor[p.severity], padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{p.severity}</span>
+                      <span style={{ background: (p.direction?.includes("CE") ? GREEN : RED) + "22", color: p.direction?.includes("CE") ? GREEN : RED, padding: "2px 10px", borderRadius: 4, fontSize: 11, fontWeight: 900 }}>{p.direction}</span>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+                    <div style={{ background: pColor + "11", borderRadius: 8, padding: "8px 14px", border: `1px solid ${pColor}22` }}>
+                      <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>TARGET</div>
+                      <div style={{ color: "#fff", fontSize: 18, fontWeight: 900 }}>{p.targetStrike}</div>
+                    </div>
+                    <div style={{ background: "#111118", borderRadius: 8, padding: "8px 14px", flex: 1 }}>
+                      <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>INSTITUTIONS DOING</div>
+                      <div style={{ color: "#ccc", fontSize: 11, marginTop: 4, lineHeight: 1.5 }}>{p.insight}</div>
+                    </div>
+                  </div>
+                  {/* Details for P1/P2 */}
+                  {(p.id === 1 || p.id === 2) && p.details?.map((det, j) => (
+                    <div key={j} style={{ display: "flex", justifyContent: "space-between", padding: "4px 8px", borderBottom: `1px solid ${BORDER}33`, fontSize: 11 }}>
+                      <span style={{ color: det.side === "CE" ? RED : GREEN, fontWeight: 700 }}>{det.side} @ {det.strike}</span>
+                      <span style={{ color: det.oiChange > 0 ? GREEN : RED, fontWeight: 700 }}>OI: {det.oiChange > 0 ? "+" : ""}{fmtL(det.oiChange)} ({det.oiPct > 0 ? "+" : ""}{det.oiPct}%)</span>
+                    </div>
+                  ))}
+                  {/* Details for P3 */}
+                  {p.id === 3 && p.details?.map((det, j) => (
+                    <div key={j} style={{ fontSize: 12, padding: "4px 8px", color: "#ccc" }}>
+                      <span style={{ color: det.side === "CE" ? RED : GREEN, fontWeight: 700 }}>{det.side}: </span>
+                      <span style={{ color: RED }}>{det.from?.join(", ")}</span>
+                      <span style={{ color: "#555" }}> → </span>
+                      <span style={{ color: GREEN }}>{det.to?.join(", ")}</span>
+                    </div>
+                  ))}
+                  {/* Details for P4 */}
+                  {p.id === 4 && p.details?.[0] && (
+                    <div style={{ display: "flex", gap: 12, padding: "4px 8px", fontSize: 11 }}>
+                      <div><span style={{ color: "#555" }}>PCR: </span><span style={{ color: "#fff", fontWeight: 700 }}>{p.details[0].refPCR} → {p.details[0].currentPCR}</span></div>
+                      <div><span style={{ color: "#555" }}>Chg: </span><span style={{ color: p.details[0].pcrChange > 0 ? GREEN : RED, fontWeight: 700 }}>{p.details[0].pcrChange > 0 ? "+" : ""}{p.details[0].pcrChange}</span></div>
+                      <div><span style={{ color: "#555" }}>Price: </span><span style={{ color: p.details[0].priceDirection === "UP" ? GREEN : RED, fontWeight: 700 }}>{p.details[0].priceDirection} {p.details[0].priceMove}pts</span></div>
+                    </div>
+                  )}
+                </Card>
+              );
+            }) : (
+              <Card style={{ background: "#111118" }}>
+                <div style={{ textAlign: "center", padding: 20, color: "#555", fontSize: 12 }}>No institutional patterns detected for {label}. OI changes appear organic.</div>
+              </Card>
+            )}
+
+            {/* Strike Table */}
+            {d.strikes?.some(st => st.ceOIChange !== 0 || st.peOIChange !== 0) && (
+              <Card style={{ background: "#0D0D15", border: `1px solid ${BORDER}` }}>
+                <div style={{ color: "#666", fontWeight: 700, fontSize: 12, marginBottom: 8 }}>{label} OI vs ~1HR AGO</div>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                    <thead>
+                      <tr style={{ borderBottom: `1px solid ${BORDER}` }}>
+                        <th style={{ padding: "5px 6px", color: "#555", textAlign: "left" }}>Strike</th>
+                        <th style={{ padding: "5px 6px", color: RED, textAlign: "right" }}>CE OI</th>
+                        <th style={{ padding: "5px 6px", color: RED, textAlign: "right" }}>CE Chg</th>
+                        <th style={{ padding: "5px 6px", color: RED, textAlign: "right" }}>CE %</th>
+                        <th style={{ padding: "5px 6px", color: GREEN, textAlign: "right" }}>PE OI</th>
+                        <th style={{ padding: "5px 6px", color: GREEN, textAlign: "right" }}>PE Chg</th>
+                        <th style={{ padding: "5px 6px", color: GREEN, textAlign: "right" }}>PE %</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {d.strikes.filter(st => st.ceOIChange !== 0 || st.peOIChange !== 0).map((st, i) => (
+                        <tr key={i} style={{
+                          borderBottom: `1px solid ${BORDER}33`,
+                          background: st.isATM ? ACCENT + "11" : Math.abs(st.ceOIPct) > 15 || Math.abs(st.peOIPct) > 15 ? ORANGE + "08" : "transparent",
+                        }}>
+                          <td style={{ padding: "4px 6px", color: st.isATM ? ACCENT : "#ccc", fontWeight: st.isATM ? 900 : 400 }}>{st.strike}{st.isATM ? " ATM" : ""}</td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", color: "#888" }}>{fmtL(st.ceOI)}</td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", color: st.ceOIChange > 0 ? GREEN : st.ceOIChange < 0 ? RED : "#555", fontWeight: 700 }}>{st.ceOIChange > 0 ? "+" : ""}{fmtL(st.ceOIChange)}</td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", color: Math.abs(st.ceOIPct) > 15 ? ORANGE : "#888", fontWeight: Math.abs(st.ceOIPct) > 15 ? 900 : 400 }}>{st.ceOIPct > 0 ? "+" : ""}{st.ceOIPct}%</td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", color: "#888" }}>{fmtL(st.peOI)}</td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", color: st.peOIChange > 0 ? GREEN : st.peOIChange < 0 ? RED : "#555", fontWeight: 700 }}>{st.peOIChange > 0 ? "+" : ""}{fmtL(st.peOIChange)}</td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", color: Math.abs(st.peOIPct) > 15 ? ORANGE : "#888", fontWeight: Math.abs(st.peOIPct) > 15 ? 900 : 400 }}>{st.peOIPct > 0 ? "+" : ""}{st.peOIPct}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function PromptTab() {
   const [copied, setCopied] = useState(false);
   const copy = () => {
@@ -1184,7 +1356,7 @@ function PromptTab() {
 export default function Universe({ onLogout }) {
   const [activeTab, setActiveTab] = useState("live");
   const [time, setTime] = useState(new Date());
-  const { live, unusual, intraday, nextday, weekly, signals, oiSummary, sellerData, tradeAnalysis, connected } = useMarketData();
+  const { live, unusual, intraday, nextday, weekly, signals, oiSummary, sellerData, tradeAnalysis, hiddenShift, connected } = useMarketData();
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
@@ -1208,6 +1380,7 @@ export default function Universe({ onLogout }) {
       case "unusual": return <UnusualTab unusualData={unusual} oiData={oiSummary} />;
       case "sellers": return <SellersTab data={sellerData} />;
       case "tradeai": return <TradeAITab data={tradeAnalysis} />;
+      case "hidden":  return <HiddenShiftTab data={hiddenShift} />;
       case "oichange":return <OIChangeTab oiData={oiSummary} />;
       case "pnl":     return <PnLTracker signals={signals} />;
       case "prompt":  return <PromptTab />;

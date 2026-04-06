@@ -208,6 +208,10 @@ class MarketEngine:
         self.initial_ltp = {}  # Stores LTP at market open — for seller classification
         self.option_symbols = {}   # {token: "NFO:SYMBOL"} for quote fetching
 
+        # ── Hourly OI snapshots for Hidden Shift detection ──
+        self.oi_snapshots = []     # List of {"time": datetime, "chains": {index: {strike: {ce_oi, pe_oi, ce_ltp, pe_ltp}}}, "prices": {index: ltp}}
+        self._last_snapshot_time = 0
+
         # ── Expiry tracking ──
         self.nearest_expiry = {}   # {"NIFTY": date, "BANKNIFTY": date}
 
@@ -646,6 +650,318 @@ class MarketEngine:
                     "peBuying": pe_buying,
                 },
                 "recentAlerts": idx_unusual[:5],
+                "timestamp": ist_now().strftime("%I:%M:%S %p IST"),
+            }
+
+        return result
+
+    # ── HIDDEN SHIFT — Institutional OI Cooking Detection ──────────────
+
+    def get_hidden_shift(self) -> dict:
+        """Detect institutional OI manipulation patterns before price moves.
+        Compares current OI vs ~1hr ago snapshot. Detects 4 patterns:
+        1. Silent Accumulation: OI build >15% while price flat
+        2. Covering Trap: OI falling but price NOT responding
+        3. Strike Migration: OI shifting between strikes while price flat
+        4. PCR Divergence: Price-PCR direction mismatch
+        """
+        result = {}
+
+        # Find best reference snapshot (~30-60 min ago, or earliest available)
+        ref_snapshot = None
+        if self.oi_snapshots:
+            now = ist_now()
+            for snap in reversed(self.oi_snapshots[:-1] if len(self.oi_snapshots) > 1 else self.oi_snapshots):
+                age_min = (now - snap["time"]).total_seconds() / 60
+                if age_min >= 25:  # At least ~30 min old
+                    ref_snapshot = snap
+                    break
+            if not ref_snapshot:
+                ref_snapshot = self.oi_snapshots[0]  # Use earliest
+
+        for index in ["NIFTY", "BANKNIFTY"]:
+            chain = self.chains.get(index, {})
+            spot_token = self.spot_tokens.get(index)
+            current_price = self.prices.get(spot_token, {}).get("ltp", 0)
+            cfg = INDEX_CONFIG[index]
+            atm = round(current_price / cfg["strike_gap"]) * cfg["strike_gap"] if current_price > 0 else 0
+
+            # Reference data
+            ref_price = 0
+            ref_chains = {}
+            snapshot_age_min = 0
+            if ref_snapshot:
+                ref_price = ref_snapshot["prices"].get(index, current_price)
+                ref_chains = ref_snapshot["chains"].get(index, {})
+                snapshot_age_min = round((ist_now() - ref_snapshot["time"]).total_seconds() / 60)
+
+            price_move = abs(current_price - ref_price) if ref_price else 0
+            price_direction = "UP" if current_price > ref_price else "DOWN" if current_price < ref_price else "FLAT"
+            price_flat = price_move < 50  # <50 points = flat
+
+            patterns = []
+            silent_acc = []
+            covering_trap = []
+            strike_migration_ce = {"from": [], "to": []}
+            strike_migration_pe = {"from": [], "to": []}
+
+            # Current totals for PCR
+            total_ce_oi = 0
+            total_pe_oi = 0
+            ref_total_ce_oi = 0
+            ref_total_pe_oi = 0
+
+            # Analyze each strike
+            strike_analysis = []
+            for strike in sorted(chain.keys()):
+                data = chain[strike]
+                ce_oi = data.get("ce_oi", 0)
+                pe_oi = data.get("pe_oi", 0)
+                ce_ltp = data.get("ce_ltp", 0)
+                pe_ltp = data.get("pe_ltp", 0)
+
+                ref_data = ref_chains.get(strike, {})
+                ref_ce_oi = ref_data.get("ce_oi", ce_oi)
+                ref_pe_oi = ref_data.get("pe_oi", pe_oi)
+                ref_ce_ltp = ref_data.get("ce_ltp", ce_ltp)
+                ref_pe_ltp = ref_data.get("pe_ltp", pe_ltp)
+
+                ce_oi_change = ce_oi - ref_ce_oi
+                pe_oi_change = pe_oi - ref_pe_oi
+                ce_oi_pct = round((ce_oi_change / ref_ce_oi) * 100, 1) if ref_ce_oi > 0 else 0
+                pe_oi_pct = round((pe_oi_change / ref_pe_oi) * 100, 1) if ref_pe_oi > 0 else 0
+                ce_prem_change = round(ce_ltp - ref_ce_ltp, 2)
+                pe_prem_change = round(pe_ltp - ref_pe_ltp, 2)
+
+                total_ce_oi += ce_oi
+                total_pe_oi += pe_oi
+                ref_total_ce_oi += ref_ce_oi
+                ref_total_pe_oi += ref_pe_oi
+
+                # ── PATTERN 1: SILENT ACCUMULATION ──
+                if price_flat:
+                    if ce_oi_pct > 15 and abs(ce_oi_change) > 50000:
+                        silent_acc.append({
+                            "strike": int(strike),
+                            "side": "CE",
+                            "oiChange": ce_oi_change,
+                            "oiPct": ce_oi_pct,
+                            "premChange": ce_prem_change,
+                            "signal": f"CE OI at {int(strike)} jumped {ce_oi_pct}% ({ce_oi_change/100000:.1f}L) while price moved only {price_move:.0f} pts",
+                        })
+                    if pe_oi_pct > 15 and abs(pe_oi_change) > 50000:
+                        silent_acc.append({
+                            "strike": int(strike),
+                            "side": "PE",
+                            "oiChange": pe_oi_change,
+                            "oiPct": pe_oi_pct,
+                            "premChange": pe_prem_change,
+                            "signal": f"PE OI at {int(strike)} jumped {pe_oi_pct}% ({pe_oi_change/100000:.1f}L) while price moved only {price_move:.0f} pts",
+                        })
+
+                # ── PATTERN 2: COVERING TRAP ──
+                # OI falling sharply but price not moving in expected direction
+                if ce_oi_change < -50000 and ce_oi_pct < -10:
+                    # CE OI falling = shorts covering CE = should be bullish (price up)
+                    if price_direction != "UP":
+                        covering_trap.append({
+                            "strike": int(strike),
+                            "side": "CE",
+                            "oiChange": ce_oi_change,
+                            "oiPct": ce_oi_pct,
+                            "expected": "UP (CE covering = bullish)",
+                            "actual": price_direction,
+                            "signal": f"CE shorts covering at {int(strike)} ({ce_oi_pct}%) but price going {price_direction} — TRAP",
+                        })
+                if pe_oi_change < -50000 and pe_oi_pct < -10:
+                    # PE OI falling = shorts covering PE = should be bearish (price down)
+                    if price_direction != "DOWN":
+                        covering_trap.append({
+                            "strike": int(strike),
+                            "side": "PE",
+                            "oiChange": pe_oi_change,
+                            "oiPct": pe_oi_pct,
+                            "expected": "DOWN (PE covering = bearish)",
+                            "actual": price_direction,
+                            "signal": f"PE shorts covering at {int(strike)} ({pe_oi_pct}%) but price going {price_direction} — TRAP",
+                        })
+
+                # ── PATTERN 3: STRIKE MIGRATION ──
+                if price_flat:
+                    if ce_oi_change < -50000 and ce_oi_pct < -10:
+                        strike_migration_ce["from"].append({"strike": int(strike), "change": ce_oi_change, "pct": ce_oi_pct})
+                    if ce_oi_change > 50000 and ce_oi_pct > 10:
+                        strike_migration_ce["to"].append({"strike": int(strike), "change": ce_oi_change, "pct": ce_oi_pct})
+                    if pe_oi_change < -50000 and pe_oi_pct < -10:
+                        strike_migration_pe["from"].append({"strike": int(strike), "change": pe_oi_change, "pct": pe_oi_pct})
+                    if pe_oi_change > 50000 and pe_oi_pct > 10:
+                        strike_migration_pe["to"].append({"strike": int(strike), "change": pe_oi_change, "pct": pe_oi_pct})
+
+                strike_analysis.append({
+                    "strike": int(strike),
+                    "isATM": strike == atm,
+                    "ceOI": ce_oi,
+                    "peOI": pe_oi,
+                    "ceOIChange": ce_oi_change,
+                    "peOIChange": pe_oi_change,
+                    "ceOIPct": ce_oi_pct,
+                    "peOIPct": pe_oi_pct,
+                    "cePremChange": ce_prem_change,
+                    "pePremChange": pe_prem_change,
+                })
+
+            # Build Pattern 1
+            if silent_acc:
+                # Sort by absolute OI change
+                silent_acc.sort(key=lambda x: abs(x["oiChange"]), reverse=True)
+                top = silent_acc[0]
+                direction = "BUY PE" if top["side"] == "CE" else "BUY CE"
+                patterns.append({
+                    "id": 1,
+                    "name": "SILENT ACCUMULATION",
+                    "emoji": "🔇",
+                    "detected": True,
+                    "severity": "HIGH" if len(silent_acc) >= 3 or abs(top["oiChange"]) > 200000 else "MEDIUM",
+                    "details": silent_acc[:5],
+                    "direction": direction,
+                    "targetStrike": top["strike"],
+                    "insight": f"Institutions silently building {top['side']} positions at {top['strike']} — {top['oiPct']}% OI jump, price barely moved. Expect sharp move soon.",
+                })
+
+            # Build Pattern 2
+            if covering_trap:
+                covering_trap.sort(key=lambda x: abs(x["oiChange"]), reverse=True)
+                top = covering_trap[0]
+                # If CE covering but price not going up → price will eventually go up = BUY CE
+                direction = "BUY CE" if top["side"] == "CE" else "BUY PE"
+                patterns.append({
+                    "id": 2,
+                    "name": "COVERING TRAP",
+                    "emoji": "🪤",
+                    "detected": True,
+                    "severity": "HIGH" if abs(top["oiChange"]) > 200000 else "MEDIUM",
+                    "details": covering_trap[:5],
+                    "direction": direction,
+                    "targetStrike": top["strike"],
+                    "insight": f"{top['side']} shorts covering at {top['strike']} but price going {top['actual']} instead of expected. Delayed move incoming — {direction}.",
+                })
+
+            # Build Pattern 3
+            ce_migration = bool(strike_migration_ce["from"] and strike_migration_ce["to"])
+            pe_migration = bool(strike_migration_pe["from"] and strike_migration_pe["to"])
+            if ce_migration or pe_migration:
+                details = []
+                target = atm
+                direction = "NEUTRAL"
+                insight_parts = []
+                if ce_migration:
+                    from_strikes = [s["strike"] for s in strike_migration_ce["from"]]
+                    to_strikes = [s["strike"] for s in strike_migration_ce["to"]]
+                    avg_from = sum(from_strikes) / len(from_strikes)
+                    avg_to = sum(to_strikes) / len(to_strikes)
+                    if avg_to > avg_from:
+                        direction = "BUY CE"
+                        insight_parts.append(f"CE OI shifting UP ({from_strikes} → {to_strikes}) = resistance moving higher")
+                    else:
+                        direction = "BUY PE"
+                        insight_parts.append(f"CE OI shifting DOWN ({from_strikes} → {to_strikes}) = resistance tightening")
+                    target = to_strikes[0] if to_strikes else atm
+                    details.append({"side": "CE", "from": from_strikes, "to": to_strikes})
+                if pe_migration:
+                    from_strikes = [s["strike"] for s in strike_migration_pe["from"]]
+                    to_strikes = [s["strike"] for s in strike_migration_pe["to"]]
+                    avg_from = sum(from_strikes) / len(from_strikes)
+                    avg_to = sum(to_strikes) / len(to_strikes)
+                    if avg_to < avg_from:
+                        direction = "BUY PE" if direction != "BUY CE" else direction
+                        insight_parts.append(f"PE OI shifting DOWN ({from_strikes} → {to_strikes}) = support dropping")
+                    else:
+                        direction = "BUY CE" if direction != "BUY PE" else direction
+                        insight_parts.append(f"PE OI shifting UP ({from_strikes} → {to_strikes}) = support strengthening")
+                    target = to_strikes[0] if to_strikes else target
+                    details.append({"side": "PE", "from": from_strikes, "to": to_strikes})
+                patterns.append({
+                    "id": 3,
+                    "name": "STRIKE MIGRATION",
+                    "emoji": "🔀",
+                    "detected": True,
+                    "severity": "HIGH",
+                    "details": details,
+                    "direction": direction,
+                    "targetStrike": int(target),
+                    "insight": " | ".join(insight_parts) + f". Price flat at {current_price:.0f} — institutions repositioning.",
+                })
+
+            # ── PATTERN 4: PCR DIVERGENCE ──
+            current_pcr = round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 0
+            ref_pcr = round(ref_total_pe_oi / ref_total_ce_oi, 2) if ref_total_ce_oi > 0 else 0
+            pcr_change = round(current_pcr - ref_pcr, 3)
+
+            pcr_divergence = False
+            pcr_insight = ""
+            pcr_direction = "NEUTRAL"
+            if price_direction == "DOWN" and pcr_change < 0:
+                # Price falling + PCR falling = institutions NOT scared = bounce
+                pcr_divergence = True
+                pcr_direction = "BUY CE"
+                pcr_insight = f"Price down {price_move:.0f} pts but PCR also FALLING ({ref_pcr} → {current_pcr}). Institutions NOT adding puts = NOT scared. BOUNCE likely."
+            elif price_direction == "UP" and pcr_change > 0:
+                # Price rising + PCR rising = smart money hedging = fake move
+                pcr_divergence = True
+                pcr_direction = "BUY PE"
+                pcr_insight = f"Price up {price_move:.0f} pts but PCR also RISING ({ref_pcr} → {current_pcr}). Smart money hedging with puts = move may be FAKE. Reversal likely."
+
+            if pcr_divergence:
+                patterns.append({
+                    "id": 4,
+                    "name": "PCR DIVERGENCE",
+                    "emoji": "⚡",
+                    "detected": True,
+                    "severity": "HIGH" if abs(pcr_change) > 0.05 else "MEDIUM",
+                    "details": [{"currentPCR": current_pcr, "refPCR": ref_pcr, "pcrChange": pcr_change, "priceDirection": price_direction, "priceMove": round(price_move, 1)}],
+                    "direction": pcr_direction,
+                    "targetStrike": int(atm),
+                    "insight": pcr_insight,
+                })
+
+            # Overall verdict
+            if patterns:
+                ce_signals = sum(1 for p in patterns if "CE" in p["direction"])
+                pe_signals = sum(1 for p in patterns if "PE" in p["direction"])
+                if ce_signals > pe_signals:
+                    overall = "BUY CE"
+                elif pe_signals > ce_signals:
+                    overall = "BUY PE"
+                else:
+                    overall = patterns[0]["direction"]
+                confidence = "HIGH" if len(patterns) >= 3 else "MEDIUM" if len(patterns) >= 2 else "LOW"
+                institution_doing = []
+                for p in patterns:
+                    if p["id"] == 1: institution_doing.append("silently accumulating positions")
+                    elif p["id"] == 2: institution_doing.append("running a covering trap")
+                    elif p["id"] == 3: institution_doing.append("migrating strikes to reposition")
+                    elif p["id"] == 4: institution_doing.append("diverging from retail sentiment")
+                verdict = f"Institutions are likely {', '.join(institution_doing)}. {overall} recommended."
+            else:
+                overall = "NO CLEAR SIGNAL"
+                confidence = "LOW"
+                verdict = "No institutional manipulation patterns detected right now. OI changes are organic."
+
+            result[index.lower()] = {
+                "ltp": current_price,
+                "atm": int(atm),
+                "refPrice": round(ref_price, 1),
+                "priceMove": round(price_move, 1),
+                "priceDirection": price_direction,
+                "snapshotAge": snapshot_age_min,
+                "patternsDetected": len(patterns),
+                "patterns": patterns,
+                "overallSignal": overall,
+                "confidence": confidence,
+                "verdict": verdict,
+                "currentPCR": current_pcr if total_ce_oi > 0 else 0,
+                "refPCR": ref_pcr if ref_total_ce_oi > 0 else 0,
+                "strikes": strike_analysis,
                 "timestamp": ist_now().strftime("%I:%M:%S %p IST"),
             }
 
@@ -1423,6 +1739,34 @@ class MarketEngine:
             print(f"[ENGINE] Initial data fetch error: {e}")
 
         print("[ENGINE] Initial data fetch complete.")
+        self._take_oi_snapshot()  # First snapshot at market open
+
+    def _take_oi_snapshot(self):
+        """Capture current OI state for Hidden Shift pattern detection."""
+        import copy
+        snapshot = {
+            "time": ist_now(),
+            "chains": {},
+            "prices": {},
+        }
+        for index in ["NIFTY", "BANKNIFTY"]:
+            spot_token = self.spot_tokens.get(index)
+            snapshot["prices"][index] = self.prices.get(spot_token, {}).get("ltp", 0)
+            chain = self.chains.get(index, {})
+            snapshot["chains"][index] = {}
+            for strike, data in chain.items():
+                snapshot["chains"][index][strike] = {
+                    "ce_oi": data.get("ce_oi", 0),
+                    "pe_oi": data.get("pe_oi", 0),
+                    "ce_ltp": data.get("ce_ltp", 0),
+                    "pe_ltp": data.get("pe_ltp", 0),
+                }
+        self.oi_snapshots.append(snapshot)
+        # Keep max 12 snapshots (6 hours at 30min intervals)
+        if len(self.oi_snapshots) > 12:
+            self.oi_snapshots = self.oi_snapshots[-12:]
+        self._last_snapshot_time = time.time()
+        print(f"[ENGINE] OI snapshot taken. Total snapshots: {len(self.oi_snapshots)}")
 
     # ── Build subscriptions ──────────────────────────────────────────────
 
@@ -1564,6 +1908,10 @@ class MarketEngine:
         if now - self._last_push >= 1.0:
             self._last_push = now
             self._push_to_clients()
+
+        # OI snapshot every 30 minutes for Hidden Shift detection
+        if now - self._last_snapshot_time >= 1800:
+            self._take_oi_snapshot()
 
     def _check_unusual(self, token, tick, info):
         oi = tick.get("oi", 0)

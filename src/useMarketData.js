@@ -5,7 +5,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { fetchLive, fetchUnusual, fetchIntraday, fetchNextDay, fetchWeekly, fetchSignals, fetchOISummary, fetchSellerSummary, fetchTradeAnalysis } from "./api";
+import { fetchLive, fetchUnusual, fetchIntraday, fetchNextDay, fetchWeekly, fetchSignals, fetchOISummary, fetchSellerSummary, fetchTradeAnalysis, fetchHiddenShift } from "./api";
 
 // ── Date-stamped cache helpers ──────────────────────────────────────────
 
@@ -75,6 +75,7 @@ export function useMarketData() {
   const [oiSummary, setOiSummary] = useState(() => getCached("oiSummary"));
   const [sellerData, setSellerData] = useState(() => getCached("sellerData"));
   const [tradeAnalysis, setTradeAnalysis] = useState(() => getCached("tradeAnalysis"));
+  const [hiddenShift, setHiddenShift] = useState(() => getCached("hiddenShift"));
   const [connected, setConnected] = useState(false);
   const wsRef = useRef(null);
   const pollRef = useRef(null);
@@ -97,12 +98,13 @@ export function useMarketData() {
   const setOiSummaryCached = useCallback(setAndCache("oiSummary", setOiSummary), []);
   const setSellerDataCached = useCallback(setAndCache("sellerData", setSellerData), []);
   const setTradeAnalysisCached = useCallback(setAndCache("tradeAnalysis", setTradeAnalysis), []);
+  const setHiddenShiftCached = useCallback(setAndCache("hiddenShift", setHiddenShift), []);
 
   // ── Fetch all tab data (called once + every 30s) ──────────────────────
 
   const fetchAllTabData = useCallback(async () => {
     try {
-      const [intradayData, nextdayData, weeklyData, unusualData, signalsData, oiData, sellerRes, tradeRes] = await Promise.all([
+      const [intradayData, nextdayData, weeklyData, unusualData, signalsData, oiData, sellerRes, tradeRes, hiddenRes] = await Promise.all([
         fetchIntraday().catch(() => null),
         fetchNextDay().catch(() => null),
         fetchWeekly().catch(() => null),
@@ -111,6 +113,7 @@ export function useMarketData() {
         fetchOISummary().catch(() => null),
         fetchSellerSummary().catch(() => null),
         fetchTradeAnalysis().catch(() => null),
+        fetchHiddenShift().catch(() => null),
       ]);
       if (intradayData && !intradayData.error) setIntradayCached(intradayData);
       if (nextdayData && !nextdayData.error) setNextdayCached(nextdayData);
@@ -120,6 +123,7 @@ export function useMarketData() {
       if (oiData && !oiData.error) setOiSummaryCached(oiData);
       if (sellerRes && !sellerRes.error) setSellerDataCached(sellerRes);
       if (tradeRes && !tradeRes.error) setTradeAnalysisCached(tradeRes);
+      if (hiddenRes && !hiddenRes.error) setHiddenShiftCached(hiddenRes);
     } catch (err) {
       // Backend not available — localStorage cache still active
     }
@@ -202,5 +206,5 @@ export function useMarketData() {
     };
   }, [connectWS, fetchAllTabData]);
 
-  return { live, unusual, intraday, nextday, weekly, signals, oiSummary, sellerData, tradeAnalysis, connected };
+  return { live, unusual, intraday, nextday, weekly, signals, oiSummary, sellerData, tradeAnalysis, hiddenShift, connected };
 }

@@ -230,6 +230,11 @@ async def trade_analysis():
     return _get_or_cache("trade_analysis", lambda: engine.get_trade_analysis())
 
 
+@app.get("/api/hidden-shift")
+async def hidden_shift():
+    return _get_or_cache("hidden_shift", lambda: engine.get_hidden_shift())
+
+
 @app.get("/api/signals")
 async def signals():
     return _get_or_cache("signals", lambda: engine.get_signals())

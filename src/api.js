@@ -93,3 +93,9 @@ export async function fetchDailyExport() {
   if (!res.ok) return null;
   return res.json();
 }
+
+export async function fetchHiddenShift() {
+  const res = await fetch("/api/hidden-shift");
+  if (!res.ok) return null;
+  return res.json();
+}
