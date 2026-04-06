@@ -492,20 +492,33 @@ class MarketEngine:
                     total_pe_longunwind += abs(pe_oi_change)
 
                 # Only include strikes with non-zero activity
+                ce_oi_change_pct = round((ce_oi_change / ce_oi_initial) * 100, 1) if ce_oi_initial > 0 else 0
+                pe_oi_change_pct = round((pe_oi_change / pe_oi_initial) * 100, 1) if pe_oi_initial > 0 else 0
+
+                # Classify magnitude: MAJOR (>2L or >20%), MINOR (<2L), NEUTRAL
+                ce_magnitude = "MAJOR" if (abs(ce_oi_change) > 200000 or abs(ce_oi_change_pct) > 20) else "MINOR" if ce_oi_change != 0 else "NEUTRAL"
+                pe_magnitude = "MAJOR" if (abs(pe_oi_change) > 200000 or abs(pe_oi_change_pct) > 20) else "MINOR" if pe_oi_change != 0 else "NEUTRAL"
+
                 if ce_oi_change != 0 or pe_oi_change != 0:
                     strikes_data.append({
                         "strike": strike,
                         "isATM": strike == atm,
                         "ceOI": ce_oi,
                         "peOI": pe_oi,
+                        "ceOIInitial": ce_oi_initial,
+                        "peOIInitial": pe_oi_initial,
                         "ceOIChange": ce_oi_change,
                         "peOIChange": pe_oi_change,
+                        "ceOIChangePct": ce_oi_change_pct,
+                        "peOIChangePct": pe_oi_change_pct,
                         "ceLTP": ce_ltp,
                         "peLTP": pe_ltp,
                         "cePremChange": ce_prem_change,
                         "pePremChange": pe_prem_change,
                         "ceActivity": ce_activity,
                         "peActivity": pe_activity,
+                        "ceMagnitude": ce_magnitude,
+                        "peMagnitude": pe_magnitude,
                     })
 
             # Seller bias
@@ -517,10 +530,45 @@ class MarketEngine:
             else:
                 seller_bias = "NEUTRAL"
 
+            # +OI / -OI totals
+            total_plus_oi = total_ce_writing + total_ce_buying + total_pe_writing + total_pe_buying
+            total_minus_oi = total_ce_shortcover + total_ce_longunwind + total_pe_shortcover + total_pe_longunwind
+            net_oi_change = total_plus_oi - total_minus_oi
+
+            # Major changes (>2L OI change)
+            major_changes = [s for s in strikes_data if s["ceMagnitude"] == "MAJOR" or s["peMagnitude"] == "MAJOR"]
+            minor_changes = [s for s in strikes_data if s not in major_changes]
+
+            # Detect shifts: OI leaving one strike and appearing at another
+            ce_losing = sorted([s for s in strikes_data if s["ceOIChange"] < -100000], key=lambda x: x["ceOIChange"])
+            ce_gaining = sorted([s for s in strikes_data if s["ceOIChange"] > 100000], key=lambda x: x["ceOIChange"], reverse=True)
+            pe_losing = sorted([s for s in strikes_data if s["peOIChange"] < -100000], key=lambda x: x["peOIChange"])
+            pe_gaining = sorted([s for s in strikes_data if s["peOIChange"] > 100000], key=lambda x: x["peOIChange"], reverse=True)
+
+            shifts = []
+            if ce_losing and ce_gaining:
+                shifts.append({
+                    "side": "CE",
+                    "from": [{"strike": int(s["strike"]), "change": s["ceOIChange"]} for s in ce_losing[:3]],
+                    "to": [{"strike": int(s["strike"]), "change": s["ceOIChange"]} for s in ce_gaining[:3]],
+                    "meaning": "Resistance shifting " + ("UP" if ce_gaining[0]["strike"] > ce_losing[0]["strike"] else "DOWN"),
+                })
+            if pe_losing and pe_gaining:
+                shifts.append({
+                    "side": "PE",
+                    "from": [{"strike": int(s["strike"]), "change": s["peOIChange"]} for s in pe_losing[:3]],
+                    "to": [{"strike": int(s["strike"]), "change": s["peOIChange"]} for s in pe_gaining[:3]],
+                    "meaning": "Support shifting " + ("UP" if pe_gaining[0]["strike"] > pe_losing[0]["strike"] else "DOWN"),
+                })
+
             result[index.lower()] = {
                 "strikes": strikes_data,
                 "ltp": ltp,
                 "atm": atm,
+                # +/- OI totals
+                "totalPlusOI": total_plus_oi,
+                "totalMinusOI": total_minus_oi,
+                "netOIChange": net_oi_change,
                 # Seller metrics
                 "ceWritingOI": total_ce_writing,
                 "peWritingOI": total_pe_writing,
@@ -533,6 +581,10 @@ class MarketEngine:
                 "peBuyingOI": total_pe_buying,
                 "ceLongUnwindOI": total_ce_longunwind,
                 "peLongUnwindOI": total_pe_longunwind,
+                # Major/Minor/Shifts
+                "majorCount": len(major_changes),
+                "minorCount": len(minor_changes),
+                "shifts": shifts,
                 "timestamp": ist_now().strftime("%I:%M:%S %p IST"),
             }
 

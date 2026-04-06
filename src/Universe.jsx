@@ -856,7 +856,8 @@ function UnusualTab({ unusualData, oiData }) {
 function SellersTab({ data }) {
   const fmtL = (n) => n ? `${(Math.abs(n) / 100000).toFixed(1)}L` : "0";
   const actColor = { WRITING: ORANGE, SHORT_COVER: PURPLE, BUYING: GREEN, LONG_UNWIND: RED, NEUTRAL: "#444" };
-  const actLabel = { WRITING: "Writing", SHORT_COVER: "Short Cover", BUYING: "Buying", LONG_UNWIND: "Long Unwind", NEUTRAL: "Neutral" };
+  const actLabel = { WRITING: "Writing", SHORT_COVER: "Short Cover", BUYING: "Buying", LONG_UNWIND: "Long Unwind", NEUTRAL: "-" };
+  const magColor = { MAJOR: RED, MINOR: "#555" };
 
   if (!data) return <div style={{ textAlign: "center", padding: 60, color: "#555" }}>Loading seller data...</div>;
 
@@ -867,114 +868,199 @@ function SellersTab({ data }) {
         if (!d) return null;
         const label = key === "nifty" ? "NIFTY" : "BANKNIFTY";
         const biasColor = d.sellerBias === "BULLISH" ? GREEN : d.sellerBias === "BEARISH" ? RED : YELLOW;
+        const netColor = d.netOIChange > 0 ? GREEN : d.netOIChange < 0 ? RED : "#888";
 
         return (
           <div key={key} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {/* SELLER FLOW SUMMARY CARD */}
+
+            {/* ROW 1: +OI / -OI / NET CHANGE / VERDICT */}
             <Card style={{ background: "#0D0D15", border: `1px solid ${ORANGE}33` }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <span style={{ color: ORANGE, fontWeight: 900, fontSize: 14 }}>{label} SELLER FLOW</span>
                 <span style={{ color: "#444", fontSize: 10 }}>LTP: {d.ltp?.toLocaleString("en-IN")} | {d.timestamp}</span>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 8 }}>
-                {/* CE Writers */}
-                <div style={{ background: RED + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${RED}22` }}>
-                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1, marginBottom: 8 }}>CE SELLERS</div>
-                  <div style={{ marginBottom: 4 }}>
-                    <span style={{ color: ORANGE, fontSize: 12, fontWeight: 700 }}>Writing: {fmtL(d.ceWritingOI)}</span>
-                  </div>
-                  <div style={{ marginBottom: 4 }}>
-                    <span style={{ color: PURPLE, fontSize: 12, fontWeight: 700 }}>Short Cover: {fmtL(d.ceShortCoverOI)}</span>
-                  </div>
-                  <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 4, marginTop: 4 }}>
-                    <span style={{ color: "#888", fontSize: 10 }}>Net: </span>
-                    <span style={{ color: d.ceWritingOI > d.ceShortCoverOI ? ORANGE : PURPLE, fontSize: 13, fontWeight: 900 }}>
-                      {d.ceWritingOI > d.ceShortCoverOI ? "Writers Adding" : "Covering"}
-                    </span>
-                  </div>
-                  <div style={{ color: RED, fontSize: 10, marginTop: 2 }}>CE write = Resistance</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 8 }}>
+                {/* +OI */}
+                <div style={{ background: GREEN + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${GREEN}22`, textAlign: "center" }}>
+                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1 }}>+OI (Added)</div>
+                  <div style={{ color: GREEN, fontSize: 18, fontWeight: 900, marginTop: 4 }}>+{fmtL(d.totalPlusOI)}</div>
+                  <div style={{ color: "#555", fontSize: 9, marginTop: 4 }}>Writing + Buying</div>
                 </div>
-                {/* PE Writers */}
-                <div style={{ background: GREEN + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${GREEN}22` }}>
-                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1, marginBottom: 8 }}>PE SELLERS</div>
-                  <div style={{ marginBottom: 4 }}>
-                    <span style={{ color: ORANGE, fontSize: 12, fontWeight: 700 }}>Writing: {fmtL(d.peWritingOI)}</span>
-                  </div>
-                  <div style={{ marginBottom: 4 }}>
-                    <span style={{ color: PURPLE, fontSize: 12, fontWeight: 700 }}>Short Cover: {fmtL(d.peShortCoverOI)}</span>
-                  </div>
-                  <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 4, marginTop: 4 }}>
-                    <span style={{ color: "#888", fontSize: 10 }}>Net: </span>
-                    <span style={{ color: d.peWritingOI > d.peShortCoverOI ? ORANGE : PURPLE, fontSize: 13, fontWeight: 900 }}>
-                      {d.peWritingOI > d.peShortCoverOI ? "Writers Adding" : "Covering"}
-                    </span>
-                  </div>
-                  <div style={{ color: GREEN, fontSize: 10, marginTop: 2 }}>PE write = Support</div>
+                {/* -OI */}
+                <div style={{ background: RED + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${RED}22`, textAlign: "center" }}>
+                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1 }}>-OI (Removed)</div>
+                  <div style={{ color: RED, fontSize: 18, fontWeight: 900, marginTop: 4 }}>-{fmtL(d.totalMinusOI)}</div>
+                  <div style={{ color: "#555", fontSize: 9, marginTop: 4 }}>SC + Unwinding</div>
                 </div>
-                {/* SELLER VERDICT */}
-                <div style={{ background: biasColor + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${biasColor}22`, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center" }}>
-                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1, marginBottom: 6 }}>SELLER VERDICT</div>
-                  <div style={{ color: biasColor, fontSize: 18, fontWeight: 900 }}>{d.sellerBias}</div>
-                  <div style={{ color: "#666", fontSize: 10, marginTop: 6, textAlign: "center" }}>
-                    CE Write: {fmtL(d.ceWritingOI)} | PE Write: {fmtL(d.peWritingOI)}
+                {/* NET */}
+                <div style={{ background: netColor + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${netColor}22`, textAlign: "center" }}>
+                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1 }}>NET CHANGE</div>
+                  <div style={{ color: netColor, fontSize: 18, fontWeight: 900, marginTop: 4 }}>{d.netOIChange > 0 ? "+" : ""}{fmtL(d.netOIChange)}</div>
+                  <div style={{ color: "#555", fontSize: 9, marginTop: 4 }}>Major: {d.majorCount || 0} | Minor: {d.minorCount || 0}</div>
+                </div>
+                {/* VERDICT */}
+                <div style={{ background: biasColor + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${biasColor}22`, textAlign: "center", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1 }}>SELLER BIAS</div>
+                  <div style={{ color: biasColor, fontSize: 18, fontWeight: 900, marginTop: 4 }}>{d.sellerBias}</div>
+                  <div style={{ color: "#555", fontSize: 9, marginTop: 4 }}>Net Seller: {fmtL(d.netSellerOI)}</div>
+                </div>
+              </div>
+            </Card>
+
+            {/* ROW 2: CE/PE SELLER BREAKDOWN */}
+            <Card style={{ background: "#0D0D15", border: `1px solid ${BORDER}` }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                {/* CE SELLERS */}
+                <div style={{ background: RED + "06", borderRadius: 8, padding: "10px 12px", border: `1px solid ${RED}15` }}>
+                  <div style={{ color: RED, fontSize: 11, fontWeight: 900, marginBottom: 8 }}>CE SELLERS (Resistance)</div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ color: "#888", fontSize: 11 }}>Writing (new)</span>
+                    <span style={{ color: ORANGE, fontSize: 12, fontWeight: 900 }}>+{fmtL(d.ceWritingOI)}</span>
                   </div>
-                  <div style={{ color: "#555", fontSize: 10, marginTop: 4 }}>
-                    Net Seller OI: {fmtL(d.netSellerOI)}
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ color: "#888", fontSize: 11 }}>Short Cover (exit)</span>
+                    <span style={{ color: PURPLE, fontSize: 12, fontWeight: 900 }}>-{fmtL(d.ceShortCoverOI)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ color: "#888", fontSize: 11 }}>Buying</span>
+                    <span style={{ color: GREEN, fontSize: 12, fontWeight: 700 }}>+{fmtL(d.ceBuyingOI)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#888", fontSize: 11 }}>Long Unwind</span>
+                    <span style={{ color: RED, fontSize: 12, fontWeight: 700 }}>-{fmtL(d.ceLongUnwindOI)}</span>
+                  </div>
+                </div>
+                {/* PE SELLERS */}
+                <div style={{ background: GREEN + "06", borderRadius: 8, padding: "10px 12px", border: `1px solid ${GREEN}15` }}>
+                  <div style={{ color: GREEN, fontSize: 11, fontWeight: 900, marginBottom: 8 }}>PE SELLERS (Support)</div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ color: "#888", fontSize: 11 }}>Writing (new)</span>
+                    <span style={{ color: ORANGE, fontSize: 12, fontWeight: 900 }}>+{fmtL(d.peWritingOI)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ color: "#888", fontSize: 11 }}>Short Cover (exit)</span>
+                    <span style={{ color: PURPLE, fontSize: 12, fontWeight: 900 }}>-{fmtL(d.peShortCoverOI)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ color: "#888", fontSize: 11 }}>Buying</span>
+                    <span style={{ color: GREEN, fontSize: 12, fontWeight: 700 }}>+{fmtL(d.peBuyingOI)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#888", fontSize: 11 }}>Long Unwind</span>
+                    <span style={{ color: RED, fontSize: 12, fontWeight: 700 }}>-{fmtL(d.peLongUnwindOI)}</span>
                   </div>
                 </div>
               </div>
             </Card>
 
-            {/* PER-STRIKE SELLER TABLE */}
+            {/* ROW 3: STRIKE SHIFTS */}
+            {d.shifts?.length > 0 && (
+              <Card style={{ background: ACCENT + "08", border: `1px solid ${ACCENT}33` }}>
+                <div style={{ color: ACCENT, fontWeight: 900, fontSize: 13, marginBottom: 10 }}>STRIKE SHIFTS — Where Money is Moving</div>
+                {d.shifts.map((sh, i) => (
+                  <div key={i} style={{ background: "#111118", borderRadius: 8, padding: "10px 12px", marginBottom: i < d.shifts.length - 1 ? 8 : 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                      <span style={{ color: sh.side === "CE" ? RED : GREEN, fontWeight: 900, fontSize: 12 }}>{sh.side} SHIFT</span>
+                      <span style={{ background: ACCENT + "22", color: ACCENT, padding: "2px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{sh.meaning}</span>
+                    </div>
+                    <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ color: RED, fontSize: 10, fontWeight: 700, marginBottom: 4 }}>OI LEAVING</div>
+                        {sh.from.map((f, j) => (
+                          <div key={j} style={{ color: RED, fontSize: 11, marginBottom: 2 }}>
+                            {f.strike} ({(f.change/100000).toFixed(1)}L)
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ color: ACCENT, fontSize: 18 }}>&rarr;</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ color: GREEN, fontSize: 10, fontWeight: 700, marginBottom: 4 }}>OI ENTERING</div>
+                        {sh.to.map((t, j) => (
+                          <div key={j} style={{ color: GREEN, fontSize: 11, marginBottom: 2 }}>
+                            {t.strike} (+{(t.change/100000).toFixed(1)}L)
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </Card>
+            )}
+
+            {/* ROW 4: MAJOR CHANGES (>2L or >20%) */}
+            {d.strikes?.some(st => st.ceMagnitude === "MAJOR" || st.peMagnitude === "MAJOR") && (
+              <Card style={{ background: "#0D0D15", border: `1px solid ${RED}33` }}>
+                <div style={{ color: RED, fontWeight: 900, fontSize: 13, marginBottom: 10 }}>MAJOR CHANGES ({">"}2L or {">"}20%)</div>
+                {d.strikes.filter(st => st.ceMagnitude === "MAJOR" || st.peMagnitude === "MAJOR").map((st, i) => (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${BORDER}33` }}>
+                    <span style={{ color: st.isATM ? ACCENT : "#ccc", fontWeight: 700, fontSize: 12, minWidth: 60 }}>{st.strike}{st.isATM ? " ATM" : ""}</span>
+                    {st.ceMagnitude === "MAJOR" && (
+                      <span style={{ fontSize: 11 }}>
+                        <span style={{ color: RED, fontWeight: 700 }}>CE </span>
+                        <span style={{ color: st.ceOIChange > 0 ? GREEN : RED, fontWeight: 900 }}>{st.ceOIChange > 0 ? "+" : ""}{fmtL(st.ceOIChange)} ({st.ceOIChangePct > 0 ? "+" : ""}{st.ceOIChangePct}%)</span>
+                        <span style={{ background: actColor[st.ceActivity] + "22", color: actColor[st.ceActivity], padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 700, marginLeft: 6 }}>{actLabel[st.ceActivity]}</span>
+                      </span>
+                    )}
+                    {st.peMagnitude === "MAJOR" && (
+                      <span style={{ fontSize: 11 }}>
+                        <span style={{ color: GREEN, fontWeight: 700 }}>PE </span>
+                        <span style={{ color: st.peOIChange > 0 ? GREEN : RED, fontWeight: 900 }}>{st.peOIChange > 0 ? "+" : ""}{fmtL(st.peOIChange)} ({st.peOIChangePct > 0 ? "+" : ""}{st.peOIChangePct}%)</span>
+                        <span style={{ background: actColor[st.peActivity] + "22", color: actColor[st.peActivity], padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 700, marginLeft: 6 }}>{actLabel[st.peActivity]}</span>
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </Card>
+            )}
+
+            {/* ROW 5: FULL STRIKE TABLE */}
             <Card style={{ background: "#0D0D15", border: `1px solid ${BORDER}` }}>
-              <div style={{ color: ORANGE, fontWeight: 700, fontSize: 13, marginBottom: 10 }}>{label} STRIKE-WISE SELLER ACTIVITY</div>
+              <div style={{ color: ORANGE, fontWeight: 700, fontSize: 13, marginBottom: 10 }}>{label} ALL STRIKES ({d.strikes?.length || 0} active)</div>
               <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
                   <thead>
                     <tr style={{ borderBottom: `1px solid ${BORDER}` }}>
-                      <th style={{ padding: "6px 8px", color: "#555", textAlign: "left", fontWeight: 700 }}>STRIKE</th>
-                      <th style={{ padding: "6px 8px", color: RED, textAlign: "right", fontWeight: 700 }}>CE OI Chg</th>
-                      <th style={{ padding: "6px 8px", color: RED, textAlign: "right", fontWeight: 700 }}>CE Prem</th>
-                      <th style={{ padding: "6px 8px", color: RED, textAlign: "center", fontWeight: 700 }}>CE Activity</th>
-                      <th style={{ padding: "6px 8px", color: GREEN, textAlign: "right", fontWeight: 700 }}>PE OI Chg</th>
-                      <th style={{ padding: "6px 8px", color: GREEN, textAlign: "right", fontWeight: 700 }}>PE Prem</th>
-                      <th style={{ padding: "6px 8px", color: GREEN, textAlign: "center", fontWeight: 700 }}>PE Activity</th>
+                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "left" }}>STRIKE</th>
+                      <th style={{ padding: "5px 6px", color: RED, textAlign: "right" }}>CE Chg</th>
+                      <th style={{ padding: "5px 6px", color: RED, textAlign: "right" }}>CE %</th>
+                      <th style={{ padding: "5px 6px", color: RED, textAlign: "right" }}>CE Prem</th>
+                      <th style={{ padding: "5px 6px", color: RED, textAlign: "center" }}>CE Type</th>
+                      <th style={{ padding: "5px 6px", color: GREEN, textAlign: "right" }}>PE Chg</th>
+                      <th style={{ padding: "5px 6px", color: GREEN, textAlign: "right" }}>PE %</th>
+                      <th style={{ padding: "5px 6px", color: GREEN, textAlign: "right" }}>PE Prem</th>
+                      <th style={{ padding: "5px 6px", color: GREEN, textAlign: "center" }}>PE Type</th>
                     </tr>
                   </thead>
                   <tbody>
                     {d.strikes?.map((st, i) => (
                       <tr key={i} style={{
-                        borderBottom: `1px solid ${BORDER}44`,
-                        background: st.isATM ? ACCENT + "11" : "transparent",
+                        borderBottom: `1px solid ${BORDER}33`,
+                        background: st.isATM ? ACCENT + "11" : st.ceMagnitude === "MAJOR" || st.peMagnitude === "MAJOR" ? ORANGE + "08" : "transparent",
                       }}>
-                        <td style={{ padding: "5px 8px", color: st.isATM ? ACCENT : "#ccc", fontWeight: st.isATM ? 900 : 400 }}>
-                          {st.strike} {st.isATM ? "ATM" : ""}
-                        </td>
-                        <td style={{ padding: "5px 8px", textAlign: "right", color: st.ceOIChange > 0 ? GREEN : st.ceOIChange < 0 ? RED : "#555", fontWeight: 700 }}>
+                        <td style={{ padding: "4px 6px", color: st.isATM ? ACCENT : "#ccc", fontWeight: st.isATM ? 900 : 400 }}>{st.strike}{st.isATM ? " ATM" : ""}</td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: st.ceOIChange > 0 ? GREEN : st.ceOIChange < 0 ? RED : "#555", fontWeight: 700 }}>
                           {st.ceOIChange > 0 ? "+" : ""}{fmtL(st.ceOIChange)}
                         </td>
-                        <td style={{ padding: "5px 8px", textAlign: "right", color: st.cePremChange > 0 ? GREEN : st.cePremChange < 0 ? RED : "#555" }}>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: Math.abs(st.ceOIChangePct) > 20 ? ORANGE : "#888", fontWeight: Math.abs(st.ceOIChangePct) > 20 ? 900 : 400 }}>
+                          {st.ceOIChangePct > 0 ? "+" : ""}{st.ceOIChangePct}%
+                        </td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: st.cePremChange > 0 ? GREEN : st.cePremChange < 0 ? RED : "#555" }}>
                           {st.cePremChange > 0 ? "+" : ""}{st.cePremChange?.toFixed(1)}
                         </td>
-                        <td style={{ padding: "5px 8px", textAlign: "center" }}>
-                          <span style={{
-                            background: actColor[st.ceActivity] + "22",
-                            color: actColor[st.ceActivity],
-                            padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700,
-                          }}>{actLabel[st.ceActivity]}</span>
+                        <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                          <span style={{ background: actColor[st.ceActivity] + "22", color: actColor[st.ceActivity], padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 700 }}>{actLabel[st.ceActivity]}</span>
                         </td>
-                        <td style={{ padding: "5px 8px", textAlign: "right", color: st.peOIChange > 0 ? GREEN : st.peOIChange < 0 ? RED : "#555", fontWeight: 700 }}>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: st.peOIChange > 0 ? GREEN : st.peOIChange < 0 ? RED : "#555", fontWeight: 700 }}>
                           {st.peOIChange > 0 ? "+" : ""}{fmtL(st.peOIChange)}
                         </td>
-                        <td style={{ padding: "5px 8px", textAlign: "right", color: st.pePremChange > 0 ? GREEN : st.pePremChange < 0 ? RED : "#555" }}>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: Math.abs(st.peOIChangePct) > 20 ? ORANGE : "#888", fontWeight: Math.abs(st.peOIChangePct) > 20 ? 900 : 400 }}>
+                          {st.peOIChangePct > 0 ? "+" : ""}{st.peOIChangePct}%
+                        </td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: st.pePremChange > 0 ? GREEN : st.pePremChange < 0 ? RED : "#555" }}>
                           {st.pePremChange > 0 ? "+" : ""}{st.pePremChange?.toFixed(1)}
                         </td>
-                        <td style={{ padding: "5px 8px", textAlign: "center" }}>
-                          <span style={{
-                            background: actColor[st.peActivity] + "22",
-                            color: actColor[st.peActivity],
-                            padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700,
-                          }}>{actLabel[st.peActivity]}</span>
+                        <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                          <span style={{ background: actColor[st.peActivity] + "22", color: actColor[st.peActivity], padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 700 }}>{actLabel[st.peActivity]}</span>
                         </td>
                       </tr>
                     ))}
@@ -982,7 +1068,7 @@ function SellersTab({ data }) {
                 </table>
               </div>
               {(!d.strikes || d.strikes.length === 0) && (
-                <div style={{ textAlign: "center", padding: 20, color: "#555", fontSize: 12 }}>No strike activity yet. Data will appear when market is active.</div>
+                <div style={{ textAlign: "center", padding: 20, color: "#555", fontSize: 12 }}>No strike activity yet.</div>
               )}
             </Card>
           </div>
