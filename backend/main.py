@@ -250,6 +250,24 @@ async def weekly():
     return _get_or_cache("weekly", lambda: engine.get_weekly())
 
 
+@app.get("/api/export-daily")
+async def export_daily():
+    """Collects ALL data types for full A-Z PDF export."""
+    return {
+        "date": ist_now().strftime("%Y-%m-%d"),
+        "generated": ist_now().strftime("%I:%M:%S %p IST"),
+        "live": _get_or_cache("live", lambda: engine.get_live_data() if engine else None),
+        "unusual": _get_or_cache("unusual", lambda: engine.get_unusual() if engine else []),
+        "signals": _get_or_cache("signals", lambda: engine.get_signals() if engine else []),
+        "oiSummary": _get_or_cache("oi_summary", lambda: engine.get_oi_change_summary() if engine else {}),
+        "sellerData": _get_or_cache("seller_summary", lambda: engine.get_seller_summary() if engine else {}),
+        "tradeAnalysis": _get_or_cache("trade_analysis", lambda: engine.get_trade_analysis() if engine else {}),
+        "intraday": _get_or_cache("intraday", lambda: engine.get_intraday() if engine else {}),
+        "nextday": _get_or_cache("nextday", lambda: engine.get_nextday() if engine else {}),
+        "weekly": _get_or_cache("weekly", lambda: engine.get_weekly() if engine else {}),
+    }
+
+
 # ── WebSocket Route ──────────────────────────────────────────────────────
 
 @app.websocket("/ws/ticks")

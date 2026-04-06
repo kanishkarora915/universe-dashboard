@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useMarketData } from "./useMarketData";
 import OIChangeTab from "./OIChangeTab";
 import PnLTracker from "./PnLTracker";
-import { exportSignalsToPDF } from "./pdfExport";
+import { exportSignalsToPDF, exportFullReport } from "./pdfExport";
 
 const ACCENT = "#0A84FF";
 const BG = "#0A0A0F";
@@ -1241,6 +1241,13 @@ export default function Universe({ onLogout }) {
               {isMarketOpen ? "\u25CF MARKET OPEN" : "\u25CF MARKET CLOSED"}
             </div>
           </div>
+          <button onClick={() => exportFullReport({ live, unusual, signals, oiSummary, sellerData, tradeAnalysis, intraday, nextday, weekly })} style={{
+              background: ACCENT + "18", color: ACCENT, border: `1px solid ${ACCENT}33`,
+              borderRadius: 8, padding: "6px 14px", cursor: "pointer",
+              fontSize: 11, fontWeight: 700, whiteSpace: "nowrap",
+            }}>
+              Export PDF
+          </button>
           {onLogout && (
             <button onClick={onLogout} style={{
               background: RED + "18", color: RED, border: `1px solid ${RED}33`,

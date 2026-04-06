@@ -1,24 +1,36 @@
 /**
  * useMarketData — Custom hook for ALL real-time market data.
- * Caches ALL data in localStorage so it persists across refreshes and restarts.
+ * Caches ALL data in date-stamped localStorage for session restore.
+ * Auto-cleans old dates (keeps last 7 days).
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { fetchLive, fetchUnusual, fetchIntraday, fetchNextDay, fetchWeekly, fetchSignals, fetchOISummary, fetchSellerSummary, fetchTradeAnalysis } from "./api";
 
-const CACHE_KEY = "universe_data_cache";
+// ── Date-stamped cache helpers ──────────────────────────────────────────
+
+function getTodayIST() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }); // YYYY-MM-DD
+}
+
+function getCacheKey() {
+  return `universe_data_${getTodayIST()}`;
+}
 
 function loadCache() {
   try {
-    const raw = localStorage.getItem(CACHE_KEY);
+    const raw = localStorage.getItem(getCacheKey());
     return raw ? JSON.parse(raw) : {};
   } catch { return {}; }
 }
 
 function saveCache(data) {
   try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify(data));
-  } catch { /* storage full */ }
+    localStorage.setItem(getCacheKey(), JSON.stringify(data));
+  } catch { /* storage full — try cleanup */
+    cleanupOldDates(3);
+    try { localStorage.setItem(getCacheKey(), JSON.stringify(data)); } catch {}
+  }
 }
 
 function getCached(key) {
@@ -32,8 +44,28 @@ function setCached(key, value) {
   saveCache(cache);
 }
 
+function cleanupOldDates(keepDays = 7) {
+  const today = new Date();
+  const keysToRemove = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith("universe_data_") && k !== getCacheKey()) {
+      const dateStr = k.replace("universe_data_", "");
+      const d = new Date(dateStr);
+      const diffDays = (today - d) / (1000 * 60 * 60 * 24);
+      if (diffDays > keepDays) keysToRemove.push(k);
+    }
+  }
+  keysToRemove.forEach(k => localStorage.removeItem(k));
+  // Also remove legacy non-dated cache
+  localStorage.removeItem("universe_data_cache");
+}
+
 export function useMarketData() {
-  // Load from localStorage on first render
+  // Cleanup old dates on mount
+  useEffect(() => { cleanupOldDates(7); }, []);
+
+  // Load from today's localStorage on first render
   const [live, setLive] = useState(() => getCached("live"));
   const [unusual, setUnusual] = useState(() => getCached("unusual") || []);
   const [intraday, setIntraday] = useState(() => getCached("intraday"));

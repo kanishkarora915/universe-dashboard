@@ -87,3 +87,9 @@ export async function fetchTradeAnalysis() {
   if (!res.ok) return null;
   return res.json();
 }
+
+export async function fetchDailyExport() {
+  const res = await fetch("/api/export-daily");
+  if (!res.ok) return null;
+  return res.json();
+}
