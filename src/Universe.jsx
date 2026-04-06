@@ -826,7 +826,7 @@ function UnusualTab({ unusualData, oiData }) {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
             <div>
               <div style={{ color: alertColor[u.alert], fontWeight: 700, fontSize: 14, marginBottom: 4 }}>
-                {u.type} \u2014 {u.instrument}
+                {u.type} {"\u2014"} {u.instrument}
               </div>
               <div style={{ color: "#555", fontSize: 11 }}>{u.time}</div>
             </div>
@@ -843,7 +843,7 @@ function UnusualTab({ unusualData, oiData }) {
             </div>
           </div>
           <div style={{ padding: "8px 12px", background: alertColor[u.alert] + "11", borderRadius: 8, color: alertColor[u.alert], fontSize: 12, fontWeight: 600 }}>
-            \u2192 {u.signal}
+            {"\u2192"} {u.signal}
           </div>
         </Card>
       ))}

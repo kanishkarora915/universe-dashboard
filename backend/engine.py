@@ -633,34 +633,37 @@ class MarketEngine:
             reasons = []
             recommendations = []
 
-            # Determine market structure
+            # Determine market structure (BUYER ONLY — never recommend SELL)
             if bias == "BEARISH":
                 reasons.append(f"CE writers dominating: {ce_writing/100000:.1f}L vs PE writers: {pe_writing/100000:.1f}L")
                 if ce_writing_strikes:
                     resistance = ce_writing_strikes[0]["strike"]
                     reasons.append(f"Heavy CE writing at {int(resistance)} = strong resistance")
+                    # ATM or 1 strike OTM PE for buying
+                    buy_strike = int(atm)
                     recommendations.append({
-                        "action": "SELL CE" if ltp < resistance else "BUY PE",
-                        "strike": int(resistance),
-                        "reason": f"Sellers capping upside at {int(resistance)}. CE writing OI: {ce_writing_strikes[0]['ceOIChange']/100000:.1f}L",
+                        "action": "BUY PE",
+                        "strike": buy_strike,
+                        "reason": f"Resistance capped at {int(resistance)} by CE writers ({ce_writing_strikes[0]['ceOIChange']/100000:.1f}L). Market likely to stay below. Buy PE at ATM {buy_strike}.",
                         "confidence": "HIGH" if ce_writing > pe_writing * 2 else "MEDIUM",
                     })
                 if pe_sc > 0:
-                    reasons.append(f"PE short covering: {pe_sc/100000:.1f}L = support weakening")
+                    reasons.append(f"PE short covering: {pe_sc/100000:.1f}L = support weakening, more downside likely")
 
             elif bias == "BULLISH":
                 reasons.append(f"PE writers dominating: {pe_writing/100000:.1f}L vs CE writers: {ce_writing/100000:.1f}L")
                 if pe_writing_strikes:
                     support = pe_writing_strikes[0]["strike"]
                     reasons.append(f"Heavy PE writing at {int(support)} = strong support")
+                    buy_strike = int(atm)
                     recommendations.append({
-                        "action": "BUY CE" if ltp > support else "SELL PE",
-                        "strike": int(support),
-                        "reason": f"Sellers defending support at {int(support)}. PE writing OI: {pe_writing_strikes[0]['peOIChange']/100000:.1f}L",
+                        "action": "BUY CE",
+                        "strike": buy_strike,
+                        "reason": f"Support defended at {int(support)} by PE writers ({pe_writing_strikes[0]['peOIChange']/100000:.1f}L). Market likely to bounce. Buy CE at ATM {buy_strike}.",
                         "confidence": "HIGH" if pe_writing > ce_writing * 2 else "MEDIUM",
                     })
                 if ce_sc > 0:
-                    reasons.append(f"CE short covering: {ce_sc/100000:.1f}L = resistance weakening")
+                    reasons.append(f"CE short covering: {ce_sc/100000:.1f}L = resistance weakening, upside opening")
 
             else:
                 reasons.append(f"CE writing: {ce_writing/100000:.1f}L, PE writing: {pe_writing/100000:.1f}L — balanced")
@@ -669,10 +672,10 @@ class MarketEngine:
                     support = pe_writing_strikes[0]["strike"]
                     reasons.append(f"Range: {int(support)}-{int(resistance)}")
                     recommendations.append({
-                        "action": "SELL STRADDLE/STRANGLE",
+                        "action": "WAIT",
                         "strike": int(atm),
-                        "reason": f"Range bound between {int(support)}-{int(resistance)}. Both CE & PE sellers active.",
-                        "confidence": "MEDIUM",
+                        "reason": f"Range bound {int(support)}-{int(resistance)}. No clear direction for buying. Wait for breakout above {int(resistance)} (BUY CE) or below {int(support)} (BUY PE).",
+                        "confidence": "LOW",
                     })
 
             # Add unusual alert context
