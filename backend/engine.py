@@ -204,6 +204,7 @@ class MarketEngine:
         self.spot_tokens = {}
         self.spot_prev_close = {}
         self.prev_oi = {}
+        self.initial_oi = {}  # Stores OI at market open — never overwritten
         self.option_symbols = {}   # {token: "NFO:SYMBOL"} for quote fetching
 
         # ── Expiry tracking ──
@@ -355,8 +356,8 @@ class MarketEngine:
                         else:
                             pe_token = tok
 
-                ce_oi_initial = self.prev_oi.get(ce_token, ce_oi) if ce_token else ce_oi
-                pe_oi_initial = self.prev_oi.get(pe_token, pe_oi) if pe_token else pe_oi
+                ce_oi_initial = self.initial_oi.get(ce_token, ce_oi) if ce_token else ce_oi
+                pe_oi_initial = self.initial_oi.get(pe_token, pe_oi) if pe_token else pe_oi
                 ce_oi_change = ce_oi - ce_oi_initial
                 pe_oi_change = pe_oi - pe_oi_initial
 
@@ -1154,6 +1155,7 @@ class MarketEngine:
 
                                 # Store initial OI for unusual detection
                                 self.prev_oi[tok] = q.get("oi", 0)
+                                self.initial_oi[tok] = q.get("oi", 0)
                                 break
 
                     time.sleep(0.4)  # Rate limit

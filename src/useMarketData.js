@@ -1,24 +1,66 @@
 /**
  * useMarketData — Custom hook for ALL real-time market data.
- * Fetches: live data, intraday technicals, next day levels, weekly outlook, unusual activity.
+ * Caches ALL data in localStorage so it persists across refreshes and restarts.
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { fetchLive, fetchUnusual, fetchIntraday, fetchNextDay, fetchWeekly, fetchSignals, fetchOISummary } from "./api";
 
+const CACHE_KEY = "universe_data_cache";
+
+function loadCache() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+function saveCache(data) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify(data));
+  } catch { /* storage full */ }
+}
+
+function getCached(key) {
+  return loadCache()[key] || null;
+}
+
+function setCached(key, value) {
+  const cache = loadCache();
+  cache[key] = value;
+  cache._lastUpdated = new Date().toISOString();
+  saveCache(cache);
+}
+
 export function useMarketData() {
-  const [live, setLive] = useState(null);
-  const [unusual, setUnusual] = useState([]);
-  const [intraday, setIntraday] = useState(null);
-  const [nextday, setNextday] = useState(null);
-  const [weekly, setWeekly] = useState(null);
-  const [signals, setSignals] = useState([]);
-  const [oiSummary, setOiSummary] = useState(null);
+  // Load from localStorage on first render
+  const [live, setLive] = useState(() => getCached("live"));
+  const [unusual, setUnusual] = useState(() => getCached("unusual") || []);
+  const [intraday, setIntraday] = useState(() => getCached("intraday"));
+  const [nextday, setNextday] = useState(() => getCached("nextday"));
+  const [weekly, setWeekly] = useState(() => getCached("weekly"));
+  const [signals, setSignals] = useState(() => getCached("signals") || []);
+  const [oiSummary, setOiSummary] = useState(() => getCached("oiSummary"));
   const [connected, setConnected] = useState(false);
   const wsRef = useRef(null);
   const pollRef = useRef(null);
   const reconnectRef = useRef(null);
   const slowPollRef = useRef(null);
+
+  // ── Helper: set state + cache ───────────────────────────────────────
+
+  const setAndCache = useCallback((key, setter) => (data) => {
+    setter(data);
+    setCached(key, data);
+  }, []);
+
+  const setLiveCached = useCallback(setAndCache("live", setLive), []);
+  const setUnusualCached = useCallback(setAndCache("unusual", setUnusual), []);
+  const setIntradayCached = useCallback(setAndCache("intraday", setIntraday), []);
+  const setNextdayCached = useCallback(setAndCache("nextday", setNextday), []);
+  const setWeeklyCached = useCallback(setAndCache("weekly", setWeekly), []);
+  const setSignalsCached = useCallback(setAndCache("signals", setSignals), []);
+  const setOiSummaryCached = useCallback(setAndCache("oiSummary", setOiSummary), []);
 
   // ── Fetch all tab data (called once + every 30s) ──────────────────────
 
@@ -32,14 +74,14 @@ export function useMarketData() {
         fetchSignals().catch(() => []),
         fetchOISummary().catch(() => null),
       ]);
-      if (intradayData) setIntraday(intradayData);
-      if (nextdayData) setNextday(nextdayData);
-      if (weeklyData) setWeekly(weeklyData);
-      if (Array.isArray(unusualData) && unusualData.length > 0) setUnusual(unusualData);
-      if (Array.isArray(signalsData) && signalsData.length > 0) setSignals(signalsData);
-      if (oiData) setOiSummary(oiData);
+      if (intradayData && !intradayData.error) setIntradayCached(intradayData);
+      if (nextdayData && !nextdayData.error) setNextdayCached(nextdayData);
+      if (weeklyData && !weeklyData.error) setWeeklyCached(weeklyData);
+      if (Array.isArray(unusualData) && unusualData.length > 0) setUnusualCached(unusualData);
+      if (Array.isArray(signalsData) && signalsData.length > 0) setSignalsCached(signalsData);
+      if (oiData && !oiData.error) setOiSummaryCached(oiData);
     } catch (err) {
-      // Backend not available
+      // Backend not available — localStorage cache still active
     }
   }, []);
 
@@ -66,10 +108,10 @@ export function useMarketData() {
         try {
           const msg = JSON.parse(event.data);
           if (msg.channel === "live" && msg.data) {
-            setLive(msg.data);
+            setLiveCached(msg.data);
           }
           if (msg.unusual && msg.unusual.length > 0) {
-            setUnusual(msg.unusual);
+            setUnusualCached(msg.unusual);
           }
         } catch (err) {}
       };
@@ -96,9 +138,9 @@ export function useMarketData() {
     const poll = async () => {
       try {
         const liveData = await fetchLive();
-        if (liveData && !liveData.error) setLive(liveData);
+        if (liveData && !liveData.error) setLiveCached(liveData);
         const unusualData = await fetchUnusual();
-        if (Array.isArray(unusualData)) setUnusual(unusualData);
+        if (Array.isArray(unusualData) && unusualData.length > 0) setUnusualCached(unusualData);
       } catch (err) {}
     };
     poll();
@@ -108,10 +150,7 @@ export function useMarketData() {
   // ── Lifecycle ─────────────────────────────────────────────────────────
 
   useEffect(() => {
-    // Connect WebSocket for live data
     connectWS();
-
-    // Fetch all tab data immediately + every 30 seconds
     fetchAllTabData();
     slowPollRef.current = setInterval(fetchAllTabData, 30000);
 
