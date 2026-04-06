@@ -673,7 +673,7 @@ class MarketEngine:
             now = ist_now()
             for snap in reversed(self.oi_snapshots[:-1] if len(self.oi_snapshots) > 1 else self.oi_snapshots):
                 age_min = (now - snap["time"]).total_seconds() / 60
-                if age_min >= 25:  # At least ~30 min old
+                if age_min >= 10:  # At least ~10 min old (was 25, too strict)
                     ref_snapshot = snap
                     break
             if not ref_snapshot:
@@ -686,14 +686,22 @@ class MarketEngine:
             cfg = INDEX_CONFIG[index]
             atm = round(current_price / cfg["strike_gap"]) * cfg["strike_gap"] if current_price > 0 else 0
 
-            # Reference data
+            # Reference data — use snapshot if available, else fall back to initial_oi/initial_ltp
             ref_price = 0
             ref_chains = {}
             snapshot_age_min = 0
+            use_initial_fallback = False
+
             if ref_snapshot:
                 ref_price = ref_snapshot["prices"].get(index, current_price)
                 ref_chains = ref_snapshot["chains"].get(index, {})
                 snapshot_age_min = round((ist_now() - ref_snapshot["time"]).total_seconds() / 60)
+            elif self.initial_oi:
+                # No snapshots yet — use initial_oi from market open as reference
+                use_initial_fallback = True
+                prev_close = self.spot_prev_close.get(index, current_price)
+                ref_price = prev_close
+                snapshot_age_min = -1  # Flag: using market open data
 
             price_move = abs(current_price - ref_price) if ref_price else 0
             price_direction = "UP" if current_price > ref_price else "DOWN" if current_price < ref_price else "FLAT"
@@ -720,11 +728,26 @@ class MarketEngine:
                 ce_ltp = data.get("ce_ltp", 0)
                 pe_ltp = data.get("pe_ltp", 0)
 
-                ref_data = ref_chains.get(strike, {})
-                ref_ce_oi = ref_data.get("ce_oi", ce_oi)
-                ref_pe_oi = ref_data.get("pe_oi", pe_oi)
-                ref_ce_ltp = ref_data.get("ce_ltp", ce_ltp)
-                ref_pe_ltp = ref_data.get("pe_ltp", pe_ltp)
+                if use_initial_fallback:
+                    # Use initial_oi from market open
+                    ce_token = None
+                    pe_token = None
+                    for tok, inf in self.token_to_info.items():
+                        if inf["index"] == index and inf["strike"] == strike:
+                            if inf["opt_type"] == "CE":
+                                ce_token = tok
+                            else:
+                                pe_token = tok
+                    ref_ce_oi = self.initial_oi.get(ce_token, ce_oi) if ce_token else ce_oi
+                    ref_pe_oi = self.initial_oi.get(pe_token, pe_oi) if pe_token else pe_oi
+                    ref_ce_ltp = self.initial_ltp.get(ce_token, ce_ltp) if ce_token else ce_ltp
+                    ref_pe_ltp = self.initial_ltp.get(pe_token, pe_ltp) if pe_token else pe_ltp
+                else:
+                    ref_data = ref_chains.get(strike, {})
+                    ref_ce_oi = ref_data.get("ce_oi", ce_oi)
+                    ref_pe_oi = ref_data.get("pe_oi", pe_oi)
+                    ref_ce_ltp = ref_data.get("ce_ltp", ce_ltp)
+                    ref_pe_ltp = ref_data.get("pe_ltp", pe_ltp)
 
                 ce_oi_change = ce_oi - ref_ce_oi
                 pe_oi_change = pe_oi - ref_pe_oi
@@ -995,21 +1018,29 @@ class MarketEngine:
                     candles = self.kite.historical_data(
                         spot_token, ist_now() - timedelta(days=2), ist_now(), "5minute"
                     )
-                except Exception:
+                except Exception as e:
+                    print(f"[SIGNALS] Historical data fetch failed for {index}: {e}")
                     candles = []
 
-                if not candles or len(candles) < 30:
-                    continue
-
-                closes = [c["close"] for c in candles]
-                highs = [c["high"] for c in candles]
-                lows = [c["low"] for c in candles]
-
-                ema20 = self._ema(closes, 20)
-                ema50 = self._ema(closes, 50) if len(closes) >= 50 else ema20
-                rsi = self._compute_rsi(closes, 14)
-                macd_line, signal_line, histogram = self._compute_macd(closes)
-                supertrend, st_dir = self._compute_supertrend(highs, lows, closes, 10, 3)
+                has_technicals = candles and len(candles) >= 30
+                if has_technicals:
+                    closes = [c["close"] for c in candles]
+                    highs = [c["high"] for c in candles]
+                    lows = [c["low"] for c in candles]
+                    ema20 = self._ema(closes, 20)
+                    ema50 = self._ema(closes, 50) if len(closes) >= 50 else ema20
+                    rsi = self._compute_rsi(closes, 14)
+                    macd_line, signal_line, histogram = self._compute_macd(closes)
+                    supertrend, st_dir = self._compute_supertrend(highs, lows, closes, 10, 3)
+                else:
+                    # Fallback: use price action only
+                    ema20 = prev_close
+                    ema50 = prev_close
+                    rsi = 50 + (change_pct * 5)  # Rough RSI estimate from price change
+                    rsi = max(20, min(80, rsi))
+                    histogram = change_pct
+                    supertrend = prev_close
+                    st_dir = -1 if change_pct < -0.3 else (1 if change_pct > 0.3 else 0)
 
                 pcr = compute_pcr(chain)
                 max_pain = compute_max_pain(chain, ltp)
@@ -1116,13 +1147,13 @@ class MarketEngine:
 
                 # 5. OI buildup at key strikes (1 pt)
                 if is_bearish:
-                    passed = big_ce_oi > 2000000  # 20L+ OI at resistance
+                    passed = big_ce_oi > 500000  # 5L+ OI at resistance
                     reasoning.append({
                         "pass": True if passed else "warn",
                         "text": f"Big CE OI wall {int(big_ce)} — {big_ce_oi/100000:.1f}L contracts — {'strong resistance cap' if passed else 'moderate resistance'}"
                     })
                 else:
-                    passed = big_pe_oi > 2000000
+                    passed = big_pe_oi > 500000  # 5L+ OI at support
                     reasoning.append({
                         "pass": True if passed else "warn",
                         "text": f"Big PE OI wall {int(big_pe)} — {big_pe_oi/100000:.1f}L contracts — {'strong support zone' if passed else 'moderate support'}"
@@ -1152,7 +1183,7 @@ class MarketEngine:
                     for strike in sorted(chain.keys()):
                         if strike > ltp:
                             ce_oi = chain[strike].get("ce_oi", 0)
-                            if ce_oi > 1000000:
+                            if ce_oi > 300000:  # 3L+
                                 nearest_ce_above = strike
                                 break
                     passed = nearest_ce_above > 0 and (nearest_ce_above - ltp) < cfg["strike_gap"] * 3
@@ -1165,7 +1196,7 @@ class MarketEngine:
                     for strike in sorted(chain.keys(), reverse=True):
                         if strike < ltp:
                             pe_oi = chain[strike].get("pe_oi", 0)
-                            if pe_oi > 1000000:
+                            if pe_oi > 300000:  # 3L+
                                 nearest_pe_below = strike
                                 break
                     passed = nearest_pe_below > 0 and (ltp - nearest_pe_below) < cfg["strike_gap"] * 3
@@ -1195,7 +1226,7 @@ class MarketEngine:
                     score += 1
 
                 # ── Skip if score too low ──
-                if score < 4:
+                if score < 3:
                     continue
 
                 # ── Compute strike, entry, targets, SL ──
@@ -1901,6 +1932,12 @@ class MarketEngine:
                 chain_entry[f"{opt_type}_oi"] = tick.get("oi", 0)
                 chain_entry[f"{opt_type}_volume"] = tick.get("volume_traded", tick.get("volume", 0))
 
+                # Backfill initial_oi/initial_ltp from first tick if not set during initial fetch
+                if token not in self.initial_oi:
+                    self.initial_oi[token] = tick.get("oi", 0)
+                    self.initial_ltp[token] = tick.get("last_price", 0)
+                    self.prev_oi[token] = tick.get("oi", 0)
+
                 self._check_unusual(token, tick, info)
 
         # Throttled push (every 1s)
@@ -1919,15 +1956,35 @@ class MarketEngine:
         prev_close = tick.get("close", 0) or tick.get("ohlc", {}).get("close", 0)
         volume = tick.get("volume_traded", tick.get("volume", 0))
 
-        prev_oi = self.prev_oi.get(token, oi)
-        prev_ltp = self.prev_oi.get(f"{token}_ltp", ltp)
-        oi_change = oi - prev_oi
-        prem_change = round(ltp - prev_ltp, 2) if prev_ltp else 0
+        # Use cumulative OI change from market open (initial_oi), not tick-to-tick
+        open_oi = self.initial_oi.get(token, oi)
+        open_ltp = self.initial_ltp.get(token, ltp)
+        oi_change = oi - open_oi
+        prem_change = round(ltp - open_ltp, 2) if open_ltp else 0
 
+        # Track prev values for tick-level detection
+        prev_oi_val = self.prev_oi.get(token, oi)
+        tick_oi_change = oi - prev_oi_val
         self.prev_oi[token] = oi
         self.prev_oi[f"{token}_ltp"] = ltp
 
-        if abs(oi_change) > 100000:  # 1L threshold
+        # Alert on cumulative OI change > 1L from open, but only when tick moves OI
+        # (to avoid re-alerting the same cumulative every tick)
+        already_alerted_key = f"{token}_alerted_level"
+        last_alerted_level = self.prev_oi.get(already_alerted_key, 0)
+        abs_oi_change = abs(oi_change)
+
+        # Alert at 1L, 2L, 5L milestones (avoid spam)
+        alert_milestone = 0
+        if abs_oi_change > 500000 and last_alerted_level < 500000:
+            alert_milestone = 500000
+        elif abs_oi_change > 200000 and last_alerted_level < 200000:
+            alert_milestone = 200000
+        elif abs_oi_change > 100000 and last_alerted_level < 100000:
+            alert_milestone = 100000
+
+        if alert_milestone > 0 and tick_oi_change != 0:
+            self.prev_oi[already_alerted_key] = abs_oi_change
             now_ist = ist_now()
             now = now_ist.strftime("%I:%M %p IST")
             instrument = f"{info['index']} {int(info['strike'])} {info['opt_type']}"
