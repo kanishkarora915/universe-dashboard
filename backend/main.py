@@ -240,6 +240,11 @@ async def signals():
     return _get_or_cache("signals", lambda: engine.get_signals())
 
 
+@app.get("/api/price-action")
+async def price_action():
+    return _get_or_cache("price_action", lambda: engine.get_price_action())
+
+
 @app.get("/api/intraday")
 async def intraday():
     return _get_or_cache("intraday", lambda: engine.get_intraday())

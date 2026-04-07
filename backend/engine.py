@@ -209,8 +209,12 @@ class MarketEngine:
         self.option_symbols = {}   # {token: "NFO:SYMBOL"} for quote fetching
 
         # ── Hourly OI snapshots for Hidden Shift detection ──
-        self.oi_snapshots = []     # List of {"time": datetime, "chains": {index: {strike: {ce_oi, pe_oi, ce_ltp, pe_ltp}}}, "prices": {index: ltp}}
+        self.oi_snapshots = []
         self._last_snapshot_time = 0
+
+        # ── Price Action: LTP history for ATM±3 strikes ──
+        self.ltp_history = {}  # {(index, strike, opt_type): [{"t": time, "ltp": x, "oi": y}, ...]}
+        self._pa_last_record = 0
 
         # ── Expiry tracking ──
         self.nearest_expiry = {}   # {"NIFTY": date, "BANKNIFTY": date}
@@ -2191,6 +2195,252 @@ class MarketEngine:
         # OI snapshot every 30 minutes for Hidden Shift detection
         if now - self._last_snapshot_time >= 1800:
             self._take_oi_snapshot()
+
+        # Price Action: record ATM±3 LTP every 10 seconds
+        if now - self._pa_last_record >= 10:
+            self._pa_last_record = now
+            self._record_price_action()
+
+    def _record_price_action(self):
+        """Record LTP + OI for ATM±3 strikes every 10s for Price Action analysis."""
+        now_ts = ist_now()
+        for index in ["NIFTY", "BANKNIFTY"]:
+            spot_token = self.spot_tokens.get(index)
+            ltp = self.prices.get(spot_token, {}).get("ltp", 0)
+            if ltp <= 0:
+                continue
+            cfg = INDEX_CONFIG[index]
+            atm = round(ltp / cfg["strike_gap"]) * cfg["strike_gap"]
+            chain = self.chains.get(index, {})
+
+            for offset in range(-3, 4):
+                strike = atm + offset * cfg["strike_gap"]
+                data = chain.get(strike, {})
+                for opt in ["ce", "pe"]:
+                    key = (index, strike, opt.upper())
+                    oltp = data.get(f"{opt}_ltp", 0)
+                    ooi = data.get(f"{opt}_oi", 0)
+                    if oltp <= 0:
+                        continue
+                    if key not in self.ltp_history:
+                        self.ltp_history[key] = []
+                    self.ltp_history[key].append({"t": now_ts.isoformat(), "ltp": oltp, "oi": ooi})
+                    # Keep last 360 entries (~1 hour at 10s intervals)
+                    if len(self.ltp_history[key]) > 360:
+                        self.ltp_history[key] = self.ltp_history[key][-360:]
+
+    def get_price_action(self) -> dict:
+        """Analyze ATM±3 CE/PE LTP+OI for imbalance, traps, sudden moves → trade signal."""
+        result = {}
+        for index in ["NIFTY", "BANKNIFTY"]:
+            spot_token = self.spot_tokens.get(index)
+            spot_ltp = self.prices.get(spot_token, {}).get("ltp", 0)
+            if spot_ltp <= 0:
+                continue
+            cfg = INDEX_CONFIG[index]
+            atm = round(spot_ltp / cfg["strike_gap"]) * cfg["strike_gap"]
+            chain = self.chains.get(index, {})
+            prev_close = self.spot_prev_close.get(index, spot_ltp)
+
+            strikes_analysis = []
+            total_ce_ltp = 0
+            total_pe_ltp = 0
+            total_ce_oi = 0
+            total_pe_oi = 0
+            ce_momentum = 0  # +ve = CE LTP rising, -ve = falling
+            pe_momentum = 0
+            alerts = []
+
+            for offset in range(-3, 4):
+                strike = atm + offset * cfg["strike_gap"]
+                data = chain.get(strike, {})
+                ce_ltp = data.get("ce_ltp", 0)
+                pe_ltp = data.get("pe_ltp", 0)
+                ce_oi = data.get("ce_oi", 0)
+                pe_oi = data.get("pe_oi", 0)
+
+                # Get history
+                ce_hist = self.ltp_history.get((index, strike, "CE"), [])
+                pe_hist = self.ltp_history.get((index, strike, "PE"), [])
+
+                # LTP change (last 5 min = ~30 entries)
+                ce_ltp_5m_ago = ce_hist[-30]["ltp"] if len(ce_hist) >= 30 else (ce_hist[0]["ltp"] if ce_hist else ce_ltp)
+                pe_ltp_5m_ago = pe_hist[-30]["ltp"] if len(pe_hist) >= 30 else (pe_hist[0]["ltp"] if pe_hist else pe_ltp)
+                ce_oi_5m_ago = ce_hist[-30]["oi"] if len(ce_hist) >= 30 else (ce_hist[0]["oi"] if ce_hist else ce_oi)
+                pe_oi_5m_ago = pe_hist[-30]["oi"] if len(pe_hist) >= 30 else (pe_hist[0]["oi"] if pe_hist else pe_oi)
+
+                ce_ltp_change = round(ce_ltp - ce_ltp_5m_ago, 2)
+                pe_ltp_change = round(pe_ltp - pe_ltp_5m_ago, 2)
+                ce_ltp_pct = round((ce_ltp_change / ce_ltp_5m_ago) * 100, 1) if ce_ltp_5m_ago > 0 else 0
+                pe_ltp_pct = round((pe_ltp_change / pe_ltp_5m_ago) * 100, 1) if pe_ltp_5m_ago > 0 else 0
+                ce_oi_change = ce_oi - ce_oi_5m_ago
+                pe_oi_change = pe_oi - pe_oi_5m_ago
+
+                # Initial OI for open comparison
+                ce_token = pe_token = None
+                for tok, info in self.token_to_info.items():
+                    if info["index"] == index and info["strike"] == strike:
+                        if info["opt_type"] == "CE": ce_token = tok
+                        else: pe_token = tok
+                ce_oi_from_open = ce_oi - self.initial_oi.get(ce_token, ce_oi) if ce_token else 0
+                pe_oi_from_open = pe_oi - self.initial_oi.get(pe_token, pe_oi) if pe_token else 0
+
+                total_ce_ltp += ce_ltp
+                total_pe_ltp += pe_ltp
+                total_ce_oi += ce_oi
+                total_pe_oi += pe_oi
+                ce_momentum += ce_ltp_change
+                pe_momentum += pe_ltp_change
+
+                # ── Detect anomalies ──
+                strike_alerts = []
+
+                # Sudden LTP spike (>5% in 5 min)
+                if abs(ce_ltp_pct) > 5:
+                    strike_alerts.append(f"CE LTP {'surged' if ce_ltp_pct > 0 else 'crashed'} {ce_ltp_pct:+.1f}%")
+                if abs(pe_ltp_pct) > 5:
+                    strike_alerts.append(f"PE LTP {'surged' if pe_ltp_pct > 0 else 'crashed'} {pe_ltp_pct:+.1f}%")
+
+                # OI-LTP divergence (OI up but LTP down = sellers writing)
+                if ce_oi_change > 50000 and ce_ltp_change < 0:
+                    strike_alerts.append(f"CE TRAP: OI +{ce_oi_change/100000:.1f}L but LTP falling = sellers writing")
+                if pe_oi_change > 50000 and pe_ltp_change < 0:
+                    strike_alerts.append(f"PE TRAP: OI +{pe_oi_change/100000:.1f}L but LTP falling = sellers writing")
+
+                # OI down + LTP up = short covering
+                if ce_oi_change < -50000 and ce_ltp_change > 0:
+                    strike_alerts.append(f"CE Short Cover: OI {ce_oi_change/100000:.1f}L + LTP rising")
+                if pe_oi_change < -50000 and pe_ltp_change > 0:
+                    strike_alerts.append(f"PE Short Cover: OI {pe_oi_change/100000:.1f}L + LTP rising")
+
+                strikes_analysis.append({
+                    "strike": int(strike),
+                    "isATM": strike == atm,
+                    "offset": offset,
+                    "ceLTP": ce_ltp,
+                    "peLTP": pe_ltp,
+                    "ceLTPChange": ce_ltp_change,
+                    "peLTPChange": pe_ltp_change,
+                    "ceLTPPct": ce_ltp_pct,
+                    "peLTPPct": pe_ltp_pct,
+                    "ceOI": ce_oi,
+                    "peOI": pe_oi,
+                    "ceOIChange5m": ce_oi_change,
+                    "peOIChange5m": pe_oi_change,
+                    "ceOIFromOpen": ce_oi_from_open,
+                    "peOIFromOpen": pe_oi_from_open,
+                    "straddle": round(ce_ltp + pe_ltp, 2) if strike == atm else None,
+                    "alerts": strike_alerts,
+                })
+                alerts.extend([{"strike": int(strike), "msg": a} for a in strike_alerts])
+
+            # ── Premium Imbalance ──
+            atm_data = chain.get(atm, {})
+            atm_ce = atm_data.get("ce_ltp", 0)
+            atm_pe = atm_data.get("pe_ltp", 0)
+            straddle = round(atm_ce + atm_pe, 2)
+            prem_ratio = round(atm_ce / atm_pe, 2) if atm_pe > 0 else 0
+            # ratio > 1.2 = CE premium heavy = market expects upside
+            # ratio < 0.8 = PE premium heavy = market expects downside
+            if prem_ratio > 1.2:
+                prem_bias = "BULLISH"
+                prem_signal = "BUY CE"
+            elif prem_ratio < 0.8:
+                prem_bias = "BEARISH"
+                prem_signal = "BUY PE"
+            else:
+                prem_bias = "NEUTRAL"
+                prem_signal = "WAIT"
+
+            # ── Momentum Analysis ──
+            # CE momentum rising = CE buyers active = bullish
+            # PE momentum rising = PE buyers active = bearish
+            if ce_momentum > 0 and pe_momentum < 0:
+                mom_bias = "BULLISH"
+                mom_detail = f"CE premiums rising (+{ce_momentum:.1f}) while PE falling ({pe_momentum:.1f})"
+            elif pe_momentum > 0 and ce_momentum < 0:
+                mom_bias = "BEARISH"
+                mom_detail = f"PE premiums rising (+{pe_momentum:.1f}) while CE falling ({ce_momentum:.1f})"
+            elif ce_momentum > 0 and pe_momentum > 0:
+                mom_bias = "VOLATILE"
+                mom_detail = f"Both CE (+{ce_momentum:.1f}) and PE (+{pe_momentum:.1f}) rising = high volatility incoming"
+            else:
+                mom_bias = "DECAY"
+                mom_detail = f"Both CE ({ce_momentum:.1f}) and PE ({pe_momentum:.1f}) falling = theta decay / range"
+
+            # ── OI Imbalance ──
+            oi_ratio = round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 1
+            if oi_ratio > 1.3:
+                oi_bias = "BULLISH"
+            elif oi_ratio < 0.7:
+                oi_bias = "BEARISH"
+            else:
+                oi_bias = "NEUTRAL"
+
+            # ── FINAL TRADE SIGNAL ──
+            bullish_count = sum(1 for b in [prem_bias, mom_bias, oi_bias] if b == "BULLISH")
+            bearish_count = sum(1 for b in [prem_bias, mom_bias, oi_bias] if b == "BEARISH")
+
+            if bullish_count >= 2:
+                trade_action = "BUY CE"
+                trade_strike = int(atm)
+                trade_conf = "HIGH" if bullish_count == 3 else "MEDIUM"
+                entry = atm_ce
+            elif bearish_count >= 2:
+                trade_action = "BUY PE"
+                trade_strike = int(atm)
+                trade_conf = "HIGH" if bearish_count == 3 else "MEDIUM"
+                entry = atm_pe
+            else:
+                trade_action = "WAIT"
+                trade_strike = int(atm)
+                trade_conf = "LOW"
+                entry = 0
+
+            # Entry, SL, targets
+            if entry > 0:
+                sl = round(entry * 0.65)
+                t1 = round(entry * 1.30)
+                t2 = round(entry * 1.60)
+                rr = round((t1 - entry) / (entry - sl), 1) if entry > sl else 0
+            else:
+                sl = t1 = t2 = rr = 0
+
+            result[index.lower()] = {
+                "strikes": strikes_analysis,
+                "spot": spot_ltp,
+                "atm": int(atm),
+                "spotChange": round(spot_ltp - prev_close, 1),
+                "spotChangePct": round((spot_ltp - prev_close) / prev_close * 100, 2) if prev_close else 0,
+                "straddle": straddle,
+                "premRatio": prem_ratio,
+                "premBias": prem_bias,
+                "momBias": mom_bias,
+                "momDetail": mom_detail,
+                "ceMomentum": round(ce_momentum, 1),
+                "peMomentum": round(pe_momentum, 1),
+                "oiRatio": oi_ratio,
+                "oiBias": oi_bias,
+                "alerts": alerts[:10],
+                "trade": {
+                    "action": trade_action,
+                    "strike": trade_strike,
+                    "confidence": trade_conf,
+                    "entry": entry,
+                    "sl": sl,
+                    "t1": t1,
+                    "t2": t2,
+                    "rr": f"1:{rr}",
+                    "reasons": [
+                        f"Premium bias: {prem_bias} (CE/PE ratio: {prem_ratio})",
+                        f"Momentum: {mom_detail}",
+                        f"OI bias: {oi_bias} (PCR near ATM: {oi_ratio})",
+                    ],
+                },
+                "timestamp": ist_now().strftime("%I:%M:%S %p IST"),
+            }
+
+        return result
 
     def _check_unusual(self, token, tick, info):
         oi = tick.get("oi", 0)

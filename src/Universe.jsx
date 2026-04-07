@@ -3,7 +3,7 @@ import { useMarketData } from "./useMarketData";
 import OIChangeTab from "./OIChangeTab";
 import PnLTracker from "./PnLTracker";
 import { exportSignalsToPDF, exportFullReport } from "./pdfExport";
-import { fetchTrapScan, fetchAIAnalysis, fetchTrapHistory, fetchTrapToday } from "./api";
+import { fetchTrapScan, fetchAIAnalysis, fetchTrapHistory, fetchTrapToday, fetchPriceAction } from "./api";
 
 const ACCENT = "#0A84FF";
 const BG = "#0A0A0F";
@@ -26,6 +26,7 @@ const TABS = [
   { id: "tradeai", icon: "\uD83E\uDDE0", label: "Trade AI" },
   { id: "hidden",  icon: "\uD83D\uDD75\uFE0F", label: "Hidden Shift" },
   { id: "trap",    icon: "\uD83E\uDDE8", label: "Trap Finder" },
+  { id: "priceact",icon: "\uD83D\uDCA5", label: "Price Action" },
   { id: "aibrain", icon: "\uD83E\uDD16", label: "AI Brain" },
   { id: "oichange",icon: "\uD83D\uDCC8", label: "OI Change" },
   { id: "pnl",     icon: "\uD83D\uDCB0", label: "PnL Tracker" },
@@ -1623,6 +1624,187 @@ function AIBrainTab() {
   );
 }
 
+// ── TAB: PRICE ACTION — ATM±3 LTP+OI Imbalance Engine ───────────────
+
+function PriceActionTab() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const fmtL = (n) => n ? `${(Math.abs(n) / 100000).toFixed(1)}L` : "0";
+
+  const refresh = useCallback(async () => {
+    try {
+      const r = await fetchPriceAction();
+      if (r && !r.error) setData(r);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    setLoading(true); refresh().then(() => setLoading(false));
+    const iv = setInterval(refresh, 5000); // Refresh every 5s for near real-time
+    return () => clearInterval(iv);
+  }, [refresh]);
+
+  if (!data && !loading) return (
+    <div style={{ textAlign: "center", padding: 60, color: "#555" }}>
+      <div style={{ fontSize: 40, marginBottom: 12 }}>💥</div>
+      <div style={{ fontSize: 14, color: "#666" }}>Price Action Engine loading...</div>
+    </div>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <Card style={{ background: "#0D0D15", border: `1px solid ${ACCENT}33` }}>
+        <div style={{ color: ACCENT, fontWeight: 900, fontSize: 14, marginBottom: 4 }}>PRICE ACTION — ATM±3 Strike LTP + OI Imbalance</div>
+        <div style={{ color: "#555", fontSize: 11 }}>Tracks CE/PE premium movement, OI changes, imbalance, traps, and momentum every 5 seconds. Auto-generates BUY signals.</div>
+      </Card>
+
+      {["nifty", "banknifty"].map(key => {
+        const d = data?.[key];
+        if (!d) return null;
+        const label = key === "nifty" ? "NIFTY" : "BANKNIFTY";
+        const trade = d.trade || {};
+        const tc = trade.action?.includes("CE") ? GREEN : trade.action?.includes("PE") ? RED : "#555";
+        const biasColors = { BULLISH: GREEN, BEARISH: RED, NEUTRAL: YELLOW, VOLATILE: ORANGE, DECAY: "#555" };
+
+        return (
+          <div key={key} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {/* TRADE SIGNAL */}
+            <Card style={{ background: tc + "08", border: `1px solid ${tc}44` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ color: "#fff", fontWeight: 900, fontSize: 18 }}>{label}</span>
+                  <span style={{ background: tc + "22", color: tc, padding: "4px 16px", borderRadius: 6, fontSize: 14, fontWeight: 900 }}>{trade.action}</span>
+                  <span style={{ background: (trade.confidence === "HIGH" ? GREEN : trade.confidence === "MEDIUM" ? YELLOW : "#555") + "22", color: trade.confidence === "HIGH" ? GREEN : trade.confidence === "MEDIUM" ? YELLOW : "#555", padding: "3px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{trade.confidence}</span>
+                </div>
+                <span style={{ color: "#444", fontSize: 10 }}>Spot: {d.spot?.toLocaleString("en-IN")} ({d.spotChangePct > 0 ? "+" : ""}{d.spotChangePct}%) | {d.timestamp}</span>
+              </div>
+
+              {trade.action !== "WAIT" && (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 8, marginBottom: 12 }}>
+                  {[
+                    { label: "STRIKE", value: trade.strike, color: "#fff" },
+                    { label: "ENTRY", value: `₹${trade.entry?.toFixed(1)}`, color: GREEN },
+                    { label: "TARGET 1", value: `₹${trade.t1}`, color: GREEN },
+                    { label: "STOPLOSS", value: `₹${trade.sl}`, color: RED },
+                    { label: "R:R", value: trade.rr, color: PURPLE },
+                  ].map((item, i) => (
+                    <div key={i} style={{ background: "#111118", borderRadius: 8, padding: "6px 10px", textAlign: "center" }}>
+                      <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>{item.label}</div>
+                      <div style={{ color: item.color, fontSize: 15, fontWeight: 900 }}>{item.value}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Reasons */}
+              {trade.reasons?.map((r, i) => (
+                <div key={i} style={{ color: "#999", fontSize: 11, marginBottom: 3, paddingLeft: 12 }}>{"\u2022"} {r}</div>
+              ))}
+            </Card>
+
+            {/* BIAS CARDS */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+              <div style={{ background: (biasColors[d.premBias] || "#555") + "0A", borderRadius: 8, padding: "8px 10px", textAlign: "center", border: `1px solid ${biasColors[d.premBias] || "#555"}22` }}>
+                <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>PREMIUM BIAS</div>
+                <div style={{ color: biasColors[d.premBias] || "#555", fontSize: 14, fontWeight: 900, marginTop: 3 }}>{d.premBias}</div>
+                <div style={{ color: "#666", fontSize: 9, marginTop: 2 }}>CE/PE: {d.premRatio}</div>
+              </div>
+              <div style={{ background: (biasColors[d.momBias] || "#555") + "0A", borderRadius: 8, padding: "8px 10px", textAlign: "center", border: `1px solid ${biasColors[d.momBias] || "#555"}22` }}>
+                <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>MOMENTUM</div>
+                <div style={{ color: biasColors[d.momBias] || "#555", fontSize: 14, fontWeight: 900, marginTop: 3 }}>{d.momBias}</div>
+                <div style={{ color: "#666", fontSize: 9, marginTop: 2 }}>CE: {d.ceMomentum > 0 ? "+" : ""}{d.ceMomentum} | PE: {d.peMomentum > 0 ? "+" : ""}{d.peMomentum}</div>
+              </div>
+              <div style={{ background: (biasColors[d.oiBias] || "#555") + "0A", borderRadius: 8, padding: "8px 10px", textAlign: "center", border: `1px solid ${biasColors[d.oiBias] || "#555"}22` }}>
+                <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>OI BIAS</div>
+                <div style={{ color: biasColors[d.oiBias] || "#555", fontSize: 14, fontWeight: 900, marginTop: 3 }}>{d.oiBias}</div>
+                <div style={{ color: "#666", fontSize: 9, marginTop: 2 }}>PCR: {d.oiRatio}</div>
+              </div>
+              <div style={{ background: "#111118", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>STRADDLE</div>
+                <div style={{ color: ACCENT, fontSize: 14, fontWeight: 900, marginTop: 3 }}>₹{d.straddle}</div>
+                <div style={{ color: "#666", fontSize: 9, marginTop: 2 }}>ATM: {d.atm}</div>
+              </div>
+            </div>
+
+            {/* ALERTS */}
+            {d.alerts?.length > 0 && (
+              <Card style={{ background: RED + "06", border: `1px solid ${RED}22` }}>
+                <div style={{ color: RED, fontWeight: 700, fontSize: 12, marginBottom: 6 }}>LIVE ALERTS</div>
+                {d.alerts.map((a, i) => (
+                  <div key={i} style={{ color: "#ccc", fontSize: 11, marginBottom: 3 }}>
+                    <span style={{ color: ORANGE, fontWeight: 700 }}>{a.strike}</span> {a.msg}
+                  </div>
+                ))}
+              </Card>
+            )}
+
+            {/* STRIKE TABLE — ATM±3 */}
+            <Card style={{ background: "#0D0D15", border: `1px solid ${BORDER}` }}>
+              <div style={{ color: "#666", fontWeight: 700, fontSize: 12, marginBottom: 8 }}>{label} ATM±3 STRIKES (5-min changes)</div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                  <thead>
+                    <tr style={{ borderBottom: `1px solid ${BORDER}` }}>
+                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "left" }}>Strike</th>
+                      <th style={{ padding: "5px 6px", color: RED, textAlign: "right" }}>CE LTP</th>
+                      <th style={{ padding: "5px 6px", color: RED, textAlign: "right" }}>CE Chg</th>
+                      <th style={{ padding: "5px 6px", color: RED, textAlign: "right" }}>CE OI 5m</th>
+                      <th style={{ padding: "5px 6px", color: RED, textAlign: "right" }}>CE OI Open</th>
+                      <th style={{ padding: "5px 6px", color: GREEN, textAlign: "right" }}>PE LTP</th>
+                      <th style={{ padding: "5px 6px", color: GREEN, textAlign: "right" }}>PE Chg</th>
+                      <th style={{ padding: "5px 6px", color: GREEN, textAlign: "right" }}>PE OI 5m</th>
+                      <th style={{ padding: "5px 6px", color: GREEN, textAlign: "right" }}>PE OI Open</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {d.strikes?.map((s, i) => (
+                      <tr key={i} style={{
+                        borderBottom: `1px solid ${BORDER}33`,
+                        background: s.isATM ? ACCENT + "11" : s.alerts?.length > 0 ? ORANGE + "08" : "transparent",
+                      }}>
+                        <td style={{ padding: "4px 6px", color: s.isATM ? ACCENT : "#ccc", fontWeight: s.isATM ? 900 : 400 }}>
+                          {s.strike}{s.isATM ? " ATM" : ""}{s.straddle ? ` (₹${s.straddle})` : ""}
+                        </td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: "#ccc", fontWeight: 700 }}>₹{s.ceLTP?.toFixed(1)}</td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: s.ceLTPChange > 0 ? GREEN : s.ceLTPChange < 0 ? RED : "#555", fontWeight: 700 }}>
+                          {s.ceLTPChange > 0 ? "+" : ""}{s.ceLTPChange?.toFixed(1)} <span style={{ fontSize: 8, color: Math.abs(s.ceLTPPct) > 5 ? ORANGE : "#555" }}>({s.ceLTPPct > 0 ? "+" : ""}{s.ceLTPPct}%)</span>
+                        </td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: s.ceOIChange5m > 0 ? GREEN : s.ceOIChange5m < 0 ? RED : "#555" }}>
+                          {s.ceOIChange5m > 0 ? "+" : ""}{fmtL(s.ceOIChange5m)}
+                        </td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: s.ceOIFromOpen > 0 ? GREEN : s.ceOIFromOpen < 0 ? RED : "#555" }}>
+                          {s.ceOIFromOpen > 0 ? "+" : ""}{fmtL(s.ceOIFromOpen)}
+                        </td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: "#ccc", fontWeight: 700 }}>₹{s.peLTP?.toFixed(1)}</td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: s.peLTPChange > 0 ? GREEN : s.peLTPChange < 0 ? RED : "#555", fontWeight: 700 }}>
+                          {s.peLTPChange > 0 ? "+" : ""}{s.peLTPChange?.toFixed(1)} <span style={{ fontSize: 8, color: Math.abs(s.peLTPPct) > 5 ? ORANGE : "#555" }}>({s.peLTPPct > 0 ? "+" : ""}{s.peLTPPct}%)</span>
+                        </td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: s.peOIChange5m > 0 ? GREEN : s.peOIChange5m < 0 ? RED : "#555" }}>
+                          {s.peOIChange5m > 0 ? "+" : ""}{fmtL(s.peOIChange5m)}
+                        </td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: s.peOIFromOpen > 0 ? GREEN : s.peOIFromOpen < 0 ? RED : "#555" }}>
+                          {s.peOIFromOpen > 0 ? "+" : ""}{fmtL(s.peOIFromOpen)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+
+            {/* Momentum Detail */}
+            <Card style={{ background: "#0D0D15", border: `1px solid ${BORDER}` }}>
+              <div style={{ color: "#888", fontSize: 11, lineHeight: 1.6 }}>
+                <span style={{ color: YELLOW, fontWeight: 700 }}>Momentum: </span>{d.momDetail}
+              </div>
+            </Card>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── TAB: TRAP FINGERPRINT FINDER ─────────────────────────────────────
 
 function TrapFinderTab() {
@@ -2212,6 +2394,7 @@ export default function Universe({ onLogout }) {
       case "tradeai": return <TradeAITab data={tradeAnalysis} />;
       case "hidden":  return <HiddenShiftTab data={hiddenShift} />;
       case "trap":    return <TrapFinderTab />;
+      case "priceact":return <PriceActionTab />;
       case "aibrain": return <AIBrainTab />;
       case "oichange":return <OIChangeTab oiData={oiSummary} />;
       case "pnl":     return <PnLTracker signals={signals} />;
