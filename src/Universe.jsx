@@ -3,7 +3,7 @@ import { useMarketData } from "./useMarketData";
 import OIChangeTab from "./OIChangeTab";
 import PnLTracker from "./PnLTracker";
 import { exportSignalsToPDF, exportFullReport } from "./pdfExport";
-import { fetchTrapScan, fetchAIAnalysis } from "./api";
+import { fetchTrapScan, fetchAIAnalysis, fetchTrapHistory } from "./api";
 
 const ACCENT = "#0A84FF";
 const BG = "#0A0A0F";
@@ -1632,10 +1632,17 @@ function TrapFinderTab() {
   const [expiryFilter, setExpiryFilter] = useState("ALL"); // ALL, CURRENT, NEXT
   const [scoreFilter, setScoreFilter] = useState(0);
   const [lastScan, setLastScan] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
 
   const fmtL = (n) => n ? `${(Math.abs(n) / 100000).toFixed(1)}L` : "0";
   const scoreColor = (s) => s >= 6 ? RED : s >= 4 ? YELLOW : GREEN;
   const alertBg = { FINGERPRINT: RED, WATCH: YELLOW, NORMAL: "#333" };
+
+  // Load history
+  useEffect(() => {
+    fetchTrapHistory().then(h => { if (Array.isArray(h)) setHistory(h); }).catch(() => {});
+  }, [data]); // Refresh history after each scan
 
   const runScan = useCallback(async () => {
     setLoading(true);
@@ -1830,6 +1837,82 @@ function TrapFinderTab() {
           </div>
         );
       })}
+
+      {/* ── SIGNAL HISTORY LOG ── */}
+      <Card style={{ background: "#0D0D15", border: `1px solid ${PURPLE}33` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: showHistory ? 12 : 0 }}>
+          <div style={{ color: PURPLE, fontWeight: 900, fontSize: 13 }}>SIGNAL LOG — Past 7 Days ({history.length} signals)</div>
+          <button onClick={() => setShowHistory(!showHistory)} style={{ background: PURPLE + "22", color: PURPLE, border: `1px solid ${PURPLE}44`, borderRadius: 6, padding: "4px 12px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+            {showHistory ? "Hide" : "Show"} History
+          </button>
+        </div>
+        {showHistory && history.length > 0 && (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${BORDER}` }}>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "left" }}>Date/Time</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "left" }}>Index</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "left" }}>Strike</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "center" }}>Type</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "left" }}>Expiry</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>OI Chg</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>OI %</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>Vol Ratio</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>Spot</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "center" }}>Score</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "center" }}>Flag</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((h, i) => {
+                  const ts = h.timestamp ? new Date(h.timestamp) : null;
+                  const dateStr = ts ? ts.toLocaleDateString("en-IN", { day: "2-digit", month: "short" }) : "-";
+                  const timeStr = ts ? ts.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true }) : "-";
+                  return (
+                    <tr key={i} style={{
+                      borderBottom: `1px solid ${BORDER}33`,
+                      background: h.alert_level === "FINGERPRINT" ? RED + "08" : h.is_cluster ? PURPLE + "08" : "transparent",
+                    }}>
+                      <td style={{ padding: "4px 6px", color: "#888" }}>
+                        <div style={{ fontWeight: 700, color: "#ccc" }}>{dateStr}</div>
+                        <div style={{ fontSize: 9 }}>{timeStr}</div>
+                      </td>
+                      <td style={{ padding: "4px 6px", color: ACCENT, fontWeight: 700 }}>{h.symbol}</td>
+                      <td style={{ padding: "4px 6px", color: "#ccc", fontWeight: 700 }}>{Math.round(h.strike)}</td>
+                      <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                        <span style={{ color: h.option_type === "CE" ? RED : GREEN, fontWeight: 700 }}>{h.option_type}</span>
+                      </td>
+                      <td style={{ padding: "4px 6px", color: "#888", fontSize: 9 }}>{h.expiry}</td>
+                      <td style={{ padding: "4px 6px", textAlign: "right", color: h.oi_change > 0 ? GREEN : RED, fontWeight: 700 }}>
+                        {h.oi_change > 0 ? "+" : ""}{fmtL(h.oi_change)}
+                      </td>
+                      <td style={{ padding: "4px 6px", textAlign: "right", color: Math.abs(h.oi_change_pct) > 15 ? ORANGE : "#888" }}>
+                        {h.oi_change_pct > 0 ? "+" : ""}{h.oi_change_pct?.toFixed(1)}%
+                      </td>
+                      <td style={{ padding: "4px 6px", textAlign: "right", color: h.volume_ratio > 2 ? ORANGE : "#888" }}>
+                        {h.volume_ratio?.toFixed(1)}x
+                      </td>
+                      <td style={{ padding: "4px 6px", textAlign: "right", color: "#888" }}>{Math.round(h.spot_price)?.toLocaleString("en-IN")}</td>
+                      <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                        <span style={{ background: scoreColor(h.trap_score) + "22", color: scoreColor(h.trap_score), padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 900 }}>{h.trap_score}</span>
+                      </td>
+                      <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                        <span style={{ color: h.alert_level === "FINGERPRINT" ? RED : h.alert_level === "WATCH" ? YELLOW : "#555", fontSize: 9, fontWeight: 700 }}>
+                          {h.alert_level}{h.is_cluster ? " 🔗" : ""}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {showHistory && history.length === 0 && (
+          <div style={{ textAlign: "center", padding: 20, color: "#555", fontSize: 11 }}>No signals stored yet. Signals will appear after the first scan during market hours.</div>
+        )}
+      </Card>
     </div>
   );
 }

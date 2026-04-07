@@ -129,3 +129,9 @@ export async function fetchAIAnalysis() {
   if (!res.ok) return null;
   return res.json();
 }
+
+export async function fetchTrapHistory() {
+  const res = await fetch("/api/trap/history");
+  if (!res.ok) return [];
+  return res.json();
+}
