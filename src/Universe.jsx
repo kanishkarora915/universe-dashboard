@@ -3,7 +3,7 @@ import { useMarketData } from "./useMarketData";
 import OIChangeTab from "./OIChangeTab";
 import PnLTracker from "./PnLTracker";
 import { exportSignalsToPDF, exportFullReport } from "./pdfExport";
-import { fetchTrapScan, fetchAIAnalysis, fetchTrapHistory } from "./api";
+import { fetchTrapScan, fetchAIAnalysis, fetchTrapHistory, fetchTrapToday } from "./api";
 
 const ACCENT = "#0A84FF";
 const BG = "#0A0A0F";
@@ -1634,16 +1634,18 @@ function TrapFinderTab() {
   const [lastScan, setLastScan] = useState(null);
   const [history, setHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
-  const [selectedStrike, setSelectedStrike] = useState(null); // For detail popup
+  const [selectedStrike, setSelectedStrike] = useState(null);
+  const [todaySignals, setTodaySignals] = useState([]);
 
   const fmtL = (n) => n ? `${(Math.abs(n) / 100000).toFixed(1)}L` : "0";
   const scoreColor = (s) => s >= 6 ? RED : s >= 4 ? YELLOW : GREEN;
   const alertBg = { FINGERPRINT: RED, WATCH: YELLOW, NORMAL: "#333" };
 
-  // Load history
+  // Load today's signals (always visible) + history
   useEffect(() => {
+    fetchTrapToday().then(s => { if (Array.isArray(s)) setTodaySignals(s); }).catch(() => {});
     fetchTrapHistory().then(h => { if (Array.isArray(h)) setHistory(h); }).catch(() => {});
-  }, [data]); // Refresh history after each scan
+  }, [data]);
 
   const runScan = useCallback(async () => {
     setLoading(true);
@@ -1704,6 +1706,71 @@ function TrapFinderTab() {
       </div>
 
       {loading && <div style={{ textAlign: "center", padding: 20, color: ORANGE }}>Scanning options chain...</div>}
+
+      {/* ── TODAY'S SIGNALS — Always Visible ── */}
+      {todaySignals.length > 0 && (
+        <Card style={{ background: "#0D0D15", border: `1px solid ${YELLOW}33` }}>
+          <div style={{ color: YELLOW, fontWeight: 900, fontSize: 13, marginBottom: 10 }}>
+            TODAY'S SIGNALS — {todaySignals.length} detections (stay visible all day)
+          </div>
+          <div style={{ overflowX: "auto", maxHeight: 350, overflowY: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${BORDER}`, position: "sticky", top: 0, background: "#0D0D15" }}>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "left" }}>Time</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "left" }}>Index</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "left" }}>Strike</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "center" }}>Type</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>OI Chg</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>OI %</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>Vol</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>Spot</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "center" }}>Score</th>
+                  <th style={{ padding: "5px 6px", color: "#555", textAlign: "center" }}>Flag</th>
+                </tr>
+              </thead>
+              <tbody>
+                {todaySignals.map((s, i) => (
+                  <tr key={i} onClick={() => setSelectedStrike({
+                    strike: Math.round(s.strike), optionType: s.option_type, expiry: s.expiry,
+                    expiryLabel: s.expiry, oi: s.oi, oiChange: s.oi_change, oiChangePct: s.oi_change_pct,
+                    volume: s.volume, volumeRatio: s.volume_ratio, iv: s.iv, ivChange: s.iv_change,
+                    ltp: s.ltp, trapScore: s.trap_score, alertLevel: s.alert_level, reasons: [],
+                  })} style={{
+                    borderBottom: `1px solid ${BORDER}33`, cursor: "pointer",
+                    background: s.alert_level === "FINGERPRINT" ? RED + "0A" : s.is_cluster ? PURPLE + "08" : "transparent",
+                  }}>
+                    <td style={{ padding: "4px 6px" }}>
+                      <span style={{ color: ACCENT, fontWeight: 700, fontSize: 11 }}>{s.scanTime}</span>
+                    </td>
+                    <td style={{ padding: "4px 6px", color: "#ccc", fontWeight: 700 }}>{s.symbol}</td>
+                    <td style={{ padding: "4px 6px", color: "#fff", fontWeight: 900 }}>{Math.round(s.strike)}</td>
+                    <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                      <span style={{ color: s.option_type === "CE" ? RED : GREEN, fontWeight: 700 }}>{s.option_type}</span>
+                    </td>
+                    <td style={{ padding: "4px 6px", textAlign: "right", color: s.oi_change > 0 ? GREEN : RED, fontWeight: 700 }}>
+                      {s.oi_change > 0 ? "+" : ""}{fmtL(s.oi_change)}
+                    </td>
+                    <td style={{ padding: "4px 6px", textAlign: "right", color: Math.abs(s.oi_change_pct) > 15 ? ORANGE : "#888" }}>
+                      {s.oi_change_pct > 0 ? "+" : ""}{s.oi_change_pct?.toFixed(1)}%
+                    </td>
+                    <td style={{ padding: "4px 6px", textAlign: "right", color: "#888" }}>{s.volume?.toLocaleString("en-IN")}</td>
+                    <td style={{ padding: "4px 6px", textAlign: "right", color: "#888" }}>{Math.round(s.spot_price)?.toLocaleString("en-IN")}</td>
+                    <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                      <span style={{ background: scoreColor(s.trap_score) + "22", color: scoreColor(s.trap_score), padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 900 }}>{s.trap_score}</span>
+                    </td>
+                    <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                      <span style={{ color: s.alert_level === "FINGERPRINT" ? RED : YELLOW, fontSize: 9, fontWeight: 700 }}>
+                        {s.alert_level}{s.is_cluster ? " 🔗" : ""}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
 
       {/* ── DETAIL POPUP ── */}
       {selectedStrike && (() => {

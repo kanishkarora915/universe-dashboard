@@ -135,3 +135,9 @@ export async function fetchTrapHistory() {
   if (!res.ok) return [];
   return res.json();
 }
+
+export async function fetchTrapToday() {
+  const res = await fetch("/api/trap/today");
+  if (!res.ok) return [];
+  return res.json();
+}

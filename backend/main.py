@@ -303,6 +303,17 @@ async def trap_history():
     return engine.trap_scanner.get_history(days=7)
 
 
+@app.get("/api/trap/today")
+async def trap_today():
+    """Get all signals from today — stays visible all day."""
+    if not engine or not hasattr(engine, 'trap_scanner') or not engine.trap_scanner:
+        cached = get_cached("trap_today")
+        return cached if cached else []
+    signals = engine.trap_scanner.get_today_signals()
+    save_cache("trap_today", signals)
+    return signals
+
+
 @app.get("/api/trap/clusters")
 async def trap_clusters():
     """Get active cluster alerts."""

@@ -450,6 +450,40 @@ class TrapScanner:
         conn.close()
         return [dict(r) for r in rows]
 
+    def get_today_signals(self) -> list:
+        """Get ALL signals (score >= 4) from today, grouped by scan time. Stays visible all day."""
+        today_start = ist_now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        conn = _get_conn()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM trap_snapshots WHERE timestamp >= ? AND trap_score >= 4 ORDER BY timestamp DESC, trap_score DESC",
+            (today_start,)
+        ).fetchall()
+        conn.close()
+
+        # Group by scan timestamp + deduplicate (keep highest score per strike+type per scan)
+        signals = []
+        seen = set()
+        for r in rows:
+            d = dict(r)
+            # Format timestamp for display
+            try:
+                ts = datetime.fromisoformat(d["timestamp"])
+                d["scanTime"] = ts.strftime("%I:%M %p")
+                d["scanDate"] = ts.strftime("%d %b")
+            except Exception:
+                d["scanTime"] = d["timestamp"][:16]
+                d["scanDate"] = ""
+
+            # Deduplicate: same strike+type across scans → keep all (different times)
+            # But within same scan → keep highest score only
+            key = f"{d['timestamp'][:16]}_{d['symbol']}_{int(d['strike'])}_{d['option_type']}"
+            if key not in seen:
+                seen.add(key)
+                signals.append(d)
+
+        return signals
+
     def get_clusters(self) -> list:
         """Get active cluster alerts from latest scan."""
         conn = _get_conn()
