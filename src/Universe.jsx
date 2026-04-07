@@ -1634,6 +1634,7 @@ function TrapFinderTab() {
   const [lastScan, setLastScan] = useState(null);
   const [history, setHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [selectedStrike, setSelectedStrike] = useState(null); // For detail popup
 
   const fmtL = (n) => n ? `${(Math.abs(n) / 100000).toFixed(1)}L` : "0";
   const scoreColor = (s) => s >= 6 ? RED : s >= 4 ? YELLOW : GREEN;
@@ -1703,6 +1704,115 @@ function TrapFinderTab() {
       </div>
 
       {loading && <div style={{ textAlign: "center", padding: 20, color: ORANGE }}>Scanning options chain...</div>}
+
+      {/* ── DETAIL POPUP ── */}
+      {selectedStrike && (() => {
+        const s = selectedStrike;
+        const sc = scoreColor(s.trapScore);
+        const ac = alertBg[s.alertLevel] || "#555";
+        const direction = s.optionType === "CE" ? "BULLISH" : "BEARISH";
+        const buySignal = s.optionType === "CE" ? "BUY CE" : "BUY PE";
+        return (
+          <div onClick={() => setSelectedStrike(null)} style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.7)", zIndex: 999, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div onClick={(e) => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${ac}55`, borderRadius: 16, padding: "24px 28px", maxWidth: 520, width: "90%", maxHeight: "85vh", overflowY: "auto" }}>
+              {/* Header */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ color: "#fff", fontWeight: 900, fontSize: 20 }}>{s.strike}</span>
+                  <span style={{ color: s.optionType === "CE" ? RED : GREEN, fontWeight: 900, fontSize: 16 }}>{s.optionType}</span>
+                  <span style={{ background: ac + "22", color: ac, padding: "3px 12px", borderRadius: 6, fontSize: 12, fontWeight: 900 }}>{s.alertLevel}</span>
+                </div>
+                <button onClick={() => setSelectedStrike(null)} style={{ background: "transparent", color: "#555", border: "none", fontSize: 20, cursor: "pointer" }}>{"\u2715"}</button>
+              </div>
+
+              {/* Score Bar */}
+              <div style={{ background: "#0A0A12", borderRadius: 10, padding: "12px 16px", marginBottom: 14, border: `1px solid ${sc}33` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <span style={{ color: "#888", fontSize: 11, fontWeight: 700 }}>TRAP SCORE</span>
+                  <span style={{ color: sc, fontSize: 28, fontWeight: 900 }}>{s.trapScore}<span style={{ fontSize: 14, color: "#555" }}>/10</span></span>
+                </div>
+                <div style={{ background: "#1a1a25", borderRadius: 4, height: 8, overflow: "hidden" }}>
+                  <div style={{ background: sc, height: "100%", width: `${s.trapScore * 10}%`, borderRadius: 4, transition: "width 0.3s" }} />
+                </div>
+              </div>
+
+              {/* Direction Signal */}
+              <div style={{ background: (s.optionType === "CE" ? GREEN : RED) + "11", borderRadius: 10, padding: "10px 16px", marginBottom: 14, border: `1px solid ${s.optionType === "CE" ? GREEN : RED}33`, textAlign: "center" }}>
+                <div style={{ color: "#888", fontSize: 10, fontWeight: 700, marginBottom: 4 }}>INSTITUTIONAL SIGNAL</div>
+                <div style={{ color: s.optionType === "CE" ? GREEN : RED, fontSize: 18, fontWeight: 900 }}>{direction} — {buySignal}</div>
+                <div style={{ color: "#666", fontSize: 10, marginTop: 4 }}>OTM {s.optionType} buildup = institutions expect {direction.toLowerCase()} move</div>
+              </div>
+
+              {/* Data Grid */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 14 }}>
+                {[
+                  { label: "Open Interest", value: fmtL(s.oi), color: "#ccc" },
+                  { label: "OI Change", value: `${s.oiChange > 0 ? "+" : ""}${fmtL(s.oiChange)}`, color: s.oiChange > 0 ? GREEN : RED },
+                  { label: "OI Change %", value: `${s.oiChangePct > 0 ? "+" : ""}${s.oiChangePct}%`, color: Math.abs(s.oiChangePct) > 15 ? ORANGE : "#ccc" },
+                  { label: "Volume", value: s.volume?.toLocaleString("en-IN"), color: "#ccc" },
+                  { label: "Volume Ratio", value: `${s.volumeRatio}x`, color: s.volumeRatio > 2 ? ORANGE : "#ccc" },
+                  { label: "IV", value: `${s.iv}%`, color: "#ccc" },
+                  { label: "IV Change", value: `${s.ivChange}%`, color: s.ivChange < 5 ? GREEN : "#ccc" },
+                  { label: "LTP", value: `${"\u20B9"}${s.ltp?.toFixed(1)}`, color: "#fff" },
+                  { label: "Expiry", value: s.expiryLabel, color: s.expiryLabel === "NEXT" ? ORANGE : "#ccc" },
+                ].map((item, i) => (
+                  <div key={i} style={{ background: "#0A0A12", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                    <div style={{ color: "#555", fontSize: 9, fontWeight: 700, marginBottom: 3 }}>{item.label}</div>
+                    <div style={{ color: item.color, fontSize: 13, fontWeight: 700 }}>{item.value}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Score Breakdown */}
+              <div style={{ background: "#0A0A12", borderRadius: 10, padding: "12px 16px", marginBottom: 14 }}>
+                <div style={{ color: YELLOW, fontSize: 11, fontWeight: 700, marginBottom: 8 }}>SCORE BREAKDOWN — Why this was flagged</div>
+                {[
+                  { check: Math.abs(s.oiChangePct) > 15, pts: 3, text: `OI Change ${s.oiChangePct > 0 ? "+" : ""}${s.oiChangePct}% (threshold: 15%)`, partial: Math.abs(s.oiChangePct) > 8 },
+                  { check: s.volumeRatio > 2, pts: 3, text: `Volume ${s.volumeRatio}x average (threshold: 2x)`, partial: s.volumeRatio > 1.5 },
+                  { check: s.ivChange < 5 && Math.abs(s.oiChangePct) > 5, pts: 2, text: `IV flat at ${s.ivChange}% change — stealth buying (threshold: <5%)` },
+                  { check: false, pts: 2, text: `Spot barely moved — hidden positioning (threshold: <0.3%)` }, // We don't have spot% per strike
+                ].map((item, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+                    <span style={{ color: item.check ? GREEN : item.partial ? YELLOW : RED, fontSize: 12, width: 16 }}>
+                      {item.check ? "\u2713" : item.partial ? "~" : "\u2717"}
+                    </span>
+                    <span style={{ color: item.check ? GREEN : item.partial ? YELLOW : "#555", fontSize: 11, fontWeight: item.check ? 700 : 400 }}>
+                      {item.text}
+                    </span>
+                    <span style={{ color: item.check ? GREEN : item.partial ? YELLOW : "#333", fontSize: 10, marginLeft: "auto", fontWeight: 700 }}>
+                      {item.check ? `+${item.pts}` : item.partial ? "+1" : "+0"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Reasons */}
+              {s.reasons?.length > 0 && (
+                <div style={{ background: "#0A0A12", borderRadius: 10, padding: "12px 16px", marginBottom: 14 }}>
+                  <div style={{ color: ACCENT, fontSize: 11, fontWeight: 700, marginBottom: 8 }}>DETECTION REASONS</div>
+                  {s.reasons.map((r, i) => (
+                    <div key={i} style={{ color: "#ccc", fontSize: 11, marginBottom: 4, paddingLeft: 12 }}>{"\u2022"} {r}</div>
+                  ))}
+                </div>
+              )}
+
+              {/* What it means */}
+              <div style={{ background: (s.optionType === "CE" ? GREEN : RED) + "08", borderRadius: 10, padding: "12px 16px", border: `1px solid ${s.optionType === "CE" ? GREEN : RED}22` }}>
+                <div style={{ color: s.optionType === "CE" ? GREEN : RED, fontSize: 11, fontWeight: 700, marginBottom: 6 }}>WHAT THIS MEANS FOR YOU (BUYER)</div>
+                <div style={{ color: "#ccc", fontSize: 11, lineHeight: 1.6 }}>
+                  {s.alertLevel === "FINGERPRINT"
+                    ? `HIGH CONVICTION: Institutions are building significant ${s.optionType} positions at ${s.strike} with TrapScore ${s.trapScore}/10. This is a strong ${direction.toLowerCase()} signal. Consider ${buySignal} near ATM with SL below ${s.optionType === "CE" ? "support" : "resistance"}.`
+                    : s.alertLevel === "WATCH"
+                    ? `WATCH ZONE: ${s.optionType} activity at ${s.strike} is suspicious (Score ${s.trapScore}/10). Institutions may be positioning for a ${direction.toLowerCase()} move. Monitor — if score increases in next scan, it becomes actionable.`
+                    : `LOW SIGNAL: Activity at ${s.strike} is within normal range. No clear institutional footprint detected.`
+                  }
+                  {s.expiryLabel === "NEXT" && " NEXT EXPIRY buildup = higher conviction (institutions have time = they believe in the move)."}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {["nifty", "banknifty"].map(key => {
         const d = data?.[key];
@@ -1785,9 +1895,10 @@ function TrapFinderTab() {
                   </thead>
                   <tbody>
                     {strikes.map((s, i) => (
-                      <tr key={i} style={{
+                      <tr key={i} onClick={() => setSelectedStrike(s)} style={{
                         borderBottom: `1px solid ${BORDER}33`,
                         background: s.alertLevel === "FINGERPRINT" ? RED + "0A" : s.alertLevel === "WATCH" ? YELLOW + "06" : "transparent",
+                        cursor: "pointer",
                       }}>
                         <td style={{ padding: "4px 6px", color: "#ccc", fontWeight: 700 }}>{s.strike}</td>
                         <td style={{ padding: "4px 6px", textAlign: "center" }}>
