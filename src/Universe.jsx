@@ -1892,33 +1892,75 @@ function TrapFinderTab() {
         if (expiryFilter !== "ALL") strikes = strikes.filter(s => s.expiryLabel === expiryFilter);
         if (scoreFilter > 0) strikes = strikes.filter(s => s.trapScore >= scoreFilter);
 
+        const renderExpiryBox = (exp, borderColor) => {
+          if (!exp) return null;
+          const bc = exp.sellerBias === "BEARISH" ? RED : exp.sellerBias === "BULLISH" ? GREEN : YELLOW;
+          return (
+            <div style={{ background: "#111118", borderRadius: 10, padding: "10px 12px", flex: 1, border: `1px solid ${borderColor}22` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <span style={{ color: borderColor, fontWeight: 900, fontSize: 12 }}>EXPIRY: {exp.label}</span>
+                <span style={{ background: bc + "22", color: bc, padding: "2px 8px", borderRadius: 4, fontSize: 9, fontWeight: 700 }}>{exp.sellerBias}</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6, marginBottom: 6 }}>
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ color: RED, fontSize: 9 }}>Fingerprints</div>
+                  <div style={{ color: RED, fontWeight: 900, fontSize: 14 }}>{exp.fingerprints}</div>
+                </div>
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ color: YELLOW, fontSize: 9 }}>Watch</div>
+                  <div style={{ color: YELLOW, fontWeight: 900, fontSize: 14 }}>{exp.watchZones}</div>
+                </div>
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ color: "#888", fontSize: 9 }}>Total</div>
+                  <div style={{ color: "#ccc", fontWeight: 900, fontSize: 14 }}>{exp.total}</div>
+                </div>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, borderTop: `1px solid ${BORDER}`, paddingTop: 6 }}>
+                <span style={{ color: ORANGE }}>CE Write: {fmtL(exp.ceWriting)}</span>
+                <span style={{ color: ORANGE }}>PE Write: {fmtL(exp.peWriting)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, marginTop: 2 }}>
+                <span style={{ color: GREEN }}>CE Buy: {fmtL(exp.ceBuying)}</span>
+                <span style={{ color: GREEN }}>PE Buy: {fmtL(exp.peBuying)}</span>
+              </div>
+            </div>
+          );
+        };
+
         return (
           <div key={key} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {/* Summary */}
+            {/* Header */}
             <Card style={{ background: "#0D0D15", border: `1px solid ${BORDER}` }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                 <span style={{ color: ACCENT, fontWeight: 900, fontSize: 14 }}>{label}</span>
                 <span style={{ color: "#444", fontSize: 10 }}>Spot: {d.spot?.toLocaleString("en-IN")} | Move: {d.spotChangePct}% | {d.timestamp}</span>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
-                <div style={{ background: "#111118", borderRadius: 8, padding: "6px 10px", textAlign: "center" }}>
-                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>SCANNED</div>
-                  <div style={{ color: "#fff", fontSize: 16, fontWeight: 900 }}>{d.totalScanned}</div>
-                </div>
-                <div style={{ background: RED + "0A", borderRadius: 8, padding: "6px 10px", textAlign: "center", border: `1px solid ${RED}22` }}>
-                  <div style={{ color: RED, fontSize: 9, fontWeight: 700 }}>FINGERPRINTS</div>
-                  <div style={{ color: RED, fontSize: 16, fontWeight: 900 }}>{d.fingerprints}</div>
-                </div>
-                <div style={{ background: YELLOW + "0A", borderRadius: 8, padding: "6px 10px", textAlign: "center", border: `1px solid ${YELLOW}22` }}>
-                  <div style={{ color: YELLOW, fontSize: 9, fontWeight: 700 }}>WATCH ZONES</div>
-                  <div style={{ color: YELLOW, fontSize: 16, fontWeight: 900 }}>{d.watchZones}</div>
-                </div>
-                <div style={{ background: PURPLE + "0A", borderRadius: 8, padding: "6px 10px", textAlign: "center", border: `1px solid ${PURPLE}22` }}>
-                  <div style={{ color: PURPLE, fontSize: 9, fontWeight: 700 }}>CLUSTERS</div>
-                  <div style={{ color: PURPLE, fontSize: 16, fontWeight: 900 }}>{d.clusters?.length || 0}</div>
-                </div>
+
+              {/* Current vs Next Expiry side by side */}
+              <div style={{ display: "flex", gap: 10 }}>
+                {renderExpiryBox(d.current, ACCENT)}
+                {renderExpiryBox(d.next, ORANGE)}
               </div>
             </Card>
+
+            {/* INSIGHTS */}
+            {d.insights?.length > 0 && (
+              <Card style={{ background: YELLOW + "06", border: `1px solid ${YELLOW}33` }}>
+                <div style={{ color: YELLOW, fontWeight: 900, fontSize: 12, marginBottom: 8 }}>INSIGHTS — Smart Money Activity</div>
+                {d.insights.map((ins, i) => {
+                  const insColor = ins.signal?.includes("CE") ? GREEN : ins.signal?.includes("PE") ? RED : YELLOW;
+                  return (
+                    <div key={i} style={{ background: "#111118", borderRadius: 8, padding: "8px 12px", marginBottom: 6, border: `1px solid ${BORDER}44` }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                        <span style={{ fontSize: 12 }}>{ins.icon} <span style={{ color: "#fff", fontWeight: 700 }}>{ins.title}</span></span>
+                        <span style={{ background: insColor + "22", color: insColor, padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 900 }}>{ins.signal}</span>
+                      </div>
+                      <div style={{ color: "#999", fontSize: 11, lineHeight: 1.5 }}>{ins.detail}</div>
+                    </div>
+                  );
+                })}
+              </Card>
+            )}
 
             {/* Cluster Alerts */}
             {d.clusters?.length > 0 && d.clusters.map((c, i) => {

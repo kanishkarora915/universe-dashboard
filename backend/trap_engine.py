@@ -434,9 +434,116 @@ class TrapScanner:
         # Sort by trap score desc
         scan_results.sort(key=lambda x: x["trapScore"], reverse=True)
 
+        # Split by expiry
+        current_strikes = [s for s in scan_results if s["expiryLabel"] == "CURRENT"]
+        next_strikes = [s for s in scan_results if s["expiryLabel"] == "NEXT"]
+
+        # ── INSIGHTS: Where is more selling, shifting, sudden moves ──
+        insights = []
+
+        # 1. Where is more selling?
+        ce_sellers_current = [s for s in current_strikes if s.get("oiActor") == "SELLERS" and s["optionType"] == "CE"]
+        pe_sellers_current = [s for s in current_strikes if s.get("oiActor") == "SELLERS" and s["optionType"] == "PE"]
+        ce_sellers_next = [s for s in next_strikes if s.get("oiActor") == "SELLERS" and s["optionType"] == "CE"]
+        pe_sellers_next = [s for s in next_strikes if s.get("oiActor") == "SELLERS" and s["optionType"] == "PE"]
+
+        ce_sell_oi = sum(abs(s["oiChange"]) for s in ce_sellers_current + ce_sellers_next)
+        pe_sell_oi = sum(abs(s["oiChange"]) for s in pe_sellers_current + pe_sellers_next)
+
+        if ce_sell_oi > pe_sell_oi and ce_sell_oi > 0:
+            top_ce = max(ce_sellers_current + ce_sellers_next, key=lambda x: abs(x["oiChange"]), default=None)
+            insights.append({
+                "type": "SELLING_HEAVY",
+                "icon": "🔴",
+                "title": "CE SELLERS DOMINATING",
+                "detail": f"CE writing OI: {ce_sell_oi/100000:.1f}L vs PE writing: {pe_sell_oi/100000:.1f}L. Heaviest at {top_ce['strike'] if top_ce else '?'}. Resistance being built = BEARISH for spot.",
+                "signal": "BUY PE",
+            })
+        elif pe_sell_oi > ce_sell_oi and pe_sell_oi > 0:
+            top_pe = max(pe_sellers_current + pe_sellers_next, key=lambda x: abs(x["oiChange"]), default=None)
+            insights.append({
+                "type": "SELLING_HEAVY",
+                "icon": "🟢",
+                "title": "PE SELLERS DOMINATING",
+                "detail": f"PE writing OI: {pe_sell_oi/100000:.1f}L vs CE writing: {ce_sell_oi/100000:.1f}L. Heaviest at {top_pe['strike'] if top_pe else '?'}. Support being built = BULLISH for spot.",
+                "signal": "BUY CE",
+            })
+
+        # 2. OI sudden moves (>20% in single scan)
+        sudden_moves = [s for s in scan_results if abs(s.get("oiChangePct", 0)) > 20 and s.get("trapScore", 0) >= 4]
+        if sudden_moves:
+            for sm in sudden_moves[:3]:
+                insights.append({
+                    "type": "SUDDEN_MOVE",
+                    "icon": "⚡",
+                    "title": f"SUDDEN OI MOVE: {sm['strike']} {sm['optionType']}",
+                    "detail": f"OI jumped {sm['oiChangePct']:+.1f}% ({sm['oiChange']/100000:.1f}L) by {sm.get('oiActor','?')}. Premium {sm.get('premChange',0):+.1f}. Score: {sm['trapScore']}/10.",
+                    "signal": sm.get("buySignal", "WAIT"),
+                })
+
+        # 3. Next expiry vs current: where is conviction?
+        next_high = [s for s in next_strikes if s.get("trapScore", 0) >= 4]
+        current_high = [s for s in current_strikes if s.get("trapScore", 0) >= 4]
+        if len(next_high) > len(current_high) and next_high:
+            insights.append({
+                "type": "NEXT_EXPIRY_HEAVY",
+                "icon": "📅",
+                "title": "NEXT EXPIRY HAS MORE CONVICTION",
+                "detail": f"Next expiry: {len(next_high)} signals vs Current: {len(current_high)}. Institutions building in next expiry = they have TIME = higher conviction bet.",
+                "signal": next_high[0].get("buySignal", "WATCH"),
+            })
+
+        # 4. Shifting: sellers moving strikes
+        seller_strikes_sorted = sorted(
+            [s for s in scan_results if s.get("oiActor") == "SELLERS" and s.get("oiAction") == "FRESH WRITING"],
+            key=lambda x: abs(x["oiChange"]), reverse=True
+        )
+        covering_strikes = sorted(
+            [s for s in scan_results if s.get("oiAction") == "SHORT COVERING"],
+            key=lambda x: abs(x["oiChange"]), reverse=True
+        )
+        if seller_strikes_sorted and covering_strikes:
+            write_at = seller_strikes_sorted[0]["strike"]
+            cover_at = covering_strikes[0]["strike"]
+            if write_at != cover_at:
+                direction = "UP" if write_at > cover_at else "DOWN"
+                insights.append({
+                    "type": "SHIFTING",
+                    "icon": "🔀",
+                    "title": f"SELLERS SHIFTING {direction}",
+                    "detail": f"Covering at {cover_at} ({covering_strikes[0]['optionType']}) → Writing at {write_at} ({seller_strikes_sorted[0]['optionType']}). Positions moving {direction}.",
+                    "signal": seller_strikes_sorted[0].get("buySignal", "WATCH"),
+                })
+
+        # Build per-expiry summaries
+        def _expiry_summary(strikes_list, label):
+            if not strikes_list:
+                return None
+            sellers = [s for s in strikes_list if s.get("oiActor") == "SELLERS"]
+            buyers = [s for s in strikes_list if s.get("oiActor") == "BUYERS"]
+            ce_writing = sum(abs(s["oiChange"]) for s in sellers if s["optionType"] == "CE")
+            pe_writing = sum(abs(s["oiChange"]) for s in sellers if s["optionType"] == "PE")
+            ce_buying = sum(abs(s["oiChange"]) for s in buyers if s["optionType"] == "CE")
+            pe_buying = sum(abs(s["oiChange"]) for s in buyers if s["optionType"] == "PE")
+            return {
+                "label": label,
+                "total": len(strikes_list),
+                "fingerprints": len([s for s in strikes_list if s["alertLevel"] == "FINGERPRINT"]),
+                "watchZones": len([s for s in strikes_list if s["alertLevel"] == "WATCH"]),
+                "ceWriting": ce_writing,
+                "peWriting": pe_writing,
+                "ceBuying": ce_buying,
+                "peBuying": pe_buying,
+                "sellerBias": "BEARISH" if ce_writing > pe_writing * 1.2 else "BULLISH" if pe_writing > ce_writing * 1.2 else "NEUTRAL",
+                "strikes": strikes_list,
+            }
+
         return {
             "strikes": scan_results,
+            "current": _expiry_summary(current_strikes, str(current_expiry)),
+            "next": _expiry_summary(next_strikes, str(next_expiry)) if next_strikes else None,
             "clusters": clusters,
+            "insights": insights,
             "spot": spot_price,
             "spotChangePct": round(spot_change_pct, 3),
             "totalScanned": len(scan_results),
