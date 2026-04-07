@@ -813,44 +813,58 @@ function UnusualTab({ unusualData, oiData }) {
         );
       })}
 
-      {/* Alerts Header */}
-      <Card style={{ background: RED + "0A", border: `1px solid ${RED}33` }}>
-        <div style={{ color: RED, fontWeight: 700, fontSize: 13, marginBottom: 4 }}>LIVE OI CHANGE ALERTS</div>
-        <div style={{ color: "#555", fontSize: 11, lineHeight: 1.6 }}>
-          Real-time alerts when OI change {">"} 1L on any strike. Auto-classified: Writing / Buying / Short Covering / Long Unwinding
-        </div>
-      </Card>
-      {alerts.length === 0 && (
-        <div style={{ textAlign: "center", padding: 40, color: "#555" }}>
-          <div style={{ fontSize: 14, color: "#666" }}>No unusual activity detected yet. OI changes {">"} 1L will appear here in real-time.</div>
-        </div>
-      )}
-      {alerts.map((u, i) => (
-        <Card key={i} style={{ borderColor: alertColor[u.alert] + "44" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
-            <div>
-              <div style={{ color: alertColor[u.alert], fontWeight: 700, fontSize: 14, marginBottom: 4 }}>
-                {u.type} {"\u2014"} {u.instrument}
+      {/* Split alerts by expiry */}
+      {(() => {
+        const currentAlerts = alerts.filter(u => u.expiryLabel === "CURRENT" || !u.expiryLabel);
+        const nextAlerts = alerts.filter(u => u.expiryLabel === "NEXT");
+
+        const renderAlertSection = (title, sectionAlerts, borderColor) => (
+          <>
+            <Card style={{ background: borderColor + "0A", border: `1px solid ${borderColor}33` }}>
+              <div style={{ color: borderColor, fontWeight: 700, fontSize: 13, marginBottom: 4 }}>{title} ({sectionAlerts.length} alerts)</div>
+              <div style={{ color: "#555", fontSize: 11, lineHeight: 1.6 }}>
+                Real-time alerts when OI change {">"} 1L. Auto-classified: Writing / Buying / Short Covering / Long Unwinding
               </div>
-              <div style={{ color: "#555", fontSize: 11 }}>{u.time}</div>
-            </div>
-            <Badge text={u.alert} color={alertColor[u.alert]} />
-          </div>
-          <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
-            <div style={{ flex: 1, background: "#0D0D15", borderRadius: 8, padding: "8px 12px" }}>
-              <div style={{ color: "#555", fontSize: 10, marginBottom: 3 }}>OI CHANGE</div>
-              <div style={{ color: "#fff", fontWeight: 700 }}>{u.oiChange}</div>
-            </div>
-            <div style={{ flex: 1, background: "#0D0D15", borderRadius: 8, padding: "8px 12px" }}>
-              <div style={{ color: "#555", fontSize: 10, marginBottom: 3 }}>PREMIUM CHANGE</div>
-              <div style={{ color: u.premChange.includes("+") ? GREEN : RED, fontWeight: 700 }}>{u.premChange}</div>
-            </div>
-          </div>
-          <div style={{ padding: "8px 12px", background: alertColor[u.alert] + "11", borderRadius: 8, color: alertColor[u.alert], fontSize: 12, fontWeight: 600 }}>
-            {"\u2192"} {u.signal}
-          </div>
-        </Card>
-      ))}
+            </Card>
+            {sectionAlerts.length === 0 && (
+              <div style={{ textAlign: "center", padding: 20, color: "#555", fontSize: 12 }}>No alerts for this expiry yet.</div>
+            )}
+            {sectionAlerts.map((u, i) => (
+              <Card key={i} style={{ borderColor: alertColor[u.alert] + "44" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+                  <div>
+                    <div style={{ color: alertColor[u.alert], fontWeight: 700, fontSize: 14, marginBottom: 4 }}>
+                      {u.type} {"\u2014"} {u.instrument}
+                    </div>
+                    <div style={{ color: "#555", fontSize: 11 }}>{u.time} {u.expiry && <span style={{ color: ORANGE, marginLeft: 6 }}>Exp: {u.expiry}</span>}</div>
+                  </div>
+                  <Badge text={u.alert} color={alertColor[u.alert]} />
+                </div>
+                <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+                  <div style={{ flex: 1, background: "#0D0D15", borderRadius: 8, padding: "8px 12px" }}>
+                    <div style={{ color: "#555", fontSize: 10, marginBottom: 3 }}>OI CHANGE</div>
+                    <div style={{ color: "#fff", fontWeight: 700 }}>{u.oiChange}</div>
+                  </div>
+                  <div style={{ flex: 1, background: "#0D0D15", borderRadius: 8, padding: "8px 12px" }}>
+                    <div style={{ color: "#555", fontSize: 10, marginBottom: 3 }}>PREMIUM CHANGE</div>
+                    <div style={{ color: u.premChange?.includes?.("+") ? GREEN : RED, fontWeight: 700 }}>{u.premChange}</div>
+                  </div>
+                </div>
+                <div style={{ padding: "8px 12px", background: alertColor[u.alert] + "11", borderRadius: 8, color: alertColor[u.alert], fontSize: 12, fontWeight: 600 }}>
+                  {"\u2192"} {u.signal}
+                </div>
+              </Card>
+            ))}
+          </>
+        );
+
+        return (
+          <>
+            {renderAlertSection("CURRENT EXPIRY — LIVE OI ALERTS", currentAlerts, RED)}
+            {nextAlerts.length > 0 && renderAlertSection("NEXT EXPIRY — LIVE OI ALERTS", nextAlerts, ORANGE)}
+          </>
+        );
+      })()}
     </div>
   );
 }
@@ -1629,18 +1643,33 @@ function AIBrainTab() {
 function PriceActionTab() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [expiries, setExpiries] = useState([]);
+  const [selectedExpiry, setSelectedExpiry] = useState("");
   const fmtL = (n) => n ? `${(Math.abs(n) / 100000).toFixed(1)}L` : "0";
+
+  // Fetch expiries on mount
+  useEffect(() => {
+    fetch("/api/expiries/NIFTY").then(r => r.json()).then(data => {
+      if (Array.isArray(data) && data.length > 0) {
+        setExpiries(data);
+        const current = data.find(e => e.isCurrent);
+        if (current) setSelectedExpiry(current.date);
+      }
+    }).catch(() => {});
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
-      const r = await fetchPriceAction();
+      // Pass expiry only if not current
+      const isCurrent = expiries.find(e => e.isCurrent)?.date === selectedExpiry;
+      const r = await fetchPriceAction(isCurrent ? null : selectedExpiry || null);
       if (r && !r.error) setData(r);
     } catch {}
-  }, []);
+  }, [selectedExpiry, expiries]);
 
   useEffect(() => {
     setLoading(true); refresh().then(() => setLoading(false));
-    const iv = setInterval(refresh, 5000); // Refresh every 5s for near real-time
+    const iv = setInterval(refresh, 5000);
     return () => clearInterval(iv);
   }, [refresh]);
 
@@ -1654,8 +1683,22 @@ function PriceActionTab() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <Card style={{ background: "#0D0D15", border: `1px solid ${ACCENT}33` }}>
-        <div style={{ color: ACCENT, fontWeight: 900, fontSize: 14, marginBottom: 4 }}>PRICE ACTION — ATM±3 Strike LTP + OI Imbalance</div>
-        <div style={{ color: "#555", fontSize: 11 }}>Tracks CE/PE premium movement, OI changes, imbalance, traps, and momentum every 5 seconds. Auto-generates BUY signals.</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ color: ACCENT, fontWeight: 900, fontSize: 14, marginBottom: 4 }}>PRICE ACTION — ATM±3 Strike LTP + OI Imbalance</div>
+            <div style={{ color: "#555", fontSize: 11 }}>Tracks CE/PE premium movement, OI changes, imbalance, traps, and momentum. Refreshes every 5 sec.</div>
+          </div>
+          {expiries.length > 0 && (
+            <select value={selectedExpiry} onChange={(e) => setSelectedExpiry(e.target.value)} style={{
+              background: "#0D0D15", color: ORANGE, border: `1px solid ${ORANGE}44`,
+              borderRadius: 8, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", outline: "none",
+            }}>
+              {expiries.map(exp => (
+                <option key={exp.date} value={exp.date}>{exp.isCurrent ? `${exp.date} (Live)` : exp.date}</option>
+              ))}
+            </select>
+          )}
+        </div>
       </Card>
 
       {["nifty", "banknifty"].map(key => {

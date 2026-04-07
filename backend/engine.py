@@ -2229,8 +2229,9 @@ class MarketEngine:
                     if len(self.ltp_history[key]) > 360:
                         self.ltp_history[key] = self.ltp_history[key][-360:]
 
-    def get_price_action(self) -> dict:
-        """Analyze ATM±3 CE/PE LTP+OI for imbalance, traps, sudden moves → trade signal."""
+    def get_price_action(self, expiry_str=None) -> dict:
+        """Analyze ATM±3 CE/PE LTP+OI for imbalance, traps, sudden moves → trade signal.
+        If expiry_str provided, fetches that expiry via REST. Else uses live ticker data."""
         result = {}
         for index in ["NIFTY", "BANKNIFTY"]:
             spot_token = self.spot_tokens.get(index)
@@ -2239,8 +2240,25 @@ class MarketEngine:
                 continue
             cfg = INDEX_CONFIG[index]
             atm = round(spot_ltp / cfg["strike_gap"]) * cfg["strike_gap"]
-            chain = self.chains.get(index, {})
             prev_close = self.spot_prev_close.get(index, spot_ltp)
+
+            # Use live chain or fetch specific expiry
+            nearest = str(self.nearest_expiry.get(index, ""))
+            if expiry_str and expiry_str != nearest:
+                # Fetch non-current expiry via REST
+                expiry_data = self.get_expiry_chain(index, expiry_str)
+                if not expiry_data or expiry_data.get("error"):
+                    continue
+                # Build chain dict from expiry data
+                chain = {}
+                for s in expiry_data.get("strikes", []):
+                    chain[s["strike"]] = {
+                        "ce_ltp": s.get("ceLTP", 0), "pe_ltp": s.get("peLTP", 0),
+                        "ce_oi": s.get("ceOI", 0), "pe_oi": s.get("peOI", 0),
+                        "ce_volume": s.get("ceVol", 0), "pe_volume": s.get("peVol", 0),
+                    }
+            else:
+                chain = self.chains.get(index, {})
 
             strikes_analysis = []
             total_ce_ltp = 0
@@ -2514,6 +2532,11 @@ class MarketEngine:
 
             prem_str = f"{'+' if prem_change > 0 else ''}{prem_change} pts" if prem_change != 0 else f"LTP: {ltp}"
 
+            # Determine expiry label
+            token_expiry = info.get("expiry", "")
+            nearest = str(self.nearest_expiry.get(info["index"], ""))
+            expiry_label = "CURRENT" if token_expiry == nearest else "NEXT"
+
             alert = {
                 "time": now,
                 "instrument": instrument,
@@ -2522,6 +2545,9 @@ class MarketEngine:
                 "premChange": prem_str,
                 "alert": alert_level,
                 "signal": signal,
+                "expiry": token_expiry,
+                "expiryLabel": expiry_label,
+                "index": info["index"],
             }
             self.unusual_alerts.append(alert)
             print(f"[UNUSUAL] {now} {alert_level}: {instrument} - {alert_type} - {oi_change_lakhs}L OI, prem {prem_str}")

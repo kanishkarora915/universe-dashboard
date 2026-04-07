@@ -241,7 +241,12 @@ async def signals():
 
 
 @app.get("/api/price-action")
-async def price_action():
+async def price_action(expiry: str = None):
+    if expiry:
+        # Don't cache expiry-specific requests
+        if not engine or not engine.running:
+            return JSONResponse({"error": "Engine not running"}, status_code=503)
+        return engine.get_price_action(expiry_str=expiry)
     return _get_or_cache("price_action", lambda: engine.get_price_action())
 
 
