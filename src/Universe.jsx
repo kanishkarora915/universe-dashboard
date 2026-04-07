@@ -3,7 +3,7 @@ import { useMarketData } from "./useMarketData";
 import OIChangeTab from "./OIChangeTab";
 import PnLTracker from "./PnLTracker";
 import { exportSignalsToPDF, exportFullReport } from "./pdfExport";
-import { fetchTrapScan } from "./api";
+import { fetchTrapScan, fetchAIAnalysis } from "./api";
 
 const ACCENT = "#0A84FF";
 const BG = "#0A0A0F";
@@ -26,6 +26,7 @@ const TABS = [
   { id: "tradeai", icon: "\uD83E\uDDE0", label: "Trade AI" },
   { id: "hidden",  icon: "\uD83D\uDD75\uFE0F", label: "Hidden Shift" },
   { id: "trap",    icon: "\uD83E\uDDE8", label: "Trap Finder" },
+  { id: "aibrain", icon: "\uD83E\uDD16", label: "AI Brain" },
   { id: "oichange",icon: "\uD83D\uDCC8", label: "OI Change" },
   { id: "pnl",     icon: "\uD83D\uDCB0", label: "PnL Tracker" },
   { id: "prompt",  icon: "\uD83E\uDD16", label: "Claude Prompt" },
@@ -1400,6 +1401,228 @@ function HiddenShiftTab({ data }) {
   );
 }
 
+// ── TAB: AI BRAIN — Claude-Powered Analysis ─────────────────────────
+
+function AIBrainTab() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [lastRefresh, setLastRefresh] = useState(null);
+
+  const runAnalysis = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await fetchAIAnalysis();
+      if (result) { setData(result); setLastRefresh(new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })); }
+    } catch {}
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { runAnalysis(); }, [runAnalysis]);
+
+  const verdictColor = (v) => v === "BUY CE" ? GREEN : v === "BUY PE" ? RED : "#555";
+  const confColor = (c) => c === "HIGH" ? GREEN : c === "MEDIUM" ? YELLOW : "#555";
+
+  if (!data && !loading) return (
+    <div style={{ textAlign: "center", padding: 60, color: "#555" }}>
+      <div style={{ fontSize: 40, marginBottom: 12 }}>🤖</div>
+      <div style={{ fontSize: 14, color: "#666" }}>AI Brain — Claude-Powered Trading Intelligence</div>
+      <button onClick={runAnalysis} style={{ marginTop: 16, background: ACCENT + "22", color: ACCENT, border: `1px solid ${ACCENT}44`, borderRadius: 8, padding: "8px 20px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Run AI Analysis</button>
+    </div>
+  );
+
+  const renderIndex = (key, label) => {
+    const d = data?.[key];
+    if (!d) return null;
+    const vc = verdictColor(d.verdict);
+    const cc = confColor(d.confidence);
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {/* VERDICT CARD */}
+        <Card style={{ background: vc + "08", border: `1px solid ${vc}44` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ color: "#fff", fontWeight: 900, fontSize: 18 }}>{label}</span>
+              <span style={{ background: vc + "22", color: vc, padding: "4px 16px", borderRadius: 6, fontSize: 14, fontWeight: 900 }}>{d.verdict || "NO TRADE"}</span>
+              <span style={{ background: cc + "22", color: cc, padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700 }}>{d.confidence}</span>
+            </div>
+          </div>
+          {d.verdict !== "NO TRADE" && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 8, marginBottom: 12 }}>
+              <div style={{ background: "#111118", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>STRIKE</div>
+                <div style={{ color: "#fff", fontSize: 16, fontWeight: 900 }}>{d.strike}</div>
+                <div style={{ color: ORANGE, fontSize: 9 }}>{d.expiry} expiry</div>
+              </div>
+              <div style={{ background: "#111118", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>ENTRY</div>
+                <div style={{ color: GREEN, fontSize: 16, fontWeight: 900 }}>{d.entry}</div>
+              </div>
+              <div style={{ background: "#111118", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>TARGET 1 / T2</div>
+                <div style={{ color: GREEN, fontSize: 16, fontWeight: 900 }}>{d.target1}</div>
+                <div style={{ color: GREEN, fontSize: 10 }}>T2: {d.target2}</div>
+              </div>
+              <div style={{ background: "#111118", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>STOPLOSS</div>
+                <div style={{ color: RED, fontSize: 16, fontWeight: 900 }}>{d.stoploss}</div>
+              </div>
+              <div style={{ background: "#111118", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>R:R / HOLD</div>
+                <div style={{ color: PURPLE, fontSize: 14, fontWeight: 900 }}>{d.riskReward}</div>
+                <div style={{ color: "#888", fontSize: 9 }}>{d.holdTime}</div>
+              </div>
+            </div>
+          )}
+        </Card>
+
+        {/* KEY LEVELS */}
+        {d.keyLevels && (
+          <Card style={{ background: "#0D0D15", border: `1px solid ${BORDER}` }}>
+            <div style={{ display: "flex", gap: 12 }}>
+              {d.keyLevels.resistance?.length > 0 && (
+                <div style={{ flex: 1 }}>
+                  <div style={{ color: RED, fontSize: 10, fontWeight: 700, marginBottom: 6 }}>RESISTANCE</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {d.keyLevels.resistance.map((l, i) => <span key={i} style={{ background: RED + "15", color: RED, padding: "3px 10px", borderRadius: 4, fontSize: 12, fontWeight: 700 }}>{l}</span>)}
+                  </div>
+                </div>
+              )}
+              {d.keyLevels.support?.length > 0 && (
+                <div style={{ flex: 1 }}>
+                  <div style={{ color: GREEN, fontSize: 10, fontWeight: 700, marginBottom: 6 }}>SUPPORT</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {d.keyLevels.support.map((l, i) => <span key={i} style={{ background: GREEN + "15", color: GREEN, padding: "3px 10px", borderRadius: 4, fontSize: 12, fontWeight: 700 }}>{l}</span>)}
+                  </div>
+                </div>
+              )}
+            </div>
+          </Card>
+        )}
+
+        {/* REASONS */}
+        {d.reasons?.length > 0 && (
+          <Card style={{ background: "#0D0D15", border: `1px solid ${BORDER}` }}>
+            <div style={{ color: YELLOW, fontWeight: 700, fontSize: 12, marginBottom: 8 }}>WHY THIS TRADE?</div>
+            {d.reasons.map((r, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, marginBottom: 5, alignItems: "flex-start" }}>
+                <span style={{ color: GREEN, fontSize: 12, flexShrink: 0 }}>+</span>
+                <span style={{ color: "#ccc", fontSize: 11, lineHeight: 1.5 }}>{r}</span>
+              </div>
+            ))}
+          </Card>
+        )}
+
+        {/* RISKS */}
+        {d.risks?.length > 0 && (
+          <Card style={{ background: RED + "06", border: `1px solid ${RED}22` }}>
+            <div style={{ color: RED, fontWeight: 700, fontSize: 12, marginBottom: 8 }}>RISKS</div>
+            {d.risks.map((r, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+                <span style={{ color: RED, fontSize: 12, flexShrink: 0 }}>!</span>
+                <span style={{ color: "#aaa", fontSize: 11 }}>{r}</span>
+              </div>
+            ))}
+          </Card>
+        )}
+
+        {/* PREDICTIONS */}
+        {d.prediction && (
+          <Card style={{ background: "#0D0D15", border: `1px solid ${PURPLE}33` }}>
+            <div style={{ color: PURPLE, fontWeight: 700, fontSize: 12, marginBottom: 10 }}>PREDICTIONS</div>
+            {d.prediction.intraday && (
+              <div style={{ marginBottom: 8 }}>
+                <span style={{ color: ACCENT, fontSize: 10, fontWeight: 700 }}>INTRADAY: </span>
+                <span style={{ color: "#ccc", fontSize: 11 }}>{d.prediction.intraday}</span>
+              </div>
+            )}
+            {d.prediction.nextDay && (
+              <div style={{ marginBottom: 8 }}>
+                <span style={{ color: ORANGE, fontSize: 10, fontWeight: 700 }}>NEXT DAY: </span>
+                <span style={{ color: "#ccc", fontSize: 11 }}>{d.prediction.nextDay}</span>
+              </div>
+            )}
+            {d.prediction.weekly && (
+              <div>
+                <span style={{ color: YELLOW, fontSize: 10, fontWeight: 700 }}>WEEKLY: </span>
+                <span style={{ color: "#ccc", fontSize: 11 }}>{d.prediction.weekly}</span>
+              </div>
+            )}
+          </Card>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* HEADER */}
+      <Card style={{ background: ACCENT + "0A", border: `1px solid ${ACCENT}33` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ color: ACCENT, fontWeight: 900, fontSize: 14, marginBottom: 4 }}>AI BRAIN — Claude-Powered Trading Intelligence</div>
+            <div style={{ color: "#555", fontSize: 11 }}>Reads ALL engines (Live, OI, Sellers, Unusual, Hidden Shift, Trap) and gives you ONE verdict. BUYER ONLY.</div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {lastRefresh && <span style={{ color: "#444", fontSize: 10 }}>Last: {lastRefresh}</span>}
+            {data?._meta?.tokensUsed && <span style={{ color: "#333", fontSize: 9 }}>{data._meta.tokensUsed} tokens</span>}
+            <button onClick={runAnalysis} disabled={loading} style={{ background: loading ? "#333" : ACCENT + "22", color: ACCENT, border: `1px solid ${ACCENT}44`, borderRadius: 8, padding: "6px 14px", cursor: loading ? "wait" : "pointer", fontSize: 11, fontWeight: 700 }}>
+              {loading ? "Analyzing..." : "Refresh Analysis"}
+            </button>
+          </div>
+        </div>
+      </Card>
+
+      {loading && (
+        <div style={{ textAlign: "center", padding: 40, color: ACCENT }}>
+          <div style={{ fontSize: 24, marginBottom: 8 }}>🧠</div>
+          <div style={{ fontSize: 13 }}>Claude is reading all dashboard data...</div>
+          <div style={{ fontSize: 11, color: "#555", marginTop: 4 }}>Analyzing Live + OI + Sellers + Unusual + Hidden Shift + Trap engines</div>
+        </div>
+      )}
+
+      {/* MARKET PULSE */}
+      {data?.marketPulse && (
+        <Card style={{ background: "#0D0D15", border: `1px solid ${BORDER}` }}>
+          <div style={{ color: "#fff", fontWeight: 700, fontSize: 13, marginBottom: 6 }}>MARKET PULSE</div>
+          <div style={{ color: "#ccc", fontSize: 12, lineHeight: 1.7 }}>{data.marketPulse}</div>
+        </Card>
+      )}
+
+      {/* NIFTY */}
+      {renderIndex("nifty", "NIFTY")}
+
+      {/* BANKNIFTY */}
+      {renderIndex("banknifty", "BANKNIFTY")}
+
+      {/* HEDGE STRATEGY */}
+      {data?.hedgeStrategy && (
+        <Card style={{ background: PURPLE + "08", border: `1px solid ${PURPLE}33` }}>
+          <div style={{ color: PURPLE, fontWeight: 700, fontSize: 12, marginBottom: 4 }}>HEDGE STRATEGY</div>
+          <div style={{ color: "#ccc", fontSize: 11, lineHeight: 1.5 }}>{data.hedgeStrategy}</div>
+        </Card>
+      )}
+
+      {/* AVOID LIST */}
+      {data?.avoidList?.length > 0 && (
+        <Card style={{ background: RED + "06", border: `1px solid ${RED}22` }}>
+          <div style={{ color: RED, fontWeight: 700, fontSize: 12, marginBottom: 6 }}>DO NOT</div>
+          {data.avoidList.map((a, i) => (
+            <div key={i} style={{ color: "#aaa", fontSize: 11, marginBottom: 3 }}>{"\u26D4"} {a}</div>
+          ))}
+        </Card>
+      )}
+
+      {/* INSTITUTIONAL READ */}
+      {data?.institutionalRead && (
+        <Card style={{ background: ORANGE + "06", border: `1px solid ${ORANGE}22` }}>
+          <div style={{ color: ORANGE, fontWeight: 700, fontSize: 12, marginBottom: 4 }}>INSTITUTIONAL POSITIONING</div>
+          <div style={{ color: "#ccc", fontSize: 11, lineHeight: 1.5 }}>{data.institutionalRead}</div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 // ── TAB: TRAP FINGERPRINT FINDER ─────────────────────────────────────
 
 function TrapFinderTab() {
@@ -1681,6 +1904,7 @@ export default function Universe({ onLogout }) {
       case "tradeai": return <TradeAITab data={tradeAnalysis} />;
       case "hidden":  return <HiddenShiftTab data={hiddenShift} />;
       case "trap":    return <TrapFinderTab />;
+      case "aibrain": return <AIBrainTab />;
       case "oichange":return <OIChangeTab oiData={oiSummary} />;
       case "pnl":     return <PnLTracker signals={signals} />;
       case "prompt":  return <PromptTab />;

@@ -311,6 +311,27 @@ async def trap_clusters():
     return engine.trap_scanner.get_clusters()
 
 
+@app.get("/api/ai-analysis")
+async def ai_analysis():
+    """Run Claude AI analysis on ALL dashboard data."""
+    from ai_analysis import run_ai_analysis
+    # Collect all data
+    all_data = {
+        "live": _get_or_cache("live", lambda: engine.get_live_data() if engine else None),
+        "signals": _get_or_cache("signals", lambda: engine.get_signals() if engine else []),
+        "oiSummary": _get_or_cache("oi_summary", lambda: engine.get_oi_change_summary() if engine else {}),
+        "sellerData": _get_or_cache("seller_summary", lambda: engine.get_seller_summary() if engine else {}),
+        "unusual": _get_or_cache("unusual", lambda: engine.get_unusual() if engine else []),
+        "tradeAnalysis": _get_or_cache("trade_analysis", lambda: engine.get_trade_analysis() if engine else {}),
+        "hiddenShift": _get_or_cache("hidden_shift", lambda: engine.get_hidden_shift() if engine else {}),
+        "trapScan": get_cached("trap_scan"),
+        "intraday": _get_or_cache("intraday", lambda: engine.get_intraday() if engine else {}),
+    }
+    result = run_ai_analysis(all_data)
+    save_cache("ai_analysis", result)
+    return result
+
+
 @app.get("/api/export-daily")
 async def export_daily():
     """Collects ALL data types for full A-Z PDF export."""

@@ -123,3 +123,9 @@ export async function fetchTrapAlerts() {
   if (!res.ok) return [];
   return res.json();
 }
+
+export async function fetchAIAnalysis() {
+  const res = await fetch("/api/ai-analysis");
+  if (!res.ok) return null;
+  return res.json();
+}
