@@ -214,6 +214,8 @@ class MarketEngine:
 
         # ── Expiry tracking ──
         self.nearest_expiry = {}   # {"NIFTY": date, "BANKNIFTY": date}
+        self.all_expiries = {"NIFTY": [], "BANKNIFTY": []}  # All future expiry dates
+        self.nfo_instruments = []  # Full NFO instrument list for on-demand expiry queries
 
         # ── WebSocket clients ──
         self._ws_clients = []
@@ -407,6 +409,172 @@ class MarketEngine:
             }
 
         return result
+
+    # ── EXPIRY FUNCTIONS ──────────────────────────────────────────────
+
+    def get_available_expiries(self, index: str) -> list:
+        """Return all available future expiry dates for an index."""
+        index = index.upper()
+        expiries = self.all_expiries.get(index, [])
+        if not expiries:
+            return []
+        today = str(ist_now().date())
+        nearest = str(self.nearest_expiry.get(index, ""))
+        result = []
+        for exp in expiries:
+            label = exp
+            if exp == nearest:
+                label = f"{exp} (Current)"
+            result.append({"date": exp, "label": label, "isCurrent": exp == nearest})
+        return result
+
+    def get_expiry_chain(self, index: str, expiry_str: str) -> dict:
+        """Fetch OI chain for any expiry via REST API (on-demand)."""
+        index = index.upper()
+        cfg = INDEX_CONFIG.get(index)
+        if not cfg:
+            return {"error": f"Unknown index: {index}"}
+
+        # If requesting current expiry, use live chain data
+        nearest = str(self.nearest_expiry.get(index, ""))
+        if expiry_str == nearest:
+            return self._build_expiry_response(index, expiry_str, use_live=True)
+
+        # For other expiries: find tokens from stored instruments, fetch via REST
+        try:
+            from datetime import date as date_type
+            target_date = date_type.fromisoformat(expiry_str)
+        except Exception:
+            return {"error": f"Invalid expiry date: {expiry_str}"}
+
+        spot_token = self.spot_tokens.get(index)
+        ltp = self.prices.get(spot_token, {}).get("ltp", 0)
+        atm = round(ltp / cfg["strike_gap"]) * cfg["strike_gap"] if ltp > 0 else 0
+        strike_range = cfg["atm_range"]
+
+        # Find matching instruments
+        opts = [i for i in self.nfo_instruments
+                if i["name"] == cfg["name"]
+                and i["instrument_type"] in ("CE", "PE")
+                and i["expiry"] == target_date
+                and abs(i["strike"] - atm) <= strike_range * cfg["strike_gap"]]
+
+        if not opts:
+            return {"error": f"No instruments found for {index} expiry {expiry_str}"}
+
+        # Batch fetch quotes via REST
+        chain = {}
+        symbols = {}
+        for i in opts:
+            token = i["instrument_token"]
+            symbols[token] = f"NFO:{i['tradingsymbol']}"
+
+        # Fetch in batches of 200 (Kite limit)
+        all_tokens = list(symbols.keys())
+        all_quotes = {}
+        for batch_start in range(0, len(all_tokens), 200):
+            batch = all_tokens[batch_start:batch_start + 200]
+            batch_syms = [symbols[t] for t in batch]
+            try:
+                quotes = self.kite.quote(batch_syms)
+                for sym, q in quotes.items():
+                    for t in batch:
+                        if symbols[t] == sym:
+                            all_quotes[t] = q
+                            break
+                time.sleep(0.3)
+            except Exception as e:
+                print(f"[ENGINE] Expiry chain batch error: {e}")
+
+        # Build chain from quotes
+        for i in opts:
+            token = i["instrument_token"]
+            strike = i["strike"]
+            opt_type = i["instrument_type"].lower()
+            q = all_quotes.get(token, {})
+
+            if strike not in chain:
+                chain[strike] = {}
+            chain[strike][f"{opt_type}_ltp"] = q.get("last_price", 0)
+            chain[strike][f"{opt_type}_oi"] = q.get("oi", 0)
+            chain[strike][f"{opt_type}_volume"] = q.get("volume", 0)
+
+        return self._build_expiry_response_from_chain(index, expiry_str, chain, ltp, atm)
+
+    def _build_expiry_response(self, index, expiry_str, use_live=False):
+        """Build response from live chain data (for current expiry)."""
+        chain = self.chains.get(index, {})
+        spot_token = self.spot_tokens.get(index)
+        ltp = self.prices.get(spot_token, {}).get("ltp", 0)
+        cfg = INDEX_CONFIG[index]
+        atm = round(ltp / cfg["strike_gap"]) * cfg["strike_gap"] if ltp > 0 else 0
+        return self._build_expiry_response_from_chain(index, expiry_str, chain, ltp, atm)
+
+    def _build_expiry_response_from_chain(self, index, expiry_str, chain, ltp, atm):
+        """Build standardized expiry chain response."""
+        strikes_data = []
+        total_ce_oi = 0
+        total_pe_oi = 0
+        total_ce_oi_pos = 0
+        total_ce_oi_neg = 0
+        total_pe_oi_pos = 0
+        total_pe_oi_neg = 0
+
+        for strike in sorted(chain.keys()):
+            data = chain[strike]
+            ce_oi = data.get("ce_oi", 0)
+            pe_oi = data.get("pe_oi", 0)
+            ce_ltp = data.get("ce_ltp", 0)
+            pe_ltp = data.get("pe_ltp", 0)
+            ce_vol = data.get("ce_volume", 0)
+            pe_vol = data.get("pe_volume", 0)
+
+            # For current expiry, compute OI change from open
+            ce_oi_change = 0
+            pe_oi_change = 0
+            if self.initial_oi:
+                ce_token = None
+                pe_token = None
+                for tok, info in self.token_to_info.items():
+                    if info["index"] == index and info["strike"] == strike:
+                        if info["opt_type"] == "CE":
+                            ce_token = tok
+                        else:
+                            pe_token = tok
+                ce_oi_change = ce_oi - self.initial_oi.get(ce_token, ce_oi) if ce_token else 0
+                pe_oi_change = pe_oi - self.initial_oi.get(pe_token, pe_oi) if pe_token else 0
+
+            total_ce_oi += ce_oi
+            total_pe_oi += pe_oi
+            if ce_oi_change > 0: total_ce_oi_pos += ce_oi_change
+            else: total_ce_oi_neg += ce_oi_change
+            if pe_oi_change > 0: total_pe_oi_pos += pe_oi_change
+            else: total_pe_oi_neg += pe_oi_change
+
+            strikes_data.append({
+                "strike": strike, "isATM": strike == atm,
+                "ceOI": ce_oi, "peOI": pe_oi,
+                "ceOIChange": ce_oi_change, "peOIChange": pe_oi_change,
+                "ceLTP": ce_ltp, "peLTP": pe_ltp,
+                "ceVol": ce_vol, "peVol": pe_vol,
+            })
+
+        return {
+            "index": index,
+            "expiry": expiry_str,
+            "ltp": ltp,
+            "atm": atm,
+            "strikes": strikes_data,
+            "totalCEOI": total_ce_oi,
+            "totalPEOI": total_pe_oi,
+            "ceOIChangePos": total_ce_oi_pos,
+            "ceOIChangeNeg": total_ce_oi_neg,
+            "peOIChangePos": total_pe_oi_pos,
+            "peOIChangeNeg": total_pe_oi_neg,
+            "netOIChange": total_ce_oi_pos + total_ce_oi_neg + total_pe_oi_pos + total_pe_oi_neg,
+            "pcr": round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 0,
+            "timestamp": ist_now().strftime("%I:%M:%S %p IST"),
+        }
 
     # ── SELLER ACTIVITY SUMMARY ───────────────────────────────────────
 
@@ -1860,6 +2028,7 @@ class MarketEngine:
         print("[ENGINE] Fetching instruments...")
         nse_instruments = self.kite.instruments("NSE")
         nfo_instruments = self.kite.instruments("NFO")
+        self.nfo_instruments = nfo_instruments  # Store for on-demand expiry queries
 
         for inst in nse_instruments:
             ts = inst["tradingsymbol"]
@@ -1899,7 +2068,8 @@ class MarketEngine:
                 continue
             nearest_expiry = future_expiries[0]
             self.nearest_expiry[index] = nearest_expiry
-            print(f"[ENGINE] {index}: ATM={atm}, Expiry={nearest_expiry}")
+            self.all_expiries[index] = [str(e) for e in future_expiries]
+            print(f"[ENGINE] {index}: ATM={atm}, Expiry={nearest_expiry}, All expiries: {len(future_expiries)}")
 
             for i in opts:
                 if i["expiry"] != nearest_expiry:

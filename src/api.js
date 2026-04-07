@@ -99,3 +99,15 @@ export async function fetchHiddenShift() {
   if (!res.ok) return null;
   return res.json();
 }
+
+export async function fetchExpiries(index) {
+  const res = await fetch(`/api/expiries/${index}`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function fetchExpiryChain(index, expiry) {
+  const res = await fetch(`/api/expiry-chain/${index}/${expiry}`);
+  if (!res.ok) return null;
+  return res.json();
+}

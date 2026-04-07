@@ -255,6 +255,25 @@ async def weekly():
     return _get_or_cache("weekly", lambda: engine.get_weekly())
 
 
+@app.get("/api/expiries/{index}")
+async def expiries(index: str):
+    if not engine or not engine.running:
+        cached = get_cached(f"expiries_{index}")
+        if cached:
+            return cached
+        return JSONResponse({"error": "Engine not running"}, status_code=503)
+    data = engine.get_available_expiries(index)
+    save_cache(f"expiries_{index}", data)
+    return data
+
+
+@app.get("/api/expiry-chain/{index}/{expiry}")
+async def expiry_chain(index: str, expiry: str):
+    if not engine or not engine.running:
+        return JSONResponse({"error": "Engine not running"}, status_code=503)
+    return engine.get_expiry_chain(index, expiry)
+
+
 @app.get("/api/export-daily")
 async def export_daily():
     """Collects ALL data types for full A-Z PDF export."""
