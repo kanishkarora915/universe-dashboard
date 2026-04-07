@@ -1921,24 +1921,28 @@ function TrapFinderTab() {
             </Card>
 
             {/* Cluster Alerts */}
-            {d.clusters?.length > 0 && d.clusters.map((c, i) => (
-              <Card key={i} style={{ background: PURPLE + "08", border: `1px solid ${PURPLE}44` }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 16 }}>🔗</span>
-                    <span style={{ color: PURPLE, fontWeight: 900, fontSize: 13 }}>CLUSTER: {c.direction} ({c.side})</span>
+            {d.clusters?.length > 0 && d.clusters.map((c, i) => {
+              const bsColor = c.buySignal?.includes("CE") ? GREEN : c.buySignal?.includes("PE") ? RED : "#888";
+              return (
+                <Card key={i} style={{ background: PURPLE + "08", border: `1px solid ${PURPLE}44` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 16 }}>🔗</span>
+                      <span style={{ color: PURPLE, fontWeight: 900, fontSize: 13 }}>CLUSTER: {c.actor || "INSTITUTIONAL"} {c.side}</span>
+                      <span style={{ background: bsColor + "22", color: bsColor, padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 900 }}>{c.buySignal || c.direction}</span>
+                    </div>
+                    <span style={{ background: c.confidence === "HIGH" ? RED + "22" : YELLOW + "22", color: c.confidence === "HIGH" ? RED : YELLOW, padding: "2px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{c.confidence}</span>
                   </div>
-                  <span style={{ background: c.confidence === "HIGH" ? RED + "22" : YELLOW + "22", color: c.confidence === "HIGH" ? RED : YELLOW, padding: "2px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{c.confidence}</span>
-                </div>
-                <div style={{ color: "#ccc", fontSize: 12, marginBottom: 6 }}>{c.signal}</div>
-                <div style={{ display: "flex", gap: 10, fontSize: 11 }}>
-                  <span style={{ color: "#888" }}>Range: <span style={{ color: "#fff", fontWeight: 700 }}>{c.strikeRange}</span></span>
-                  <span style={{ color: "#888" }}>Strikes: <span style={{ color: "#fff", fontWeight: 700 }}>{c.count}</span></span>
-                  <span style={{ color: "#888" }}>Avg Score: <span style={{ color: scoreColor(c.avgScore), fontWeight: 700 }}>{c.avgScore}</span></span>
-                  <span style={{ color: "#888" }}>OI Change: <span style={{ color: GREEN, fontWeight: 700 }}>+{fmtL(c.totalOIChange)}</span></span>
-                </div>
-              </Card>
-            ))}
+                  <div style={{ color: "#ccc", fontSize: 12, marginBottom: 6 }}>{c.signal}</div>
+                  <div style={{ display: "flex", gap: 10, fontSize: 11, flexWrap: "wrap" }}>
+                    <span style={{ color: "#888" }}>Range: <span style={{ color: "#fff", fontWeight: 700 }}>{c.strikeRange}</span></span>
+                    <span style={{ color: "#888" }}>Strikes: <span style={{ color: "#fff", fontWeight: 700 }}>{c.count}</span></span>
+                    <span style={{ color: "#888" }}>Avg Score: <span style={{ color: scoreColor(c.avgScore), fontWeight: 700 }}>{c.avgScore}</span></span>
+                    <span style={{ color: "#888" }}>OI Change: <span style={{ color: GREEN, fontWeight: 700 }}>+{fmtL(c.totalOIChange)}</span></span>
+                  </div>
+                </Card>
+              );
+            })}
 
             {/* Strike Table */}
             <Card style={{ background: "#0D0D15", border: `1px solid ${BORDER}` }}>
@@ -1948,16 +1952,13 @@ function TrapFinderTab() {
                     <tr style={{ borderBottom: `1px solid ${BORDER}` }}>
                       <th style={{ padding: "5px 6px", color: "#555", textAlign: "left" }}>Strike</th>
                       <th style={{ padding: "5px 6px", color: "#555", textAlign: "center" }}>Type</th>
-                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "center" }}>Expiry</th>
-                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>OI</th>
+                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "center" }}>Who</th>
                       <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>OI Chg</th>
                       <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>OI %</th>
+                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>Prem</th>
                       <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>Vol</th>
-                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>Vol Ratio</th>
-                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>IV</th>
-                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>LTP</th>
                       <th style={{ padding: "5px 6px", color: "#555", textAlign: "center" }}>Score</th>
-                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "center" }}>Flag</th>
+                      <th style={{ padding: "5px 6px", color: ACCENT, textAlign: "center", fontWeight: 900 }}>YOU BUY</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1970,26 +1971,30 @@ function TrapFinderTab() {
                         <td style={{ padding: "4px 6px", color: "#ccc", fontWeight: 700 }}>{s.strike}</td>
                         <td style={{ padding: "4px 6px", textAlign: "center" }}>
                           <span style={{ color: s.optionType === "CE" ? RED : GREEN, fontWeight: 700 }}>{s.optionType}</span>
+                          <span style={{ color: s.expiryLabel === "NEXT" ? ORANGE : "#555", fontSize: 8, display: "block" }}>{s.expiryLabel}</span>
                         </td>
-                        <td style={{ padding: "4px 6px", textAlign: "center", color: s.expiryLabel === "NEXT" ? ORANGE : "#888", fontSize: 9 }}>{s.expiryLabel}</td>
-                        <td style={{ padding: "4px 6px", textAlign: "right", color: "#888" }}>{fmtL(s.oi)}</td>
+                        <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                          <span style={{ color: s.oiActor === "SELLERS" ? ORANGE : GREEN, fontWeight: 700, fontSize: 9 }}>{s.oiActor || "-"}</span>
+                          <span style={{ color: "#555", fontSize: 8, display: "block" }}>{s.oiAction || ""}</span>
+                        </td>
                         <td style={{ padding: "4px 6px", textAlign: "right", color: s.oiChange > 0 ? GREEN : s.oiChange < 0 ? RED : "#555", fontWeight: 700 }}>
                           {s.oiChange > 0 ? "+" : ""}{fmtL(s.oiChange)}
+                          <span style={{ color: Math.abs(s.oiChangePct) > 15 ? ORANGE : "#555", fontSize: 8, display: "block" }}>{s.oiChangePct > 0 ? "+" : ""}{s.oiChangePct}%</span>
                         </td>
-                        <td style={{ padding: "4px 6px", textAlign: "right", color: Math.abs(s.oiChangePct) > 15 ? ORANGE : "#888", fontWeight: Math.abs(s.oiChangePct) > 15 ? 900 : 400 }}>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: "#888" }}>
                           {s.oiChangePct > 0 ? "+" : ""}{s.oiChangePct}%
                         </td>
-                        <td style={{ padding: "4px 6px", textAlign: "right", color: "#888" }}>{s.volume?.toLocaleString("en-IN")}</td>
-                        <td style={{ padding: "4px 6px", textAlign: "right", color: s.volumeRatio > 2 ? ORANGE : "#888", fontWeight: s.volumeRatio > 2 ? 900 : 400 }}>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: (s.premChange || 0) > 0 ? GREEN : (s.premChange || 0) < 0 ? RED : "#555" }}>
+                          {(s.premChange || 0) > 0 ? "+" : ""}{(s.premChange || 0).toFixed(1)}
+                        </td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: s.volumeRatio > 2 ? ORANGE : "#888" }}>
                           {s.volumeRatio}x
                         </td>
-                        <td style={{ padding: "4px 6px", textAlign: "right", color: "#888" }}>{s.iv}%</td>
-                        <td style={{ padding: "4px 6px", textAlign: "right", color: "#ccc" }}>{s.ltp?.toFixed(1)}</td>
                         <td style={{ padding: "4px 6px", textAlign: "center" }}>
                           <span style={{ background: scoreColor(s.trapScore) + "22", color: scoreColor(s.trapScore), padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 900 }}>{s.trapScore}</span>
                         </td>
                         <td style={{ padding: "4px 6px", textAlign: "center" }}>
-                          <span style={{ background: (alertBg[s.alertLevel] || "#333") + "22", color: alertBg[s.alertLevel] || "#555", padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 700 }}>{s.alertLevel}</span>
+                          <span style={{ background: (s.buySignal?.includes("CE") ? GREEN : s.buySignal?.includes("PE") ? RED : "#555") + "22", color: s.buySignal?.includes("CE") ? GREEN : s.buySignal?.includes("PE") ? RED : "#555", padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 900 }}>{s.buySignal || "-"}</span>
                         </td>
                       </tr>
                     ))}

@@ -252,8 +252,71 @@ class TrapScanner:
             iv_approx = round((ltp / spot_price) * (365 / dte) ** 0.5 * 100, 1) if spot_price > 0 else 0
             iv_change = round(abs(iv_approx - prev_iv), 1) if prev_iv > 0 else 0
 
+            # Premium change (to classify BUYER vs SELLER)
+            prev_ltp = prev.get("ltp", ltp)
+            prem_change = round(ltp - prev_ltp, 2)
+            prem_change_pct = round((prem_change / prev_ltp) * 100, 1) if prev_ltp > 0 else 0
+
             # Store current as prev for next scan
             self.prev_snapshots[snap_key] = {"oi": oi, "volume": volume, "iv": iv_approx, "ltp": ltp}
+
+            # ── CLASSIFY: BUYER vs SELLER ──
+            # OI ↑ + Premium ↑ = BUYERS entering (fresh longs)
+            # OI ↑ + Premium ↓ = SELLERS writing (fresh shorts)
+            # OI ↓ + Premium ↑ = SELLERS covering (shorts exiting)
+            # OI ↓ + Premium ↓ = BUYERS exiting (longs unwinding)
+            if oi_change > 0 and prem_change > 0:
+                oi_actor = "BUYERS"
+                oi_action = "FRESH BUYING"
+            elif oi_change > 0 and prem_change <= 0:
+                oi_actor = "SELLERS"
+                oi_action = "FRESH WRITING"
+            elif oi_change < 0 and prem_change >= 0:
+                oi_actor = "SELLERS"
+                oi_action = "SHORT COVERING"
+            elif oi_change < 0 and prem_change < 0:
+                oi_actor = "BUYERS"
+                oi_action = "LONG UNWINDING"
+            else:
+                oi_actor = "UNKNOWN"
+                oi_action = "NEUTRAL"
+
+            # ── DIRECTION FOR BUYER (you) ──
+            # Sellers writing CE = resistance = BUY PE for you
+            # Sellers writing PE = support = BUY CE for you
+            # Buyers buying CE = bullish bet = BUY CE for you
+            # Buyers buying PE = bearish bet = BUY PE for you
+            if oi_actor == "SELLERS" and oi_action == "FRESH WRITING":
+                if opt_type == "CE":
+                    buy_signal = "BUY PE"
+                    signal_reason = f"Sellers WRITING {opt_type} at {int(strike)} = resistance building"
+                else:
+                    buy_signal = "BUY CE"
+                    signal_reason = f"Sellers WRITING {opt_type} at {int(strike)} = support building"
+            elif oi_actor == "BUYERS" and oi_action == "FRESH BUYING":
+                if opt_type == "CE":
+                    buy_signal = "BUY CE"
+                    signal_reason = f"Buyers BUYING {opt_type} at {int(strike)} = bullish directional bet"
+                else:
+                    buy_signal = "BUY PE"
+                    signal_reason = f"Buyers BUYING {opt_type} at {int(strike)} = bearish directional bet"
+            elif oi_action == "SHORT COVERING":
+                if opt_type == "CE":
+                    buy_signal = "BUY CE"
+                    signal_reason = f"CE sellers COVERING at {int(strike)} = resistance weakening, upside opening"
+                else:
+                    buy_signal = "BUY PE"
+                    signal_reason = f"PE sellers COVERING at {int(strike)} = support weakening, downside opening"
+            elif oi_action == "LONG UNWINDING":
+                if opt_type == "CE":
+                    buy_signal = "BUY PE"
+                    signal_reason = f"CE buyers EXITING at {int(strike)} = bulls giving up"
+                else:
+                    buy_signal = "BUY CE"
+                    signal_reason = f"PE buyers EXITING at {int(strike)} = bears giving up"
+            else:
+                buy_signal = "WAIT"
+                signal_reason = "No clear direction"
 
             # ── TRAP SCORE CALCULATION ──
             trap_score = 0
@@ -262,10 +325,10 @@ class TrapScanner:
             # OI change > 15% → +3
             if abs(oi_change_pct) > 15:
                 trap_score += 3
-                reasons.append(f"OI jumped {oi_change_pct:+.1f}%")
+                reasons.append(f"OI jumped {oi_change_pct:+.1f}% ({oi_actor} {oi_action})")
             elif abs(oi_change_pct) > 8:
                 trap_score += 1
-                reasons.append(f"OI changed {oi_change_pct:+.1f}%")
+                reasons.append(f"OI changed {oi_change_pct:+.1f}% ({oi_actor})")
 
             # Volume > 2x average → +3
             if volume_ratio > 2.0:
@@ -278,12 +341,19 @@ class TrapScanner:
             # IV flat (< 5% change) while OI building → +2
             if iv_change < 5 and abs(oi_change_pct) > 5:
                 trap_score += 2
-                reasons.append(f"IV flat ({iv_change:.1f}%) = stealth buying")
+                if oi_actor == "SELLERS":
+                    reasons.append(f"IV flat ({iv_change:.1f}%) + sellers writing = stealth positioning")
+                else:
+                    reasons.append(f"IV flat ({iv_change:.1f}%) = accumulation without panic")
 
             # Spot barely moved (< 0.3%) → +2
             if spot_change_pct < 0.3:
                 trap_score += 2
-                reasons.append(f"Spot flat ({spot_change_pct:.2f}%) = hidden positioning")
+                reasons.append(f"Spot flat ({spot_change_pct:.2f}%) = hidden positioning before move")
+
+            # Add the buy signal reason
+            if trap_score >= 4:
+                reasons.append(signal_reason)
 
             # Alert level
             if trap_score >= 6:
@@ -309,6 +379,11 @@ class TrapScanner:
                 "iv": iv_approx,
                 "ivChange": iv_change,
                 "ltp": ltp,
+                "premChange": prem_change,
+                "premChangePct": prem_change_pct,
+                "oiActor": oi_actor,
+                "oiAction": oi_action,
+                "buySignal": buy_signal,
                 "trapScore": trap_score,
                 "alertLevel": alert_level,
                 "reasons": reasons,
@@ -405,17 +480,39 @@ class TrapScanner:
         avg_score = round(sum(r["trapScore"] for r in run) / len(run), 1)
         total_oi = sum(r["oiChange"] for r in run)
         strikes = [r["strike"] for r in run]
-        direction = "BEARISH" if side == "PE" else "BULLISH"
+
+        # Determine who built it: majority buyer or seller?
+        sellers = sum(1 for r in run if r.get("oiActor") == "SELLERS")
+        buyers = sum(1 for r in run if r.get("oiActor") == "BUYERS")
+        actor = "SELLERS" if sellers >= buyers else "BUYERS"
+
+        # Correct direction based on actor + side
+        if actor == "SELLERS":
+            # Sellers writing CE = bearish (resistance) → you BUY PE
+            # Sellers writing PE = bullish (support) → you BUY CE
+            direction = "BEARISH" if side == "CE" else "BULLISH"
+            buy_signal = "BUY PE" if side == "CE" else "BUY CE"
+            action_desc = "writing"
+            meaning = "resistance cluster" if side == "CE" else "support cluster"
+        else:
+            # Buyers buying CE = bullish → you BUY CE
+            # Buyers buying PE = bearish → you BUY PE
+            direction = "BULLISH" if side == "CE" else "BEARISH"
+            buy_signal = "BUY CE" if side == "CE" else "BUY PE"
+            action_desc = "buying"
+            meaning = "bullish accumulation" if side == "CE" else "bearish accumulation"
 
         return {
             "side": side,
+            "actor": actor,
             "direction": direction,
+            "buySignal": buy_signal,
             "strikes": strikes,
             "strikeRange": f"{min(strikes)}-{max(strikes)}",
             "count": len(run),
             "avgScore": avg_score,
             "totalOIChange": total_oi,
-            "signal": f"Institutional {direction} cluster: {len(run)} consecutive {side} strikes ({min(strikes)}-{max(strikes)}) with avg TrapScore {avg_score}",
+            "signal": f"{actor} {action_desc} {side} cluster ({min(strikes)}-{max(strikes)}): {meaning}. {len(run)} strikes, avg score {avg_score}. For you: {buy_signal}",
             "confidence": "HIGH" if avg_score >= 6 else "MEDIUM",
         }
 
