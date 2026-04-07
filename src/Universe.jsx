@@ -1,8 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useMarketData } from "./useMarketData";
 import OIChangeTab from "./OIChangeTab";
 import PnLTracker from "./PnLTracker";
 import { exportSignalsToPDF, exportFullReport } from "./pdfExport";
+import { fetchTrapScan } from "./api";
 
 const ACCENT = "#0A84FF";
 const BG = "#0A0A0F";
@@ -24,6 +25,7 @@ const TABS = [
   { id: "sellers", icon: "\uD83E\uDD88", label: "Sellers" },
   { id: "tradeai", icon: "\uD83E\uDDE0", label: "Trade AI" },
   { id: "hidden",  icon: "\uD83D\uDD75\uFE0F", label: "Hidden Shift" },
+  { id: "trap",    icon: "\uD83E\uDDE8", label: "Trap Finder" },
   { id: "oichange",icon: "\uD83D\uDCC8", label: "OI Change" },
   { id: "pnl",     icon: "\uD83D\uDCB0", label: "PnL Tracker" },
   { id: "prompt",  icon: "\uD83E\uDD16", label: "Claude Prompt" },
@@ -1398,6 +1400,217 @@ function HiddenShiftTab({ data }) {
   );
 }
 
+// ── TAB: TRAP FINGERPRINT FINDER ─────────────────────────────────────
+
+function TrapFinderTab() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [filter, setFilter] = useState("ALL"); // ALL, CE, PE
+  const [expiryFilter, setExpiryFilter] = useState("ALL"); // ALL, CURRENT, NEXT
+  const [scoreFilter, setScoreFilter] = useState(0);
+  const [lastScan, setLastScan] = useState(null);
+
+  const fmtL = (n) => n ? `${(Math.abs(n) / 100000).toFixed(1)}L` : "0";
+  const scoreColor = (s) => s >= 6 ? RED : s >= 4 ? YELLOW : GREEN;
+  const alertBg = { FINGERPRINT: RED, WATCH: YELLOW, NORMAL: "#333" };
+
+  const runScan = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await fetchTrapScan();
+      if (result && !result.error) {
+        setData(result);
+        setLastScan(new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" }));
+      }
+    } catch {}
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { runScan(); const iv = setInterval(runScan, 300000); return () => clearInterval(iv); }, [runScan]);
+
+  if (!data && !loading) return (
+    <div style={{ textAlign: "center", padding: 60, color: "#555" }}>
+      <div style={{ fontSize: 40, marginBottom: 12 }}>🧨</div>
+      <div style={{ fontSize: 14, color: "#666" }}>Trap Fingerprint Engine</div>
+      <div style={{ fontSize: 11, color: "#444", marginTop: 8 }}>Scanning for institutional hidden OTM positioning...</div>
+      <button onClick={runScan} style={{ marginTop: 16, background: RED + "22", color: RED, border: `1px solid ${RED}44`, borderRadius: 8, padding: "8px 20px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Run Scan Now</button>
+    </div>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* Header + Scan button */}
+      <Card style={{ background: "#0D0D15", border: `1px solid ${RED}33` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ color: RED, fontWeight: 900, fontSize: 14, marginBottom: 4 }}>TRAP FINGERPRINT ENGINE</div>
+            <div style={{ color: "#555", fontSize: 11 }}>Detects institutional hidden OTM positioning. OI + Volume divergence without spot movement.</div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {lastScan && <span style={{ color: "#444", fontSize: 10 }}>Last: {lastScan}</span>}
+            <button onClick={runScan} disabled={loading} style={{ background: loading ? "#333" : RED + "22", color: RED, border: `1px solid ${RED}44`, borderRadius: 8, padding: "6px 14px", cursor: loading ? "wait" : "pointer", fontSize: 11, fontWeight: 700 }}>
+              {loading ? "Scanning..." : "Scan Now"}
+            </button>
+          </div>
+        </div>
+      </Card>
+
+      {/* Filters */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {["ALL", "CE", "PE"].map(f => (
+          <button key={f} onClick={() => setFilter(f)} style={{ background: filter === f ? ACCENT + "33" : "#111118", color: filter === f ? ACCENT : "#666", border: `1px solid ${filter === f ? ACCENT : BORDER}`, borderRadius: 6, padding: "4px 12px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>{f}</button>
+        ))}
+        <span style={{ color: "#333", margin: "0 4px" }}>|</span>
+        {["ALL", "CURRENT", "NEXT"].map(f => (
+          <button key={f} onClick={() => setExpiryFilter(f)} style={{ background: expiryFilter === f ? ORANGE + "33" : "#111118", color: expiryFilter === f ? ORANGE : "#666", border: `1px solid ${expiryFilter === f ? ORANGE : BORDER}`, borderRadius: 6, padding: "4px 12px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>{f} Expiry</button>
+        ))}
+        <span style={{ color: "#333", margin: "0 4px" }}>|</span>
+        {[0, 4, 6].map(s => (
+          <button key={s} onClick={() => setScoreFilter(s)} style={{ background: scoreFilter === s ? scoreColor(s) + "33" : "#111118", color: scoreFilter === s ? scoreColor(s) : "#666", border: `1px solid ${scoreFilter === s ? scoreColor(s) : BORDER}`, borderRadius: 6, padding: "4px 12px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+            Score {">="}{s || "All"}
+          </button>
+        ))}
+      </div>
+
+      {loading && <div style={{ textAlign: "center", padding: 20, color: ORANGE }}>Scanning options chain...</div>}
+
+      {["nifty", "banknifty"].map(key => {
+        const d = data?.[key];
+        if (!d || d.error) return null;
+        const label = key === "nifty" ? "NIFTY" : "BANKNIFTY";
+
+        // Apply filters
+        let strikes = d.strikes || [];
+        if (filter !== "ALL") strikes = strikes.filter(s => s.optionType === filter);
+        if (expiryFilter !== "ALL") strikes = strikes.filter(s => s.expiryLabel === expiryFilter);
+        if (scoreFilter > 0) strikes = strikes.filter(s => s.trapScore >= scoreFilter);
+
+        return (
+          <div key={key} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {/* Summary */}
+            <Card style={{ background: "#0D0D15", border: `1px solid ${BORDER}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <span style={{ color: ACCENT, fontWeight: 900, fontSize: 14 }}>{label}</span>
+                <span style={{ color: "#444", fontSize: 10 }}>Spot: {d.spot?.toLocaleString("en-IN")} | Move: {d.spotChangePct}% | {d.timestamp}</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+                <div style={{ background: "#111118", borderRadius: 8, padding: "6px 10px", textAlign: "center" }}>
+                  <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>SCANNED</div>
+                  <div style={{ color: "#fff", fontSize: 16, fontWeight: 900 }}>{d.totalScanned}</div>
+                </div>
+                <div style={{ background: RED + "0A", borderRadius: 8, padding: "6px 10px", textAlign: "center", border: `1px solid ${RED}22` }}>
+                  <div style={{ color: RED, fontSize: 9, fontWeight: 700 }}>FINGERPRINTS</div>
+                  <div style={{ color: RED, fontSize: 16, fontWeight: 900 }}>{d.fingerprints}</div>
+                </div>
+                <div style={{ background: YELLOW + "0A", borderRadius: 8, padding: "6px 10px", textAlign: "center", border: `1px solid ${YELLOW}22` }}>
+                  <div style={{ color: YELLOW, fontSize: 9, fontWeight: 700 }}>WATCH ZONES</div>
+                  <div style={{ color: YELLOW, fontSize: 16, fontWeight: 900 }}>{d.watchZones}</div>
+                </div>
+                <div style={{ background: PURPLE + "0A", borderRadius: 8, padding: "6px 10px", textAlign: "center", border: `1px solid ${PURPLE}22` }}>
+                  <div style={{ color: PURPLE, fontSize: 9, fontWeight: 700 }}>CLUSTERS</div>
+                  <div style={{ color: PURPLE, fontSize: 16, fontWeight: 900 }}>{d.clusters?.length || 0}</div>
+                </div>
+              </div>
+            </Card>
+
+            {/* Cluster Alerts */}
+            {d.clusters?.length > 0 && d.clusters.map((c, i) => (
+              <Card key={i} style={{ background: PURPLE + "08", border: `1px solid ${PURPLE}44` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 16 }}>🔗</span>
+                    <span style={{ color: PURPLE, fontWeight: 900, fontSize: 13 }}>CLUSTER: {c.direction} ({c.side})</span>
+                  </div>
+                  <span style={{ background: c.confidence === "HIGH" ? RED + "22" : YELLOW + "22", color: c.confidence === "HIGH" ? RED : YELLOW, padding: "2px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{c.confidence}</span>
+                </div>
+                <div style={{ color: "#ccc", fontSize: 12, marginBottom: 6 }}>{c.signal}</div>
+                <div style={{ display: "flex", gap: 10, fontSize: 11 }}>
+                  <span style={{ color: "#888" }}>Range: <span style={{ color: "#fff", fontWeight: 700 }}>{c.strikeRange}</span></span>
+                  <span style={{ color: "#888" }}>Strikes: <span style={{ color: "#fff", fontWeight: 700 }}>{c.count}</span></span>
+                  <span style={{ color: "#888" }}>Avg Score: <span style={{ color: scoreColor(c.avgScore), fontWeight: 700 }}>{c.avgScore}</span></span>
+                  <span style={{ color: "#888" }}>OI Change: <span style={{ color: GREEN, fontWeight: 700 }}>+{fmtL(c.totalOIChange)}</span></span>
+                </div>
+              </Card>
+            ))}
+
+            {/* Strike Table */}
+            <Card style={{ background: "#0D0D15", border: `1px solid ${BORDER}` }}>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                  <thead>
+                    <tr style={{ borderBottom: `1px solid ${BORDER}` }}>
+                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "left" }}>Strike</th>
+                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "center" }}>Type</th>
+                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "center" }}>Expiry</th>
+                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>OI</th>
+                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>OI Chg</th>
+                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>OI %</th>
+                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>Vol</th>
+                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>Vol Ratio</th>
+                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>IV</th>
+                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "right" }}>LTP</th>
+                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "center" }}>Score</th>
+                      <th style={{ padding: "5px 6px", color: "#555", textAlign: "center" }}>Flag</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {strikes.map((s, i) => (
+                      <tr key={i} style={{
+                        borderBottom: `1px solid ${BORDER}33`,
+                        background: s.alertLevel === "FINGERPRINT" ? RED + "0A" : s.alertLevel === "WATCH" ? YELLOW + "06" : "transparent",
+                      }}>
+                        <td style={{ padding: "4px 6px", color: "#ccc", fontWeight: 700 }}>{s.strike}</td>
+                        <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                          <span style={{ color: s.optionType === "CE" ? RED : GREEN, fontWeight: 700 }}>{s.optionType}</span>
+                        </td>
+                        <td style={{ padding: "4px 6px", textAlign: "center", color: s.expiryLabel === "NEXT" ? ORANGE : "#888", fontSize: 9 }}>{s.expiryLabel}</td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: "#888" }}>{fmtL(s.oi)}</td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: s.oiChange > 0 ? GREEN : s.oiChange < 0 ? RED : "#555", fontWeight: 700 }}>
+                          {s.oiChange > 0 ? "+" : ""}{fmtL(s.oiChange)}
+                        </td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: Math.abs(s.oiChangePct) > 15 ? ORANGE : "#888", fontWeight: Math.abs(s.oiChangePct) > 15 ? 900 : 400 }}>
+                          {s.oiChangePct > 0 ? "+" : ""}{s.oiChangePct}%
+                        </td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: "#888" }}>{s.volume?.toLocaleString("en-IN")}</td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: s.volumeRatio > 2 ? ORANGE : "#888", fontWeight: s.volumeRatio > 2 ? 900 : 400 }}>
+                          {s.volumeRatio}x
+                        </td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: "#888" }}>{s.iv}%</td>
+                        <td style={{ padding: "4px 6px", textAlign: "right", color: "#ccc" }}>{s.ltp?.toFixed(1)}</td>
+                        <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                          <span style={{ background: scoreColor(s.trapScore) + "22", color: scoreColor(s.trapScore), padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 900 }}>{s.trapScore}</span>
+                        </td>
+                        <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                          <span style={{ background: (alertBg[s.alertLevel] || "#333") + "22", color: alertBg[s.alertLevel] || "#555", padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 700 }}>{s.alertLevel}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {strikes.length === 0 && (
+                <div style={{ textAlign: "center", padding: 20, color: "#555", fontSize: 12 }}>No trap fingerprints detected with current filters.</div>
+              )}
+            </Card>
+
+            {/* Reasons for top fingerprints */}
+            {strikes.filter(s => s.trapScore >= 4).slice(0, 5).map((s, i) => (
+              <div key={i} style={{ padding: "6px 12px", background: "#0A0A12", borderRadius: 6, border: `1px solid ${BORDER}33` }}>
+                <span style={{ color: s.optionType === "CE" ? RED : GREEN, fontWeight: 700, fontSize: 11 }}>{s.strike} {s.optionType}</span>
+                <span style={{ color: "#555", fontSize: 10, marginLeft: 8 }}>{s.expiryLabel}</span>
+                <span style={{ color: scoreColor(s.trapScore), fontSize: 10, marginLeft: 8, fontWeight: 700 }}>Score: {s.trapScore}</span>
+                {s.reasons?.map((r, j) => (
+                  <span key={j} style={{ color: "#888", fontSize: 10, marginLeft: 8 }}>{r}</span>
+                ))}
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function PromptTab() {
   const [copied, setCopied] = useState(false);
   const copy = () => {
@@ -1467,6 +1680,7 @@ export default function Universe({ onLogout }) {
       case "sellers": return <SellersTab data={sellerData} />;
       case "tradeai": return <TradeAITab data={tradeAnalysis} />;
       case "hidden":  return <HiddenShiftTab data={hiddenShift} />;
+      case "trap":    return <TrapFinderTab />;
       case "oichange":return <OIChangeTab oiData={oiSummary} />;
       case "pnl":     return <PnLTracker signals={signals} />;
       case "prompt":  return <PromptTab />;

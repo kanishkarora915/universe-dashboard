@@ -111,3 +111,15 @@ export async function fetchExpiryChain(index, expiry) {
   if (!res.ok) return null;
   return res.json();
 }
+
+export async function fetchTrapScan() {
+  const res = await fetch("/api/trap/scan");
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function fetchTrapAlerts() {
+  const res = await fetch("/api/trap/alerts");
+  if (!res.ok) return [];
+  return res.json();
+}

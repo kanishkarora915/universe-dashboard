@@ -274,6 +274,43 @@ async def expiry_chain(index: str, expiry: str):
     return engine.get_expiry_chain(index, expiry)
 
 
+@app.get("/api/trap/scan")
+async def trap_scan():
+    """Run full trap fingerprint scan now."""
+    if not engine or not engine.running or not hasattr(engine, 'trap_scanner') or not engine.trap_scanner:
+        return JSONResponse({"error": "Trap scanner not running"}, status_code=503)
+    result = engine.trap_scanner.run_scan()
+    save_cache("trap_scan", result)
+    return result
+
+
+@app.get("/api/trap/alerts")
+async def trap_alerts():
+    """Get all active fingerprints from latest scan."""
+    if not engine or not hasattr(engine, 'trap_scanner') or not engine.trap_scanner:
+        cached = get_cached("trap_alerts")
+        return cached if cached else []
+    alerts = engine.trap_scanner.get_alerts()
+    save_cache("trap_alerts", alerts)
+    return alerts
+
+
+@app.get("/api/trap/history")
+async def trap_history():
+    """Get fingerprint history (last 7 days)."""
+    if not engine or not hasattr(engine, 'trap_scanner') or not engine.trap_scanner:
+        return []
+    return engine.trap_scanner.get_history(days=7)
+
+
+@app.get("/api/trap/clusters")
+async def trap_clusters():
+    """Get active cluster alerts."""
+    if not engine or not hasattr(engine, 'trap_scanner') or not engine.trap_scanner:
+        return []
+    return engine.trap_scanner.get_clusters()
+
+
 @app.get("/api/export-daily")
 async def export_daily():
     """Collects ALL data types for full A-Z PDF export."""

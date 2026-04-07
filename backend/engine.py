@@ -229,11 +229,28 @@ class MarketEngine:
         self._build_subscriptions()
         self._fetch_initial_data()      # <-- NEW: Full REST fetch before ticks
         self._connect_ticker()
+        self._start_trap_scanner()
         self.running = True
         print("[ENGINE] Market engine started with REAL data.")
 
+    def _start_trap_scanner(self):
+        """Initialize and start the Trap Fingerprint Engine."""
+        try:
+            from trap_engine import TrapScanner, init_db
+            import os
+            db_path = os.path.join(os.path.dirname(__file__), "trap_data.db")
+            init_db(db_path)
+            self.trap_scanner = TrapScanner(self.kite, self.nfo_instruments)
+            self.trap_scanner.start_auto_scan(interval_sec=300)  # Every 5 min
+            print("[ENGINE] Trap scanner started (5-min intervals)")
+        except Exception as e:
+            print(f"[ENGINE] Trap scanner init failed: {e}")
+            self.trap_scanner = None
+
     def stop(self):
         self.running = False
+        if hasattr(self, 'trap_scanner') and self.trap_scanner:
+            self.trap_scanner.stop()
         if self.ticker:
             try:
                 self.ticker.close()
