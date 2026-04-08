@@ -1271,213 +1271,287 @@ class MarketEngine:
 
         return result
 
-    # ── TRAP VERDICT — Cross-engine analysis ────────────────────────────
+    # ── TRAP VERDICT — Data-driven trade decision engine ─────────────────
 
     def get_trap_verdict(self) -> dict:
-        """Combine trap fingerprints with ALL engines → final trade decision.
-        Step 1: Analyze trap data → initial trade ideas
-        Step 2: Cross-validate with sellers, unusual, hidden shift, price action
-        Step 3: Final verdict with entry/SL/target"""
+        """Data-driven trade decision. No gimmicks — pure calculation from all engines.
+        Probability score 0-100 based on weighted data points."""
         result = {}
 
-        # Collect from all engines
-        trap_data = None
-        if hasattr(self, 'trap_scanner') and self.trap_scanner:
-            trap_data = self.trap_scanner.run_scan() if self.trap_scanner else None
-
+        # Collect all engine data
+        trap_data = self.trap_scanner.run_scan() if hasattr(self, 'trap_scanner') and self.trap_scanner else {}
         seller = self.get_seller_summary()
         unusual = self.get_unusual()
         hidden = self.get_hidden_shift()
-        price_action = self.get_price_action()
+        pa = self.get_price_action()
 
         for index in ["NIFTY", "BANKNIFTY"]:
             key = index.lower()
             cfg = INDEX_CONFIG[index]
             spot_token = self.spot_tokens.get(index)
             ltp = self.prices.get(spot_token, {}).get("ltp", 0)
-            atm = round(ltp / cfg["strike_gap"]) * cfg["strike_gap"] if ltp > 0 else 0
+            if ltp <= 0:
+                continue
+            atm = round(ltp / cfg["strike_gap"]) * cfg["strike_gap"]
             prev_close = self.spot_prev_close.get(index, ltp)
             open_price = self.market_open_price.get(index, 0)
             open_type = self.market_open_type.get(index, "UNKNOWN")
+            chain = self.chains.get(index, {})
+            vix = self.prices.get(self.spot_tokens.get("VIX"), {}).get("ltp", 0)
 
-            # ── STEP 1: Trap Analysis ──
-            trap = trap_data.get(key, {}) if trap_data else {}
+            # ════════════════════════════════════════════════
+            # BULLISH PROBABILITY (0-100) — Why BUY CE?
+            # BEARISH PROBABILITY (0-100) — Why BUY PE?
+            # ════════════════════════════════════════════════
+            bull_score = 0  # out of 100
+            bear_score = 0
+            bull_reasons = []
+            bear_reasons = []
+
+            # ── 1. SELLER POSITIONING (30 pts max) — Most important ──
+            sd = seller.get(key, {})
+            ce_writing = sd.get("ceWritingOI", 0)
+            pe_writing = sd.get("peWritingOI", 0)
+            ce_sc = sd.get("ceShortCoverOI", 0)
+            pe_sc = sd.get("peShortCoverOI", 0)
+
+            if pe_writing > ce_writing * 1.5 and pe_writing > 100000:
+                pts = min(30, int((pe_writing / max(ce_writing, 1)) * 10))
+                bull_score += pts
+                bull_reasons.append(f"PE sellers writing {pe_writing/100000:.1f}L (vs CE {ce_writing/100000:.1f}L) = strong support [{pts}pts]")
+            if ce_writing > pe_writing * 1.5 and ce_writing > 100000:
+                pts = min(30, int((ce_writing / max(pe_writing, 1)) * 10))
+                bear_score += pts
+                bear_reasons.append(f"CE sellers writing {ce_writing/100000:.1f}L (vs PE {pe_writing/100000:.1f}L) = strong resistance [{pts}pts]")
+            if ce_sc > 100000:
+                bull_score += min(10, int(ce_sc / 100000))
+                bull_reasons.append(f"CE short covering {ce_sc/100000:.1f}L = resistance weakening")
+            if pe_sc > 100000:
+                bear_score += min(10, int(pe_sc / 100000))
+                bear_reasons.append(f"PE short covering {pe_sc/100000:.1f}L = support weakening")
+
+            # ── 2. TRAP FINGERPRINTS (20 pts max) — Institutional hidden positioning ──
+            trap = trap_data.get(key, {})
             trap_strikes = trap.get("strikes", [])
-            trap_clusters = trap.get("clusters", [])
-            trap_insights = trap.get("insights", [])
-            current_exp = trap.get("current", {})
-            next_exp = trap.get("next", {})
+            ce_traps = [s for s in trap_strikes if s.get("buySignal") == "BUY CE" and s.get("trapScore", 0) >= 4]
+            pe_traps = [s for s in trap_strikes if s.get("buySignal") == "BUY PE" and s.get("trapScore", 0) >= 4]
+            ce_trap_total = sum(s["trapScore"] for s in ce_traps)
+            pe_trap_total = sum(s["trapScore"] for s in pe_traps)
 
-            # Trap signals summary
-            ce_trap_signals = [s for s in trap_strikes if s.get("buySignal") == "BUY CE" and s.get("trapScore", 0) >= 4]
-            pe_trap_signals = [s for s in trap_strikes if s.get("buySignal") == "BUY PE" and s.get("trapScore", 0) >= 4]
-            trap_ce_score = sum(s["trapScore"] for s in ce_trap_signals)
-            trap_pe_score = sum(s["trapScore"] for s in pe_trap_signals)
+            if ce_trap_total > pe_trap_total and ce_traps:
+                pts = min(20, ce_trap_total * 2)
+                bull_score += pts
+                bull_reasons.append(f"{len(ce_traps)} trap fingerprints favor CE (score: {ce_trap_total}) [{pts}pts]")
+            if pe_trap_total > ce_trap_total and pe_traps:
+                pts = min(20, pe_trap_total * 2)
+                bear_score += pts
+                bear_reasons.append(f"{len(pe_traps)} trap fingerprints favor PE (score: {pe_trap_total}) [{pts}pts]")
 
-            # ── STEP 2: Cross-validate with other engines ──
-            votes = {"CE": 0, "PE": 0}
-            reasons = []
+            # Cluster bonus
+            for cluster in trap.get("clusters", []):
+                if "CE" in cluster.get("buySignal", ""):
+                    bull_score += 5
+                    bull_reasons.append(f"Cluster: {cluster.get('signal','')[:80]}")
+                elif "PE" in cluster.get("buySignal", ""):
+                    bear_score += 5
+                    bear_reasons.append(f"Cluster: {cluster.get('signal','')[:80]}")
 
-            # 2a. Trap Finder vote
-            if trap_ce_score > trap_pe_score and trap_ce_score > 0:
-                votes["CE"] += 2
-                reasons.append(f"Trap Finder: {len(ce_trap_signals)} signals favor BUY CE (total score: {trap_ce_score})")
-            elif trap_pe_score > trap_ce_score and trap_pe_score > 0:
-                votes["PE"] += 2
-                reasons.append(f"Trap Finder: {len(pe_trap_signals)} signals favor BUY PE (total score: {trap_pe_score})")
+            # ── 3. PRICE ACTION (20 pts max) — Real-time premium movement ──
+            pad = pa.get(key, {})
+            prem_ratio = pad.get("premRatio", 1)
+            mom_bias = pad.get("momBias", "NEUTRAL")
+            ce_mom = pad.get("ceMomentum", 0)
+            pe_mom = pad.get("peMomentum", 0)
 
-            # 2b. Seller data vote
-            s = seller.get(key, {})
-            seller_bias = s.get("sellerBias", "NEUTRAL")
-            if seller_bias == "BULLISH":
-                votes["CE"] += 2
-                reasons.append(f"Sellers: PE writing {s.get('peWritingOI',0)/100000:.1f}L > CE writing {s.get('ceWritingOI',0)/100000:.1f}L = support = BUY CE")
-            elif seller_bias == "BEARISH":
-                votes["PE"] += 2
-                reasons.append(f"Sellers: CE writing {s.get('ceWritingOI',0)/100000:.1f}L > PE writing {s.get('peWritingOI',0)/100000:.1f}L = resistance = BUY PE")
+            if prem_ratio > 1.15:
+                pts = min(10, int((prem_ratio - 1) * 50))
+                bull_score += pts
+                bull_reasons.append(f"CE premium {prem_ratio}x PE = market pricing upside [{pts}pts]")
+            elif prem_ratio < 0.85:
+                pts = min(10, int((1 - prem_ratio) * 50))
+                bear_score += pts
+                bear_reasons.append(f"PE premium {round(1/prem_ratio,2)}x CE = market pricing downside [{pts}pts]")
 
-            # 2c. Hidden Shift vote
-            h = hidden.get(key, {})
-            h_signal = h.get("overallSignal", "")
-            if "CE" in h_signal:
-                votes["CE"] += 1
-                reasons.append(f"Hidden Shift: {h_signal} ({h.get('confidence','?')} confidence)")
-            elif "PE" in h_signal:
-                votes["PE"] += 1
-                reasons.append(f"Hidden Shift: {h_signal} ({h.get('confidence','?')} confidence)")
+            if mom_bias == "BULLISH":
+                bull_score += 10
+                bull_reasons.append(f"CE premiums rising (+{ce_mom:.1f}), PE falling ({pe_mom:.1f}) [10pts]")
+            elif mom_bias == "BEARISH":
+                bear_score += 10
+                bear_reasons.append(f"PE premiums rising (+{pe_mom:.1f}), CE falling ({ce_mom:.1f}) [10pts]")
 
-            # 2d. Price Action vote
-            pa = price_action.get(key, {})
-            pa_trade = pa.get("trade", {})
-            pa_action = pa_trade.get("action", "")
-            if "CE" in pa_action:
-                votes["CE"] += 1
-                reasons.append(f"Price Action: {pa_action} — {pa.get('momBias','?')} momentum, premium ratio {pa.get('premRatio','?')}")
-            elif "PE" in pa_action:
-                votes["PE"] += 1
-                reasons.append(f"Price Action: {pa_action} — {pa.get('momBias','?')} momentum, premium ratio {pa.get('premRatio','?')}")
+            # ── 4. OI FLOW (15 pts max) — Where is money going ──
+            oi_data = self.get_oi_change_summary()
+            oi_idx = oi_data.get(key, {})
+            ce_net = (oi_idx.get("ceOIChangePos", 0) + oi_idx.get("ceOIChangeNeg", 0))
+            pe_net = (oi_idx.get("peOIChangePos", 0) + oi_idx.get("peOIChangeNeg", 0))
+            pcr = oi_idx.get("pcr", 1)
 
-            # 2e. Unusual activity vote
-            idx_unusual = [u for u in unusual if index in u.get("instrument", "")]
-            writing_ce = [u for u in idx_unusual if "WRITING" in u.get("type", "") and "CE" in u.get("instrument", "")]
-            writing_pe = [u for u in idx_unusual if "WRITING" in u.get("type", "") and "PE" in u.get("instrument", "")]
-            if len(writing_pe) > len(writing_ce) and writing_pe:
-                votes["CE"] += 1
-                reasons.append(f"Unusual: {len(writing_pe)} PE writing alerts vs {len(writing_ce)} CE = support building")
-            elif len(writing_ce) > len(writing_pe) and writing_ce:
-                votes["PE"] += 1
-                reasons.append(f"Unusual: {len(writing_ce)} CE writing alerts vs {len(writing_pe)} PE = resistance building")
+            if pcr > 1.2:
+                bull_score += 8
+                bull_reasons.append(f"PCR {pcr} > 1.2 = PE heavy = bullish [8pts]")
+            elif pcr < 0.8:
+                bear_score += 8
+                bear_reasons.append(f"PCR {pcr} < 0.8 = CE heavy = bearish [8pts]")
+            if ce_net < -500000:  # CE unwinding = bullish
+                bull_score += 7
+                bull_reasons.append(f"CE OI unwinding {ce_net/100000:.1f}L = resistance weakening [7pts]")
+            if pe_net < -500000:  # PE unwinding = bearish
+                bear_score += 7
+                bear_reasons.append(f"PE OI unwinding {pe_net/100000:.1f}L = support weakening [7pts]")
 
-            # 2f. Market open context
-            if open_type == "GAP UP":
-                votes["CE"] += 1
-                reasons.append(f"Market opened GAP UP at {open_price}")
-            elif open_type == "GAP DOWN":
-                votes["PE"] += 1
-                reasons.append(f"Market opened GAP DOWN at {open_price}")
+            # ── 5. MARKET CONTEXT (15 pts max) ──
+            # Market open
+            if open_type == "GAP UP" and ltp > open_price:
+                bull_score += 5
+                bull_reasons.append(f"Gap Up held — opened {open_price}, now {ltp:.0f} [5pts]")
+            elif open_type == "GAP UP" and ltp < open_price:
+                bear_score += 8
+                bear_reasons.append(f"Gap Up FAILED — opened {open_price}, fell to {ltp:.0f} = trap [8pts]")
+            elif open_type == "GAP DOWN" and ltp < open_price:
+                bear_score += 5
+                bear_reasons.append(f"Gap Down continued — opened {open_price}, now {ltp:.0f} [5pts]")
+            elif open_type == "GAP DOWN" and ltp > open_price:
+                bull_score += 8
+                bull_reasons.append(f"Gap Down RECOVERED — opened {open_price}, bounced to {ltp:.0f} [8pts]")
 
-            # ── STEP 3: Final Decision ──
-            total_votes = votes["CE"] + votes["PE"]
-            if votes["CE"] > votes["PE"]:
-                final_action = "BUY CE"
-                final_direction = "BULLISH"
-                entry_prem = pa.get("strikes", [{}])[3].get("ceLTP", 0) if len(pa.get("strikes", [])) > 3 else 0  # ATM CE
-            elif votes["PE"] > votes["CE"]:
-                final_action = "BUY PE"
-                final_direction = "BEARISH"
-                entry_prem = pa.get("strikes", [{}])[3].get("peLTP", 0) if len(pa.get("strikes", [])) > 3 else 0  # ATM PE
+            # Price vs key levels
+            max_pain = compute_max_pain(chain, ltp)
+            if ltp > max_pain and max_pain > 0:
+                bull_score += 5
+                bull_reasons.append(f"Above max pain {max_pain} = bullish [5pts]")
+            elif ltp < max_pain and max_pain > 0:
+                bear_score += 5
+                bear_reasons.append(f"Below max pain {max_pain} = bearish [5pts]")
+
+            # VIX factor
+            if vix > 22:
+                bear_score += 3
+                bear_reasons.append(f"VIX {vix:.1f} elevated = fear [3pts]")
+
+            # ════════════════════════════════════════════════
+            # FINAL DECISION — Based on probability spread
+            # ════════════════════════════════════════════════
+            bull_prob = min(bull_score, 100)
+            bear_prob = min(bear_score, 100)
+            total = bull_prob + bear_prob if bull_prob + bear_prob > 0 else 1
+            bull_pct = round(bull_prob / total * 100)
+            bear_pct = round(bear_prob / total * 100)
+
+            # Need >60% edge for a trade
+            if bull_pct >= 60:
+                action = "BUY CE"
+                direction = "BULLISH"
+                win_pct = bull_pct
+                reasons = bull_reasons
+                against = bear_reasons
+                atm_data = chain.get(atm, {})
+                entry = atm_data.get("ce_ltp", 0)
+            elif bear_pct >= 60:
+                action = "BUY PE"
+                direction = "BEARISH"
+                win_pct = bear_pct
+                reasons = bear_reasons
+                against = bull_reasons
+                atm_data = chain.get(atm, {})
+                entry = atm_data.get("pe_ltp", 0)
             else:
-                final_action = "NO TRADE"
-                final_direction = "NEUTRAL"
-                entry_prem = 0
+                action = "NO TRADE"
+                direction = "UNCLEAR"
+                win_pct = max(bull_pct, bear_pct)
+                reasons = ["Edge too thin — need >60% probability for a trade"]
+                against = []
+                entry = 0
+                if bull_pct > bear_pct:
+                    reasons.append(f"Slight bullish lean {bull_pct}% but not enough")
+                    against = bear_reasons[:3]
+                else:
+                    reasons.append(f"Slight bearish lean {bear_pct}% but not enough")
+                    against = bull_reasons[:3]
+
+            # SL / Target based on entry premium
+            if entry > 0:
+                sl = round(entry * 0.70)       # 30% SL
+                t1 = round(entry * 1.25)       # 25% T1
+                t2 = round(entry * 1.50)       # 50% T2
+                rr = round((t1 - entry) / max(entry - sl, 1), 1)
+            else:
+                sl = t1 = t2 = rr = 0
 
             # Confidence
-            max_votes = max(votes["CE"], votes["PE"])
-            if max_votes >= 5:
+            if win_pct >= 75:
                 confidence = "HIGH"
-            elif max_votes >= 3:
+            elif win_pct >= 60:
                 confidence = "MEDIUM"
             else:
                 confidence = "LOW"
 
-            # Entry / SL / Targets
-            if entry_prem > 0:
-                sl = round(entry_prem * 0.65)
-                t1 = round(entry_prem * 1.30)
-                t2 = round(entry_prem * 1.60)
-                rr = round((t1 - entry_prem) / max(entry_prem - sl, 1), 1)
-            else:
-                sl = t1 = t2 = rr = 0
-
-            # Current expiry prediction
-            current_pred = []
-            if current_exp:
-                cb = current_exp.get("sellerBias", "NEUTRAL")
-                current_pred.append(f"Seller bias: {cb}")
-                if current_exp.get("fingerprints", 0) > 0:
-                    current_pred.append(f"{current_exp['fingerprints']} fingerprints detected — high activity")
-                if cb == "BEARISH":
-                    current_pred.append("Expect resistance to hold, possible downside before expiry")
-                elif cb == "BULLISH":
-                    current_pred.append("Support building, likely to hold or bounce before expiry")
-
-            # Next expiry prediction
-            next_pred = []
-            if next_exp:
-                nb = next_exp.get("sellerBias", "NEUTRAL")
-                next_pred.append(f"Seller bias: {nb}")
-                if next_exp.get("fingerprints", 0) > 0:
-                    next_pred.append(f"{next_exp['fingerprints']} fingerprints — institutions positioning early")
-                if nb == "BEARISH":
-                    next_pred.append("Institutions expect downturn next week, CE writing heavy")
-                elif nb == "BULLISH":
-                    next_pred.append("Institutions expect upturn next week, PE writing heavy")
-                if (next_exp.get("watchZones", 0) + next_exp.get("fingerprints", 0)) > (current_exp.get("watchZones", 0) + current_exp.get("fingerprints", 0)):
-                    next_pred.append("MORE conviction in next expiry than current = bigger move expected next week")
-
             # Risks
             risks = []
-            vix = self.prices.get(self.spot_tokens.get("VIX"), {}).get("ltp", 0)
-            if vix > 20:
-                risks.append(f"VIX at {vix:.1f} — high volatility, use wider SL")
-            atm_iv = self._get_atm_iv(index, ltp)
-            ivr = compute_ivr(atm_iv) if atm_iv > 0 else 0
+            ivr = compute_ivr(self._get_atm_iv(index, ltp)) if self._get_atm_iv(index, ltp) > 0 else 0
             if ivr > 60:
-                risks.append(f"IVR at {ivr}% — premiums expensive, theta decay aggressive")
-            if votes["CE"] > 0 and votes["PE"] > 0:
-                risks.append(f"Mixed signals: {votes['CE']} bullish vs {votes['PE']} bearish — reduced conviction")
+                risks.append(f"IVR {ivr}% — premiums expensive, reduce size")
+            if vix > 20:
+                risks.append(f"VIX {vix:.1f} — high vol, keep SL wider")
+            if abs(bull_pct - bear_pct) < 20:
+                risks.append("Tight spread — conflicting data, reduce position size")
+            now_ist = ist_now()
+            if now_ist.hour >= 14:
+                risks.append("Late session — theta decay accelerating, quick trade only")
+            if now_ist.weekday() >= 3:  # Thursday/Friday
+                risks.append("Near expiry — avoid holding overnight")
+
+            # Predictions
+            current_exp = trap.get("current", {})
+            next_exp = trap.get("next", {})
+            current_pred = []
+            next_pred = []
+
+            if current_exp:
+                cb = current_exp.get("sellerBias", "NEUTRAL")
+                if cb != "NEUTRAL":
+                    current_pred.append(f"Seller bias: {cb}")
+                fp = current_exp.get("fingerprints", 0)
+                if fp > 0:
+                    current_pred.append(f"{fp} institutional fingerprints active")
+
+            if next_exp:
+                nb = next_exp.get("sellerBias", "NEUTRAL")
+                if nb != "NEUTRAL":
+                    next_pred.append(f"Next week seller bias: {nb}")
+                nfp = next_exp.get("fingerprints", 0)
+                if nfp > 0:
+                    next_pred.append(f"{nfp} fingerprints in next expiry = institutional conviction")
+                total_next = (next_exp.get("watchZones", 0) + next_exp.get("fingerprints", 0))
+                total_curr = (current_exp.get("watchZones", 0) + current_exp.get("fingerprints", 0)) if current_exp else 0
+                if total_next > total_curr:
+                    next_pred.append("More activity in next expiry = bigger move expected next week")
 
             result[key] = {
                 "ltp": ltp,
                 "atm": int(atm),
                 "openType": open_type,
-                "openPrice": open_price,
-                "votes": votes,
-                "totalVotes": total_votes,
-                "finalAction": final_action,
-                "finalDirection": final_direction,
+                "action": action,
+                "direction": direction,
+                "winProbability": win_pct,
+                "bullPct": bull_pct,
+                "bearPct": bear_pct,
+                "bullScore": bull_prob,
+                "bearScore": bear_prob,
                 "confidence": confidence,
                 "trade": {
-                    "action": final_action,
+                    "action": action,
                     "strike": int(atm),
-                    "entry": round(entry_prem, 1),
+                    "entry": round(entry, 1) if entry else 0,
                     "sl": sl,
                     "t1": t1,
                     "t2": t2,
-                    "rr": f"1:{rr}",
+                    "rr": f"1:{rr}" if rr else "N/A",
                 },
-                "reasons": reasons,
+                "reasons": reasons[:8],
+                "against": against[:4],
                 "risks": risks,
-                "currentExpiryPrediction": current_pred,
-                "nextExpiryPrediction": next_pred,
-                "engineScores": {
-                    "trapFinder": {"ce": trap_ce_score, "pe": trap_pe_score},
-                    "sellers": seller_bias,
-                    "hiddenShift": h_signal or "N/A",
-                    "priceAction": pa_action or "N/A",
-                    "unusualActivity": f"CE write: {len(writing_ce)}, PE write: {len(writing_pe)}",
-                    "marketOpen": open_type,
-                },
+                "currentExpiry": current_pred,
+                "nextWeek": next_pred,
                 "timestamp": ist_now().strftime("%I:%M:%S %p IST"),
             }
 
