@@ -258,10 +258,23 @@ class TradeManager:
         existing = conn.execute(
             "SELECT COUNT(*) FROM trades WHERE idx=? AND status='OPEN'", (idx,)
         ).fetchone()[0]
+
+        # Also check cooldown: don't re-enter same index within 30 min of last trade
+        last_trade = conn.execute(
+            "SELECT entry_time FROM trades WHERE idx=? ORDER BY entry_time DESC LIMIT 1", (idx,)
+        ).fetchone()
         conn.close()
 
         if existing > 0:
             return False
+
+        if last_trade:
+            try:
+                last_time = datetime.fromisoformat(last_trade[0])
+                if (ist_now() - last_time).total_seconds() < 1800:  # 30 min cooldown
+                    return False
+            except Exception:
+                pass
 
         # Don't trade after 3:20 PM
         now = ist_now()

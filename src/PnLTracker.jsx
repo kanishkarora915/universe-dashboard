@@ -8,6 +8,101 @@ const PURPLE = "#BF5AF2";
 const ORANGE = "#FF9F0A";
 const BORDER = "#1E1E2E";
 
+// ── PnL PDF Export ──
+function exportPnLPDF(title, statsData, trades, dailyBreakdown) {
+  const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+  const s = statsData || {};
+  const fmtR = (n) => `${(n || 0) >= 0 ? "+" : ""}${Math.round(n || 0).toLocaleString("en-IN")}`;
+
+  let html = `
+    <h1 style="margin-bottom:2px">UNIVERSE — ${title}</h1>
+    <div style="font-size:11px;color:#888;margin-bottom:16px">Generated: ${now} IST</div>
+  `;
+
+  // Stats Summary
+  if (s.total > 0) {
+    html += `<h2>Performance Summary</h2>
+    <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+      <div style="background:#f8f8f8;border-radius:8px;padding:10px 16px;text-align:center;flex:1;min-width:80px"><div style="font-size:9px;color:#888;text-transform:uppercase">Total Trades</div><div style="font-size:18px;font-weight:900">${s.total}</div></div>
+      <div style="background:#f8f8f8;border-radius:8px;padding:10px 16px;text-align:center;flex:1;min-width:80px"><div style="font-size:9px;color:#888;text-transform:uppercase">Wins</div><div style="font-size:18px;font-weight:900;color:#1a8a2e">${s.wins}</div></div>
+      <div style="background:#f8f8f8;border-radius:8px;padding:10px 16px;text-align:center;flex:1;min-width:80px"><div style="font-size:9px;color:#888;text-transform:uppercase">Losses</div><div style="font-size:18px;font-weight:900;color:#cc2020">${s.losses}</div></div>
+      <div style="background:#f8f8f8;border-radius:8px;padding:10px 16px;text-align:center;flex:1;min-width:80px"><div style="font-size:9px;color:#888;text-transform:uppercase">Stop Hunts</div><div style="font-size:18px;font-weight:900;color:#7c3aed">${s.stopHunts || 0}</div></div>
+      <div style="background:#f8f8f8;border-radius:8px;padding:10px 16px;text-align:center;flex:1;min-width:80px"><div style="font-size:9px;color:#888;text-transform:uppercase">Win Rate</div><div style="font-size:18px;font-weight:900;color:${s.winRate >= 60 ? '#1a8a2e' : '#cc2020'}">${s.winRate}%</div></div>
+    </div>
+    <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+      <div style="background:${s.totalPnl >= 0 ? '#e8ffe8' : '#ffe8e8'};border-radius:8px;padding:12px 20px;text-align:center;flex:1"><div style="font-size:9px;color:#888;text-transform:uppercase">Total P&L</div><div style="font-size:22px;font-weight:900;color:${s.totalPnl >= 0 ? '#1a8a2e' : '#cc2020'}">₹${fmtR(s.totalPnl)}</div></div>
+      <div style="background:#f8f8f8;border-radius:8px;padding:12px 20px;text-align:center;flex:1"><div style="font-size:9px;color:#888;text-transform:uppercase">Avg Win</div><div style="font-size:16px;font-weight:700;color:#1a8a2e">₹${fmtR(s.avgWin)}</div></div>
+      <div style="background:#f8f8f8;border-radius:8px;padding:12px 20px;text-align:center;flex:1"><div style="font-size:9px;color:#888;text-transform:uppercase">Avg Loss</div><div style="font-size:16px;font-weight:700;color:#cc2020">₹${fmtR(s.avgLoss)}</div></div>
+    </div>`;
+  }
+
+  // Daily breakdown
+  if (dailyBreakdown && Object.keys(dailyBreakdown).length > 0) {
+    html += `<h2>Daily Breakdown</h2>
+    <table><tr><th>Date</th><th>Trades</th><th>Wins</th><th>Losses</th><th>P&L</th></tr>`;
+    for (const [day, d] of Object.entries(dailyBreakdown).sort()) {
+      const cls = d.pnl >= 0 ? 'class="pos"' : 'class="neg"';
+      html += `<tr><td><strong>${day}</strong></td><td>${d.trades}</td><td class="pos">${d.wins}</td><td class="neg">${d.losses}</td><td ${cls} style="font-weight:700">₹${fmtR(d.pnl)}</td></tr>`;
+    }
+    html += `</table>`;
+  }
+
+  // Trade Details
+  if (trades && trades.length > 0) {
+    html += `<h2>Trade Details (${trades.length} trades)</h2>`;
+    for (const t of trades) {
+      const isWin = t.status === "T1_HIT" || t.status === "T2_HIT";
+      const isHunt = t.status === "STOP_HUNTED";
+      const borderColor = isWin ? "#1a8a2e" : isHunt ? "#7c3aed" : t.status === "SL_HIT" ? "#cc2020" : "#ddd";
+      const time = t.entry_time ? new Date(t.entry_time).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: true, day: "2-digit", month: "short" }) : "";
+      const exitTime = t.exit_time ? new Date(t.exit_time).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: true }) : "";
+
+      html += `<div style="border:1px solid ${borderColor};border-radius:8px;padding:12px;margin-bottom:10px;${isWin ? 'background:#f0fff0' : isHunt ? 'background:#f5f0ff' : t.status === 'SL_HIT' ? 'background:#fff0f0' : ''}">`;
+      html += `<div style="display:flex;justify-content:space-between;margin-bottom:8px">
+        <div><strong>${t.idx}</strong> <span style="color:${t.action?.includes('CE') ? '#1a8a2e' : '#cc2020'};font-weight:700">${t.action}</span> <strong>${t.strike}</strong> <span style="background:${borderColor}22;color:${borderColor};padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700">${t.status}</span></div>
+        <div style="text-align:right"><div style="font-size:16px;font-weight:900;color:${(t.pnl_rupees || 0) >= 0 ? '#1a8a2e' : '#cc2020'}">₹${fmtR(t.pnl_rupees)} (${(t.pnl_pts || 0) > 0 ? '+' : ''}${(t.pnl_pts || 0).toFixed(1)} pts)</div></div>
+      </div>`;
+      html += `<table style="width:auto;margin-bottom:6px"><tr>
+        <td><strong>Entry:</strong> ₹${t.entry_price}</td>
+        <td><strong>Exit:</strong> ₹${t.exit_price || t.current_ltp || '-'}</td>
+        <td><strong>SL:</strong> ₹${t.sl_price}</td>
+        <td><strong>T1:</strong> ₹${t.t1_price}</td>
+        <td><strong>T2:</strong> ₹${t.t2_price}</td>
+        <td><strong>Qty:</strong> ${t.lots}L × ${t.lot_size} = ${t.qty}</td>
+      </tr></table>`;
+      html += `<div style="font-size:10px;color:#888">Entry: ${time}${exitTime ? ' → Exit: ' + exitTime : ''} | Probability: ${t.probability}% | Source: ${t.source || 'verdict'}</div>`;
+      if (t.exit_reason) {
+        html += `<div style="margin-top:6px;padding:6px 10px;background:${borderColor}11;border-radius:4px;color:${borderColor};font-size:11px;font-weight:600">${t.exit_reason}</div>`;
+      }
+      if (isHunt && t.reversal_price > 0) {
+        html += `<div style="margin-top:4px;padding:6px 10px;background:#7c3aed11;border-radius:4px;color:#7c3aed;font-size:11px">Stop Hunt: Price reversed to ₹${t.reversal_price} after institutional SL flush</div>`;
+      }
+      html += `</div>`;
+    }
+  }
+
+  // Footer
+  html += `<hr style="border:none;border-top:2px solid #ddd;margin:20px 0">
+    <div style="text-align:center;font-size:10px;color:#aaa">UNIVERSE PnL Report | ${now} IST | Nifty: 20L×65=1300 | BankNifty: 20L×30=600 | SL: 15% max</div>`;
+
+  const win = window.open("", "_blank", "width=900,height=700");
+  win.document.write(`<html><head><title>${title}</title>
+    <style>
+      body { font-family: -apple-system, sans-serif; padding: 24px; margin: 0; color: #111; }
+      h1 { font-size: 20px; margin-bottom: 4px; }
+      h2 { font-size: 14px; color: #555; margin-top: 20px; border-bottom: 2px solid #eee; padding-bottom: 4px; }
+      table { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 16px; }
+      th { background: #f5f5f5; padding: 6px 8px; text-align: left; font-weight: 700; border-bottom: 2px solid #ddd; }
+      td { padding: 5px 8px; border-bottom: 1px solid #eee; }
+      .pos { color: #1a8a2e; font-weight: 600; }
+      .neg { color: #cc2020; font-weight: 600; }
+      @media print { body { padding: 12px; } }
+    </style>
+  </head><body>${html}</body></html>`);
+  win.document.close();
+  setTimeout(() => win.print(), 500);
+}
+
 const statusColor = { OPEN: ACCENT, T1_HIT: GREEN, T2_HIT: GREEN, SL_HIT: RED, STOP_HUNTED: PURPLE };
 const statusLabel = { OPEN: "OPEN", T1_HIT: "T1 HIT ✓", T2_HIT: "T2 HIT ✓✓", SL_HIT: "SL HIT ✗", STOP_HUNTED: "STOP HUNTED" };
 
@@ -68,6 +163,37 @@ export default function PnLTracker() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* EXPORT BUTTONS */}
+      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+        <button onClick={() => {
+          const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+          fetch(`/api/trades/date/${today}`).then(r => r.json()).then(trades => {
+            const wins = trades.filter(t => t.status === "T1_HIT" || t.status === "T2_HIT");
+            const losses = trades.filter(t => t.status === "SL_HIT");
+            const closed = trades.filter(t => t.status !== "OPEN");
+            const st = { total: trades.length, wins: wins.length, losses: losses.length, stopHunts: trades.filter(t => t.status === "STOP_HUNTED").length, winRate: closed.length ? Math.round(wins.length / closed.length * 100) : 0, totalPnl: closed.reduce((s, t) => s + (t.pnl_rupees || 0), 0), avgWin: wins.length ? wins.reduce((s, t) => s + t.pnl_rupees, 0) / wins.length : 0, avgLoss: losses.length ? losses.reduce((s, t) => s + t.pnl_rupees, 0) / losses.length : 0 };
+            exportPnLPDF(`Daily PnL Report — ${today}`, st, trades, null);
+          }).catch(() => {});
+        }} style={{ background: ORANGE + "22", color: ORANGE, border: `1px solid ${ORANGE}44`, borderRadius: 8, padding: "5px 12px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+          Export Today
+        </button>
+        <button onClick={() => {
+          fetch("/api/trades/closed").then(r => r.json()).then(trades => {
+            exportPnLPDF("Weekly PnL Report (Last 7 Days)", stats, trades, null);
+          }).catch(() => {});
+        }} style={{ background: ACCENT + "22", color: ACCENT, border: `1px solid ${ACCENT}44`, borderRadius: 8, padding: "5px 12px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+          Export Weekly
+        </button>
+        <button onClick={() => {
+          const [y, m] = selectedMonth.split("-");
+          fetch(`/api/trades/monthly/${y}/${m}`).then(r => r.json()).then(report => {
+            exportPnLPDF(`Monthly PnL Report — ${report.month}`, report.stats, report.trades, report.daily);
+          }).catch(() => {});
+        }} style={{ background: YELLOW + "22", color: YELLOW, border: `1px solid ${YELLOW}44`, borderRadius: 8, padding: "5px 12px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
+          Export Monthly
+        </button>
+      </div>
+
       {/* STATS */}
       {stats && (
         <div style={{ background: "#0D0D15", borderRadius: 12, padding: "14px", border: `1px solid ${BORDER}` }}>
