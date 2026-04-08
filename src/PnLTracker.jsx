@@ -121,16 +121,20 @@ export default function PnLTracker() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   });
 
+  const [posAlerts, setPosAlerts] = useState([]);
+
   const refresh = useCallback(async () => {
     try {
-      const [o, c, s, h, d] = await Promise.all([
+      const [o, c, s, h, d, a] = await Promise.all([
         fetch("/api/trades/open").then(r => r.json()).catch(() => []),
         fetch("/api/trades/closed").then(r => r.json()).catch(() => []),
         fetch("/api/trades/stats").then(r => r.json()).catch(() => null),
         fetch("/api/trades/stop-hunts").then(r => r.json()).catch(() => []),
         fetch("/api/trades/dates").then(r => r.json()).catch(() => []),
+        fetch("/api/trades/alerts").then(r => r.json()).catch(() => []),
       ]);
       if (Array.isArray(o)) setOpenTrades(o);
+      if (Array.isArray(a)) setPosAlerts(a);
       if (Array.isArray(c)) setClosedTrades(c);
       if (s) setStats(s);
       if (Array.isArray(h)) setStopHunts(h);
@@ -243,6 +247,23 @@ export default function PnLTracker() {
           }}>{t.label}</button>
         ))}
       </div>
+
+      {/* POSITION ALERTS — Blinking */}
+      {posAlerts.length > 0 && (
+        <div style={{
+          background: RED + "15", border: `2px solid ${RED}`, borderRadius: 10, padding: "12px 16px",
+          animation: "blink 1s infinite",
+        }}>
+          <style>{`@keyframes blink { 0%,100% { opacity:1 } 50% { opacity:0.5 } }`}</style>
+          <div style={{ color: RED, fontWeight: 900, fontSize: 13, marginBottom: 6 }}>{"\u26A0"} POSITION ALERT — ACTION NEEDED</div>
+          {posAlerts.map((a, i) => (
+            <div key={i} style={{ color: "#ccc", fontSize: 11, marginBottom: 4, padding: "4px 0", borderBottom: i < posAlerts.length - 1 ? `1px solid ${RED}33` : "none" }}>
+              <span style={{ color: RED, fontWeight: 700 }}>{a.idx} {a.action} {a.strike}</span>
+              <span style={{ color: "#888", marginLeft: 8 }}>{a.alerts}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* CONTENT */}
       {tab === "open" && (
@@ -382,51 +403,113 @@ export default function PnLTracker() {
 }
 
 function TradeCard({ t }) {
-  const sc = statusColor[t.status] || "#555";
+  const sc = statusColor[t.status] || (t.status === "TRAIL_EXIT" ? GREEN : t.status === "BREAKEVEN_EXIT" ? ACCENT : "#555");
   const pc = (t.pnl_rupees || 0) > 0 ? GREEN : (t.pnl_rupees || 0) < 0 ? RED : "#888";
   const ac = t.action?.includes("CE") ? GREEN : RED;
   const et = t.entry_time ? new Date(t.entry_time).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: true, day: "2-digit", month: "short" }) : "";
   const xt = t.exit_time ? new Date(t.exit_time).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: true }) : "";
+  const profitPct = t.entry_price > 0 ? Math.round(((t.current_ltp || t.exit_price || t.entry_price) - t.entry_price) / t.entry_price * 100) : 0;
+  const slLabel = t.breakeven_active ? (t.trailing_active ? `TRAIL SL` : "BREAKEVEN") : "SL";
+  const slColor = t.breakeven_active ? (t.sl_price > t.entry_price ? GREEN : ACCENT) : RED;
+  const statusLbl = { ...statusLabel, TRAIL_EXIT: "TRAIL EXIT \u2713", BREAKEVEN_EXIT: "BE EXIT \u2248" };
 
   return (
     <div style={{ background: "#111118", borderRadius: 10, padding: "12px 14px", border: `1px solid ${sc}33` }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      {/* Row 1: Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
           <span style={{ color: "#fff", fontWeight: 900, fontSize: 14 }}>{t.idx}</span>
           <span style={{ background: ac + "22", color: ac, padding: "3px 10px", borderRadius: 4, fontSize: 12, fontWeight: 900 }}>{t.action}</span>
           <span style={{ color: "#ccc", fontWeight: 700 }}>{t.strike}</span>
-          <span style={{ background: sc + "22", color: sc, padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{statusLabel[t.status] || t.status}</span>
+          <span style={{ background: sc + "22", color: sc, padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{statusLbl[t.status] || t.status}</span>
+          {t.status === "OPEN" && t.breakeven_active ? (
+            <span style={{ background: ACCENT + "22", color: ACCENT, padding: "2px 6px", borderRadius: 3, fontSize: 9, fontWeight: 700 }}>
+              {t.trail_level === "TRAIL_75" ? "TRAIL 75%" : t.trail_level === "TRAIL_60" ? "TRAIL 60%" : "BREAKEVEN"}
+            </span>
+          ) : null}
         </div>
         <div style={{ textAlign: "right" }}>
           <div style={{ color: pc, fontWeight: 900, fontSize: 18 }}>{"\u20B9"}{Math.round(t.pnl_rupees || 0).toLocaleString("en-IN")}</div>
-          <div style={{ color: pc, fontSize: 10 }}>{(t.pnl_pts || 0) > 0 ? "+" : ""}{(t.pnl_pts || 0).toFixed(1)} pts</div>
+          <div style={{ color: pc, fontSize: 10 }}>{(t.pnl_pts || 0) > 0 ? "+" : ""}{(t.pnl_pts || 0).toFixed(1)} pts ({profitPct > 0 ? "+" : ""}{profitPct}%)</div>
         </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 6, marginBottom: 8 }}>
+
+      {/* Row 2: Price Levels */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 5, marginBottom: 6 }}>
         {[
           { l: "ENTRY", v: `\u20B9${t.entry_price}`, c: "#ccc" },
-          { l: t.status === "OPEN" ? "CURRENT" : "EXIT", v: `\u20B9${(t.status === "OPEN" ? t.current_ltp : t.exit_price || 0).toFixed?.(1) || 0}`, c: t.status === "OPEN" ? ACCENT : sc },
-          { l: "SL (15%)", v: `\u20B9${t.sl_price}`, c: RED },
-          { l: "T1 (+20%)", v: `\u20B9${t.t1_price}`, c: GREEN },
-          { l: "T2 (+40%)", v: `\u20B9${t.t2_price}`, c: GREEN },
+          { l: t.status === "OPEN" ? "CURRENT" : "EXIT", v: `\u20B9${((t.status === "OPEN" ? t.current_ltp : t.exit_price) || 0).toFixed?.(1) || 0}`, c: t.status === "OPEN" ? ACCENT : sc },
+          { l: slLabel, v: `\u20B9${t.sl_price}`, c: slColor },
+          { l: "T1", v: `\u20B9${t.t1_price}`, c: GREEN },
+          { l: "T2", v: `\u20B9${t.t2_price}`, c: GREEN },
+          { l: "PEAK", v: `\u20B9${(t.peak_ltp || t.current_ltp || t.entry_price).toFixed?.(1) || 0}`, c: YELLOW },
         ].map((s, i) => (
           <div key={i} style={{ textAlign: "center" }}>
             <div style={{ color: "#555", fontSize: 8, fontWeight: 700 }}>{s.l}</div>
-            <div style={{ color: s.c, fontSize: 12, fontWeight: 700 }}>{s.v}</div>
+            <div style={{ color: s.c, fontSize: 11, fontWeight: 700 }}>{s.v}</div>
           </div>
         ))}
       </div>
+
+      {/* Row 3: Progress bar (entry to T2) */}
+      {t.status === "OPEN" && t.entry_price > 0 && (
+        <div style={{ marginBottom: 6 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, color: "#555", marginBottom: 2 }}>
+            <span>SL {"\u20B9"}{t.sl_price}</span>
+            <span>Entry {"\u20B9"}{t.entry_price}</span>
+            <span>T1 {"\u20B9"}{t.t1_price}</span>
+            <span>T2 {"\u20B9"}{t.t2_price}</span>
+          </div>
+          <div style={{ display: "flex", height: 6, borderRadius: 3, overflow: "hidden", background: "#1a1a25", position: "relative" }}>
+            {(() => {
+              const range = t.t2_price - t.sl_price;
+              const pos = range > 0 ? Math.min(100, Math.max(0, ((t.current_ltp || t.entry_price) - t.sl_price) / range * 100)) : 50;
+              const entryPos = range > 0 ? ((t.entry_price - t.sl_price) / range * 100) : 50;
+              return (
+                <>
+                  <div style={{ width: `${entryPos}%`, background: RED + "44" }} />
+                  <div style={{ width: `${Math.max(0, pos - entryPos)}%`, background: pos > entryPos ? GREEN : RED, transition: "width 0.3s" }} />
+                  <div style={{ position: "absolute", left: `${pos}%`, top: -1, width: 8, height: 8, borderRadius: "50%", background: ACCENT, transform: "translateX(-50%)", border: "1px solid #fff" }} />
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* Row 4: Info */}
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#666" }}>
         <span>{t.lots}L × {t.lot_size} = {t.qty} qty</span>
-        <span>{et}{xt ? ` → ${xt}` : ""}</span>
+        <span>{et}{xt ? ` \u2192 ${xt}` : ""}</span>
         <span style={{ color: t.probability >= 70 ? GREEN : YELLOW }}>Prob: {t.probability}%</span>
       </div>
+
+      {/* Breakeven/Trail details */}
+      {t.status === "OPEN" && t.breakeven_active ? (
+        <div style={{ marginTop: 6, padding: "4px 10px", background: ACCENT + "11", borderRadius: 6, color: ACCENT, fontSize: 10 }}>
+          {t.trailing_active
+            ? `Trailing SL active at \u20B9${t.sl_price} (locking ${t.sl_price > t.entry_price ? Math.round((t.sl_price - t.entry_price) * t.qty) : 0} profit). Peak: \u20B9${(t.peak_ltp || 0).toFixed?.(1)}`
+            : `Breakeven active \u2014 SL moved to entry \u20B9${t.entry_price}. Zero loss guaranteed.`
+          }
+        </div>
+      ) : null}
+
+      {/* Exit reason */}
       {t.exit_reason && (
-        <div style={{ marginTop: 8, padding: "6px 10px", background: sc + "11", borderRadius: 6, color: sc, fontSize: 11 }}>{t.exit_reason}</div>
+        <div style={{ marginTop: 6, padding: "6px 10px", background: sc + "11", borderRadius: 6, color: sc, fontSize: 11 }}>{t.exit_reason}</div>
       )}
+
+      {/* Alert */}
+      {t.alerts && t.status === "OPEN" && (
+        <div style={{ marginTop: 6, padding: "6px 10px", background: RED + "15", borderRadius: 6, color: RED, fontSize: 11, animation: "blink 1s infinite" }}>
+          {"\u26A0"} {t.alerts}
+        </div>
+      )}
+
+      {/* Stop Hunt */}
       {t.status === "STOP_HUNTED" && t.reversal_price > 0 && (
         <div style={{ marginTop: 6, padding: "6px 10px", background: PURPLE + "11", borderRadius: 6, color: PURPLE, fontSize: 11 }}>
-          Reversal: price recovered to {"\u20B9"}{t.reversal_price.toFixed?.(1) || t.reversal_price} after institutional SL flush
+          Reversal: price recovered to {"\u20B9"}{(t.reversal_price || 0).toFixed?.(1) || t.reversal_price} after institutional SL flush
         </div>
       )}
     </div>

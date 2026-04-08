@@ -344,6 +344,12 @@ async def trades_open():
         return []
     return engine.trade_manager.get_open_trades()
 
+@app.get("/api/trades/alerts")
+async def trades_alerts():
+    if not engine or not hasattr(engine, 'trade_manager') or not engine.trade_manager:
+        return []
+    return engine.trade_manager.get_position_alerts()
+
 @app.get("/api/trades/closed")
 async def trades_closed():
     if not engine or not hasattr(engine, 'trade_manager') or not engine.trade_manager:

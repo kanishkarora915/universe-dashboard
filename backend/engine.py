@@ -2551,14 +2551,25 @@ class MarketEngine:
                 self.trade_manager.check_and_update(self.chains, self.prices, self.spot_tokens, self.token_to_info)
                 # 2. Check for stop hunts on recently SL'd trades
                 self.trade_manager.check_stop_hunts(self.chains)
-                # 3. Check if we should enter new trades (every 60s)
-                if now - self.trade_manager._last_verdict_check >= 60:
+                # 3. Check position alerts (reversal, conviction drop) every 30s
+                if now - self.trade_manager._last_verdict_check >= 30:
                     self.trade_manager._last_verdict_check = now
                     verdict = self.get_trap_verdict()
+                    # 3a. Alert open positions if market reversed
+                    self.trade_manager.check_position_alerts(self.chains, verdict)
+                    # 3b. Check if we should enter new trades (only every 60s)
                     for idx in ["NIFTY", "BANKNIFTY"]:
                         key = idx.lower()
                         v = verdict.get(key, {})
                         if self.trade_manager.should_enter_trade(idx, v):
+                            # Get straddle for smart SL/targets
+                            chain = self.chains.get(idx, {})
+                            cfg = INDEX_CONFIG[idx]
+                            spot_ltp = self.prices.get(self.spot_tokens.get(idx), {}).get("ltp", 0)
+                            atm = round(spot_ltp / cfg["strike_gap"]) * cfg["strike_gap"] if spot_ltp > 0 else 0
+                            atm_data = chain.get(atm, {})
+                            straddle = round(atm_data.get("ce_ltp", 0) + atm_data.get("pe_ltp", 0), 2)
+
                             trade = v.get("trade", {})
                             self.trade_manager.log_trade(
                                 idx=idx,
@@ -2568,6 +2579,7 @@ class MarketEngine:
                                 probability=v.get("winProbability", 0),
                                 source="verdict",
                                 expiry=str(self.nearest_expiry.get(idx, "")),
+                                straddle=straddle,
                             )
             except Exception as e:
                 print(f"[TRADE] Auto-trade error: {e}")

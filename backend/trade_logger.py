@@ -40,9 +40,11 @@ def init_trades_db(db_path):
             expiry TEXT,
             entry_price REAL NOT NULL,
             sl_price REAL NOT NULL,
+            original_sl REAL NOT NULL,
             t1_price REAL NOT NULL,
             t2_price REAL NOT NULL,
             current_ltp REAL DEFAULT 0,
+            peak_ltp REAL DEFAULT 0,
             exit_price REAL DEFAULT 0,
             lots INTEGER DEFAULT 20,
             lot_size INTEGER,
@@ -53,6 +55,10 @@ def init_trades_db(db_path):
             exit_reason TEXT,
             probability INTEGER DEFAULT 0,
             source TEXT,
+            breakeven_active INTEGER DEFAULT 0,
+            trailing_active INTEGER DEFAULT 0,
+            trail_level TEXT DEFAULT '',
+            alerts TEXT DEFAULT '',
             sl_hit_time TEXT,
             reversal_price REAL DEFAULT 0,
             reversal_detected INTEGER DEFAULT 0,
@@ -81,26 +87,42 @@ class TradeManager:
         self._last_verdict_check = 0
         self._last_sl_check = 0
 
-    def log_trade(self, idx, action, strike, entry_price, probability, source="verdict", expiry=""):
-        """Log a new trade entry. SL = 15% max. T1 = +20%. T2 = +40%."""
+    def log_trade(self, idx, action, strike, entry_price, probability, source="verdict", expiry="",
+                  straddle=0, big_wall=0):
+        """Log a new trade entry with smart SL/targets."""
         if entry_price <= 0:
             return None
 
         cfg = LOT_CONFIG.get(idx, LOT_CONFIG["NIFTY"])
-        sl_price = round(entry_price * 0.85)   # 15% SL
-        t1_price = round(entry_price * 1.20)   # 20% profit
-        t2_price = round(entry_price * 1.40)   # 40% profit
+
+        # Smart SL: 15% of entry, but minimum ₹5
+        sl_price = round(max(entry_price * 0.85, entry_price - max(straddle * 0.15, 5)))
+
+        # Smart T1: based on straddle or 20% of entry
+        if straddle > 0:
+            t1_price = round(entry_price + straddle * 0.20)  # 20% of straddle move
+        else:
+            t1_price = round(entry_price * 1.20)
+
+        # Smart T2: based on straddle or 40%
+        if straddle > 0:
+            t2_price = round(entry_price + straddle * 0.40)
+        else:
+            t2_price = round(entry_price * 1.40)
 
         now = ist_now()
         conn = _conn()
         cursor = conn.execute("""
             INSERT INTO trades (entry_time, idx, action, strike, expiry,
-                entry_price, sl_price, t1_price, t2_price, current_ltp,
-                lots, lot_size, qty, status, probability, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
+                entry_price, sl_price, original_sl, t1_price, t2_price,
+                current_ltp, peak_ltp,
+                lots, lot_size, qty, status, probability, source,
+                breakeven_active, trailing_active, trail_level, alerts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, 0, 0, '', '')
         """, (
             now.isoformat(), idx, action, strike, expiry,
-            entry_price, sl_price, t1_price, t2_price, entry_price,
+            entry_price, sl_price, sl_price, t1_price, t2_price,
+            entry_price, entry_price,
             cfg["lots"], cfg["lot_size"], cfg["qty"],
             probability, source,
         ))
@@ -112,7 +134,7 @@ class TradeManager:
         return trade_id
 
     def check_and_update(self, chains, prices, spot_tokens, token_to_info):
-        """Check all OPEN trades against live prices. Auto-close on SL/T1/T2."""
+        """Smart trade management: breakeven, trailing SL, alerts, early exit."""
         conn = _conn()
         conn.row_factory = sqlite3.Row
         open_trades = conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
@@ -124,13 +146,10 @@ class TradeManager:
             strike = t["strike"]
             action = t["action"]
 
-            # Find current LTP for the option
             chain = chains.get(idx, {})
             strike_data = chain.get(strike, {})
-            if "CE" in action:
-                current_ltp = strike_data.get("ce_ltp", 0)
-            else:
-                current_ltp = strike_data.get("pe_ltp", 0)
+            opt = "ce" if "CE" in action else "pe"
+            current_ltp = strike_data.get(f"{opt}_ltp", 0)
 
             if current_ltp <= 0:
                 continue
@@ -139,64 +158,173 @@ class TradeManager:
             sl = t["sl_price"]
             t1 = t["t1_price"]
             t2 = t["t2_price"]
+            peak = max(t.get("peak_ltp", entry), current_ltp)
+            breakeven_active = t.get("breakeven_active", 0)
+            trailing_active = t.get("trailing_active", 0)
 
-            # Calculate PnL
             pnl_pts = round(current_ltp - entry, 2)
             pnl_rupees = round(pnl_pts * t["qty"], 2)
+            profit_pct = round((current_ltp - entry) / entry * 100, 1) if entry > 0 else 0
 
-            # Check exit conditions
             new_status = "OPEN"
             exit_reason = None
             exit_price = 0
+            new_sl = sl
+            alerts_list = []
+            trail_level = t.get("trail_level", "")
 
-            if current_ltp <= sl:
-                new_status = "SL_HIT"
-                exit_price = sl
-                exit_reason = f"Stoploss hit at {sl} (entry was {entry}, -{round((1 - sl/entry)*100)}%)"
+            # ══════════════════════════════════════════════
+            # SMART SL MANAGEMENT
+            # ══════════════════════════════════════════════
+
+            # STAGE 1: BREAKEVEN — activate when 15% profit from entry
+            if not breakeven_active and profit_pct >= 15:
+                breakeven_active = 1
+                new_sl = entry  # Move SL to entry = zero loss guaranteed
+                trail_level = "BREAKEVEN"
+                alerts_list.append(f"BREAKEVEN activated at +{profit_pct:.0f}% — SL moved to entry ₹{entry}")
+                print(f"[TRADE] BREAKEVEN: {action} {idx} {strike} — SL moved to entry ₹{entry} (was ₹{sl})")
+
+            # STAGE 2: TRAILING SL — after breakeven, trail SL to lock profits
+            if breakeven_active:
+                # Trail at 60% of peak profit (keep 60% of max gain)
+                trail_from_peak = round(peak - (peak - entry) * 0.40)  # Lock 60% of peak gain
+                if trail_from_peak > new_sl and trail_from_peak > entry:
+                    new_sl = trail_from_peak
+                    trailing_active = 1
+
+                # Tighter trail levels
+                if profit_pct >= 35:
+                    tight_trail = round(peak - (peak - entry) * 0.25)  # Lock 75% at 35%+ profit
+                    if tight_trail > new_sl:
+                        new_sl = tight_trail
+                        trail_level = "TRAIL_75"
+                        alerts_list.append(f"Tight trail: locking 75% profit, SL at ₹{new_sl}")
+                elif profit_pct >= 25:
+                    trail_level = "TRAIL_60"
+
+            # ══════════════════════════════════════════════
+            # EXIT CONDITIONS
+            # ══════════════════════════════════════════════
+
+            # Check SL hit (uses current SL which may have been trailed up)
+            if current_ltp <= new_sl:
+                if breakeven_active and new_sl >= entry:
+                    # Breakeven or profit exit
+                    exit_price = new_sl
+                    final_pnl = round((exit_price - entry) * t["qty"], 2)
+                    if exit_price > entry:
+                        new_status = "TRAIL_EXIT"
+                        exit_reason = f"Trailing SL hit at ₹{new_sl} — locked profit ₹{final_pnl:+,.0f} ({round((new_sl/entry-1)*100)}% gain). Peak was ₹{peak:.1f}"
+                    else:
+                        new_status = "BREAKEVEN_EXIT"
+                        exit_reason = f"Breakeven exit at ₹{entry} — no loss. Price reached ₹{peak:.1f} (+{round((peak/entry-1)*100)}%) then reversed"
+                else:
+                    new_status = "SL_HIT"
+                    exit_price = new_sl
+                    exit_reason = f"Stoploss hit at ₹{new_sl} (entry ₹{entry}, loss {round((1-new_sl/entry)*100)}%). Original SL was ₹{t.get('original_sl', sl)}"
+
+            # Check T2 (full target)
             elif current_ltp >= t2:
                 new_status = "T2_HIT"
                 exit_price = t2
-                exit_reason = f"Target 2 hit at {t2} (+{round((t2/entry - 1)*100)}% from entry)"
-            elif current_ltp >= t1:
-                # T1 hit — trail SL to entry (breakeven)
-                # Check if already past T1 threshold — auto-exit at T2 or trail
-                new_status = "T1_HIT"
-                exit_price = current_ltp
-                exit_reason = f"Target 1 hit at {current_ltp:.1f} (+{round((current_ltp/entry - 1)*100)}% from entry)"
+                exit_reason = f"TARGET 2 HIT at ₹{t2} — full profit +{round((t2/entry-1)*100)}% from entry ₹{entry}. PnL: ₹{round((t2-entry)*t['qty']):+,}"
 
-            # Update trade
+            # ══════════════════════════════════════════════
+            # UPDATE DATABASE
+            # ══════════════════════════════════════════════
             conn = _conn()
+            alerts_str = " | ".join(alerts_list) if alerts_list else t.get("alerts", "")
+
             if new_status != "OPEN":
                 final_pnl_pts = round(exit_price - entry, 2)
                 final_pnl_rupees = round(final_pnl_pts * t["qty"], 2)
                 conn.execute("""
-                    UPDATE trades SET current_ltp=?, pnl_pts=?, pnl_rupees=?,
-                        status=?, exit_price=?, exit_time=?, exit_reason=?
+                    UPDATE trades SET current_ltp=?, peak_ltp=?, pnl_pts=?, pnl_rupees=?,
+                        sl_price=?, breakeven_active=?, trailing_active=?, trail_level=?,
+                        status=?, exit_price=?, exit_time=?, exit_reason=?, alerts=?
                     WHERE id=?
-                """, (current_ltp, final_pnl_pts, final_pnl_rupees,
-                      new_status, exit_price, ist_now().isoformat(), exit_reason, t["id"]))
-                print(f"[TRADE] CLOSED: {t['action']} {idx} {strike} — {new_status} — PnL: {final_pnl_pts} pts ({final_pnl_rupees:+,.0f})")
+                """, (current_ltp, peak, final_pnl_pts, final_pnl_rupees,
+                      new_sl, breakeven_active, trailing_active, trail_level,
+                      new_status, exit_price, ist_now().isoformat(), exit_reason, alerts_str, t["id"]))
+                print(f"[TRADE] CLOSED: {action} {idx} {strike} — {new_status} — PnL: {final_pnl_pts} pts (₹{final_pnl_rupees:+,.0f})")
 
-                # If SL hit — start stop hunt monitoring
                 if new_status == "SL_HIT":
-                    # Get OI at SL strike
-                    oi_at_sl = 0
-                    for tok, info in token_to_info.items():
-                        if info["index"] == idx and info["strike"] == strike:
-                            opt = "ce" if "CE" in action else "pe"
-                            oi_at_sl = strike_data.get(f"{opt}_oi", 0)
-                            break
-                    conn.execute("""
-                        UPDATE trades SET sl_hit_time=?, oi_at_sl_hit=?
-                        WHERE id=?
-                    """, (ist_now().isoformat(), oi_at_sl, t["id"]))
+                    oi_at_sl = strike_data.get(f"{opt}_oi", 0)
+                    conn.execute("UPDATE trades SET sl_hit_time=?, oi_at_sl_hit=? WHERE id=?",
+                                 (ist_now().isoformat(), oi_at_sl, t["id"]))
             else:
                 conn.execute("""
-                    UPDATE trades SET current_ltp=?, pnl_pts=?, pnl_rupees=?
+                    UPDATE trades SET current_ltp=?, peak_ltp=?, pnl_pts=?, pnl_rupees=?,
+                        sl_price=?, breakeven_active=?, trailing_active=?, trail_level=?, alerts=?
                     WHERE id=?
-                """, (current_ltp, pnl_pts, pnl_rupees, t["id"]))
+                """, (current_ltp, peak, pnl_pts, pnl_rupees,
+                      new_sl, breakeven_active, trailing_active, trail_level, alerts_str, t["id"]))
             conn.commit()
             conn.close()
+
+    def check_position_alerts(self, chains, verdict_data):
+        """Check if running positions need alerts based on new market data."""
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        open_trades = conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
+        conn.close()
+
+        position_alerts = []
+        for trade in open_trades:
+            t = dict(trade)
+            idx = t["idx"]
+            key = idx.lower()
+            action = t["action"]
+
+            v = verdict_data.get(key, {}) if verdict_data else {}
+            if not v:
+                continue
+
+            # Check if verdict REVERSED direction
+            v_action = v.get("action", "")
+            if v_action and v_action != "NO TRADE" and v_action != action:
+                # Opposite signal! Alert!
+                position_alerts.append({
+                    "tradeId": t["id"],
+                    "idx": idx,
+                    "action": action,
+                    "strike": t["strike"],
+                    "type": "REVERSAL_WARNING",
+                    "severity": "CRITICAL",
+                    "message": f"REVERSAL DETECTED: Your {action} {idx} {t['strike']} is OPEN but verdict now says {v_action} ({v.get('winProbability',0)}%). Consider early exit!",
+                    "currentPnl": t["pnl_rupees"],
+                    "suggestedAction": "EXIT" if t["pnl_pts"] < 0 else "TIGHTEN_SL",
+                })
+
+            # Check if probability dropped below 50%
+            win_pct = v.get("winProbability", 0)
+            if win_pct > 0:
+                our_side = "bullPct" if "CE" in action else "bearPct"
+                our_pct = v.get(our_side, 0)
+                if our_pct < 45:
+                    position_alerts.append({
+                        "tradeId": t["id"],
+                        "idx": idx,
+                        "action": action,
+                        "strike": t["strike"],
+                        "type": "CONVICTION_DROP",
+                        "severity": "HIGH",
+                        "message": f"Conviction dropped: {action} probability now {our_pct}% (was {t['probability']}% at entry). Edge weakening.",
+                        "currentPnl": t["pnl_rupees"],
+                        "suggestedAction": "TIGHTEN_SL",
+                    })
+
+        # Store alerts
+        if position_alerts:
+            conn = _conn()
+            for alert in position_alerts:
+                conn.execute("UPDATE trades SET alerts=? WHERE id=?",
+                             (alert["message"][:500], alert["tradeId"]))
+            conn.commit()
+            conn.close()
+
+        return position_alerts
 
     def check_stop_hunts(self, chains):
         """Check SL_HIT trades for reversal (stop hunt detection)."""
@@ -288,6 +416,16 @@ class TradeManager:
         return True
 
     # ── PUBLIC API METHODS ──
+
+    def get_position_alerts(self):
+        """Get alerts for open positions."""
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, idx, action, strike, alerts, pnl_rupees, status FROM trades WHERE status='OPEN' AND alerts != '' AND alerts IS NOT NULL"
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows if r["alerts"]]
 
     def get_open_trades(self):
         conn = _conn()
