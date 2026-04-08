@@ -305,6 +305,12 @@ async def trap_alerts():
     return alerts
 
 
+@app.get("/api/trap/verdict")
+async def trap_verdict():
+    """Cross-engine trap verdict — combines all engines."""
+    return _get_or_cache("trap_verdict", lambda: engine.get_trap_verdict())
+
+
 @app.get("/api/trap/history")
 async def trap_history():
     """Get fingerprint history (last 7 days)."""

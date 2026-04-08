@@ -142,6 +142,12 @@ export async function fetchTrapToday() {
   return res.json();
 }
 
+export async function fetchTrapVerdict() {
+  const res = await fetch("/api/trap/verdict");
+  if (!res.ok) return null;
+  return res.json();
+}
+
 export async function fetchPriceAction(expiry = null) {
   const url = expiry ? `/api/price-action?expiry=${expiry}` : "/api/price-action";
   const res = await fetch(url);

@@ -3,7 +3,7 @@ import { useMarketData } from "./useMarketData";
 import OIChangeTab from "./OIChangeTab";
 import PnLTracker from "./PnLTracker";
 import { exportSignalsToPDF, exportFullReport } from "./pdfExport";
-import { fetchTrapScan, fetchAIAnalysis, fetchTrapHistory, fetchTrapToday, fetchPriceAction } from "./api";
+import { fetchTrapScan, fetchAIAnalysis, fetchTrapHistory, fetchTrapToday, fetchPriceAction, fetchTrapVerdict } from "./api";
 
 const ACCENT = "#0A84FF";
 const BG = "#0A0A0F";
@@ -1889,15 +1889,17 @@ function TrapFinderTab() {
   const [showHistory, setShowHistory] = useState(false);
   const [selectedStrike, setSelectedStrike] = useState(null);
   const [todaySignals, setTodaySignals] = useState([]);
+  const [verdict, setVerdict] = useState(null);
 
   const fmtL = (n) => n ? `${(Math.abs(n) / 100000).toFixed(1)}L` : "0";
   const scoreColor = (s) => s >= 6 ? RED : s >= 4 ? YELLOW : GREEN;
   const alertBg = { FINGERPRINT: RED, WATCH: YELLOW, NORMAL: "#333" };
 
-  // Load today's signals (always visible) + history
+  // Load today's signals + history + verdict
   useEffect(() => {
     fetchTrapToday().then(s => { if (Array.isArray(s)) setTodaySignals(s); }).catch(() => {});
     fetchTrapHistory().then(h => { if (Array.isArray(h)) setHistory(h); }).catch(() => {});
+    fetchTrapVerdict().then(v => { if (v && !v.error) setVerdict(v); }).catch(() => {});
   }, [data]);
 
   const runScan = useCallback(async () => {
@@ -1959,6 +1961,116 @@ function TrapFinderTab() {
       </div>
 
       {loading && <div style={{ textAlign: "center", padding: 20, color: ORANGE }}>Scanning options chain...</div>}
+
+      {/* ── TRAP VERDICT — Cross-Engine Decision ── */}
+      {verdict && ["nifty", "banknifty"].map(key => {
+        const v = verdict[key];
+        if (!v) return null;
+        const label = key === "nifty" ? "NIFTY" : "BANKNIFTY";
+        const ac = v.finalAction?.includes("CE") ? GREEN : v.finalAction?.includes("PE") ? RED : "#555";
+        const cc = v.confidence === "HIGH" ? GREEN : v.confidence === "MEDIUM" ? YELLOW : "#555";
+        const t = v.trade || {};
+
+        return (
+          <Card key={key} style={{ background: ac + "06", border: `1px solid ${ac}44` }}>
+            {/* Header */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 20 }}>🧠</span>
+                <span style={{ color: "#fff", fontWeight: 900, fontSize: 16 }}>{label} VERDICT</span>
+                <span style={{ background: ac + "22", color: ac, padding: "4px 14px", borderRadius: 6, fontSize: 14, fontWeight: 900 }}>{v.finalAction}</span>
+                <span style={{ background: cc + "22", color: cc, padding: "3px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{v.confidence}</span>
+              </div>
+              <span style={{ color: "#444", fontSize: 10 }}>
+                {v.openType && <span style={{ color: v.openType === "GAP UP" ? GREEN : v.openType === "GAP DOWN" ? RED : YELLOW, marginRight: 8 }}>{v.openType}</span>}
+                {v.timestamp}
+              </span>
+            </div>
+
+            {/* Trade Card */}
+            {v.finalAction !== "NO TRADE" && t.entry > 0 && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 8, marginBottom: 12 }}>
+                {[
+                  { label: "STRIKE", value: t.strike, color: "#fff" },
+                  { label: "ENTRY", value: `₹${t.entry}`, color: GREEN },
+                  { label: "TARGET", value: `₹${t.t1} / ₹${t.t2}`, color: GREEN },
+                  { label: "STOPLOSS", value: `₹${t.sl}`, color: RED },
+                  { label: "R:R", value: t.rr, color: PURPLE },
+                ].map((item, i) => (
+                  <div key={i} style={{ background: "#111118", borderRadius: 8, padding: "6px 10px", textAlign: "center" }}>
+                    <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>{item.label}</div>
+                    <div style={{ color: item.color, fontSize: 14, fontWeight: 900 }}>{item.value}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Engine Votes — Visual Bar */}
+            <div style={{ background: "#0A0A12", borderRadius: 8, padding: "8px 12px", marginBottom: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: 10 }}>
+                <span style={{ color: GREEN, fontWeight: 700 }}>CE: {v.votes?.CE || 0} votes</span>
+                <span style={{ color: "#555" }}>Engine Consensus ({v.totalVotes} total)</span>
+                <span style={{ color: RED, fontWeight: 700 }}>PE: {v.votes?.PE || 0} votes</span>
+              </div>
+              <div style={{ display: "flex", height: 8, borderRadius: 4, overflow: "hidden", background: "#1a1a25" }}>
+                <div style={{ width: `${v.totalVotes > 0 ? (v.votes?.CE || 0) / v.totalVotes * 100 : 50}%`, background: GREEN, transition: "width 0.3s" }} />
+                <div style={{ width: `${v.totalVotes > 0 ? (v.votes?.PE || 0) / v.totalVotes * 100 : 50}%`, background: RED, transition: "width 0.3s" }} />
+              </div>
+            </div>
+
+            {/* Engine Scores */}
+            {v.engineScores && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+                {Object.entries(v.engineScores).map(([eng, val]) => (
+                  <span key={eng} style={{ background: "#111118", color: "#888", padding: "3px 8px", borderRadius: 4, fontSize: 9 }}>
+                    <span style={{ color: "#555" }}>{eng}: </span>
+                    <span style={{ color: String(val).includes("CE") || String(val).includes("BULLISH") ? GREEN : String(val).includes("PE") || String(val).includes("BEARISH") ? RED : "#ccc", fontWeight: 700 }}>{String(val)}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Reasons */}
+            {v.reasons?.length > 0 && (
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ color: YELLOW, fontSize: 10, fontWeight: 700, marginBottom: 6 }}>WHY — ALL ENGINES AGREE</div>
+                {v.reasons.map((r, i) => (
+                  <div key={i} style={{ color: "#ccc", fontSize: 11, marginBottom: 3, paddingLeft: 10 }}>{i + 1}. {r}</div>
+                ))}
+              </div>
+            )}
+
+            {/* Predictions: Current + Next Expiry */}
+            <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+              {v.currentExpiryPrediction?.length > 0 && (
+                <div style={{ flex: 1, background: ACCENT + "08", borderRadius: 8, padding: "8px 12px", border: `1px solid ${ACCENT}22` }}>
+                  <div style={{ color: ACCENT, fontSize: 10, fontWeight: 700, marginBottom: 4 }}>CURRENT EXPIRY</div>
+                  {v.currentExpiryPrediction.map((p, i) => (
+                    <div key={i} style={{ color: "#999", fontSize: 10, marginBottom: 2 }}>{p}</div>
+                  ))}
+                </div>
+              )}
+              {v.nextExpiryPrediction?.length > 0 && (
+                <div style={{ flex: 1, background: ORANGE + "08", borderRadius: 8, padding: "8px 12px", border: `1px solid ${ORANGE}22` }}>
+                  <div style={{ color: ORANGE, fontSize: 10, fontWeight: 700, marginBottom: 4 }}>NEXT WEEK</div>
+                  {v.nextExpiryPrediction.map((p, i) => (
+                    <div key={i} style={{ color: "#999", fontSize: 10, marginBottom: 2 }}>{p}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Risks */}
+            {v.risks?.length > 0 && (
+              <div style={{ background: RED + "06", borderRadius: 8, padding: "6px 12px" }}>
+                {v.risks.map((r, i) => (
+                  <div key={i} style={{ color: "#aaa", fontSize: 10, marginBottom: 2 }}>{"\u26A0"} {r}</div>
+                ))}
+              </div>
+            )}
+          </Card>
+        );
+      })}
 
       {/* ── TODAY'S SIGNALS — Always Visible ── */}
       {todaySignals.length > 0 && (
