@@ -116,7 +116,7 @@ export function exportSignalsToPDF(signals) {
 
 // ── FULL A-Z DAILY REPORT ─────────────────────────────────────────────
 
-export function exportFullReport({ live, unusual, signals, oiSummary, sellerData, tradeAnalysis, intraday, nextday, weekly }) {
+export function exportFullReport({ live, unusual, signals, oiSummary, sellerData, tradeAnalysis, intraday, nextday, weekly, pnlStats, pnlTrades }) {
   const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   const dateStr = new Date().toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", weekday: "long", year: "numeric", month: "long", day: "numeric" });
 
@@ -431,6 +431,59 @@ export function exportFullReport({ live, unusual, signals, oiSummary, sellerData
     }
   } else {
     html += `<p style="color:#888">Weekly data not available</p>`;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // 10. PnL TRACKER — TRADE LOG
+  // ═══════════════════════════════════════════════════════════════════
+  html += `<hr class="section-divider"><div class="page-break"></div><h2>10. PnL TRACKER — TRADE LOG</h2>`;
+
+  if (pnlStats && pnlStats.total > 0) {
+    html += `<div class="summary">
+      <div class="sum-card"><div class="sum-label">Total Trades</div><div class="sum-value">${pnlStats.total}</div></div>
+      <div class="sum-card"><div class="sum-label">Wins</div><div class="sum-value pos">${pnlStats.wins}</div></div>
+      <div class="sum-card"><div class="sum-label">Losses</div><div class="sum-value neg">${pnlStats.losses}</div></div>
+      <div class="sum-card"><div class="sum-label">Stop Hunts</div><div class="sum-value" style="color:#7c3aed">${pnlStats.stopHunts}</div></div>
+      <div class="sum-card"><div class="sum-label">Win Rate</div><div class="sum-value ${pnlStats.winRate >= 60 ? 'pos' : 'neg'}">${pnlStats.winRate}%</div></div>
+      <div class="sum-card"><div class="sum-label">Total P&L</div><div class="sum-value ${pnlStats.totalPnl >= 0 ? 'pos' : 'neg'}">${pnlStats.totalPnl >= 0 ? '+' : ''}${Math.round(pnlStats.totalPnl).toLocaleString("en-IN")}</div></div>
+    </div>`;
+
+    html += `<div class="summary">
+      <div class="sum-card"><div class="sum-label">Avg Win</div><div class="sum-value pos">${Math.round(pnlStats.avgWin || 0).toLocaleString("en-IN")}</div></div>
+      <div class="sum-card"><div class="sum-label">Avg Loss</div><div class="sum-value neg">${Math.round(pnlStats.avgLoss || 0).toLocaleString("en-IN")}</div></div>
+      <div class="sum-card"><div class="sum-label">Best Trade</div><div class="sum-value pos">${Math.round(pnlStats.bestTrade || 0).toLocaleString("en-IN")}</div></div>
+      <div class="sum-card"><div class="sum-label">Worst Trade</div><div class="sum-value neg">${Math.round(pnlStats.worstTrade || 0).toLocaleString("en-IN")}</div></div>
+    </div>`;
+  } else {
+    html += `<p style="color:#888">No trade stats available</p>`;
+  }
+
+  if (pnlTrades && pnlTrades.length > 0) {
+    html += `<h3>Trade History (${pnlTrades.length} trades)</h3>`;
+    html += `<table><tr>
+      <th>Time</th><th>Index</th><th>Action</th><th>Strike</th>
+      <th>Entry</th><th>Exit</th><th>SL</th><th>T1</th>
+      <th>Qty</th><th>P&L (pts)</th><th>P&L (₹)</th><th>Status</th>
+    </tr>`;
+    for (const t of pnlTrades) {
+      const statusCls = (t.status === "T1_HIT" || t.status === "T2_HIT") ? "pos" : t.status === "SL_HIT" ? "neg" : "";
+      const time = t.entry_time ? new Date(t.entry_time).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: true, day: "2-digit", month: "short" }) : "-";
+      html += `<tr>
+        <td>${time}</td>
+        <td><strong>${t.idx}</strong></td>
+        <td>${t.action}</td>
+        <td>${t.strike}</td>
+        <td>${t.entry_price}</td>
+        <td>${t.exit_price || t.current_ltp || "-"}</td>
+        <td>${t.sl_price}</td>
+        <td>${t.t1_price}</td>
+        <td>${t.lots}L x ${t.lot_size} = ${t.qty}</td>
+        <td class="${statusCls}">${t.pnl_pts > 0 ? "+" : ""}${(t.pnl_pts || 0).toFixed(1)}</td>
+        <td class="${statusCls}" style="font-weight:700">${(t.pnl_rupees || 0) >= 0 ? "+" : ""}${Math.round(t.pnl_rupees || 0).toLocaleString("en-IN")}</td>
+        <td class="${statusCls}" style="font-weight:700">${t.status}</td>
+      </tr>`;
+    }
+    html += `</table>`;
   }
 
   // Footer

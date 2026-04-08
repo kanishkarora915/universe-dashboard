@@ -2614,7 +2614,13 @@ export default function Universe({ onLogout }) {
               {isMarketOpen ? "\u25CF MARKET OPEN" : "\u25CF MARKET CLOSED"}
             </div>
           </div>
-          <button onClick={() => exportFullReport({ live, unusual, signals, oiSummary, sellerData, tradeAnalysis, intraday, nextday, weekly })} style={{
+          <button onClick={async () => {
+              const [pnlStats, pnlTrades] = await Promise.all([
+                fetch("/api/trades/stats").then(r => r.json()).catch(() => null),
+                fetch("/api/trades/closed").then(r => r.json()).catch(() => []),
+              ]);
+              exportFullReport({ live, unusual, signals, oiSummary, sellerData, tradeAnalysis, intraday, nextday, weekly, pnlStats, pnlTrades });
+          }} style={{
               background: ACCENT + "18", color: ACCENT, border: `1px solid ${ACCENT}33`,
               borderRadius: 8, padding: "6px 14px", cursor: "pointer",
               fontSize: 11, fontWeight: 700, whiteSpace: "nowrap",
