@@ -343,20 +343,48 @@ function LiveDataTab({ liveData }) {
   const data = liveData;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      {[{ name: "NIFTY", d: data.nifty }, { name: "BANKNIFTY", d: data.banknifty }].map(({ name, d }) => (
+      {[{ name: "NIFTY", d: data.nifty }, { name: "BANKNIFTY", d: data.banknifty }].map(({ name, d }) => {
+        const openColor = d.openType === "GAP UP" ? GREEN : d.openType === "GAP DOWN" ? RED : YELLOW;
+        const zoneColor = d.rangeZone === "NEAR HIGH" ? GREEN : d.rangeZone === "NEAR LOW" ? RED : YELLOW;
+        return (
         <Card key={name}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <span style={{ color: ACCENT, fontWeight: 900, fontSize: 18, letterSpacing: 1 }}>{name}</span>
             <div style={{ display: "flex", gap: 8 }}>
+              {d.openType && <Badge text={d.openType} color={openColor} />}
               <Badge text={d.trend}  color={d.trend === "BULLISH" ? GREEN : RED} />
               <Badge text={d.regime} color={ORANGE} />
             </div>
           </div>
+
+          {/* Market Open + Day Range Bar */}
+          {d.openPrice > 0 && (
+            <div style={{ background: "#0A0A12", borderRadius: 8, padding: "8px 12px", marginBottom: 10, border: `1px solid ${BORDER}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <div style={{ display: "flex", gap: 12, fontSize: 11 }}>
+                  <span style={{ color: "#888" }}>Open: <span style={{ color: openColor, fontWeight: 700 }}>{d.openPrice?.toLocaleString("en-IN")}</span></span>
+                  <span style={{ color: "#888" }}>Prev Close: <span style={{ color: "#ccc", fontWeight: 700 }}>{d.prevClose?.toLocaleString("en-IN")}</span></span>
+                  <span style={{ color: "#888" }}>From Open: <span style={{ color: d.fromOpen > 0 ? GREEN : d.fromOpen < 0 ? RED : "#888", fontWeight: 700 }}>{d.fromOpen > 0 ? "+" : ""}{d.fromOpen} ({d.fromOpenPct > 0 ? "+" : ""}{d.fromOpenPct}%)</span></span>
+                </div>
+                <span style={{ background: zoneColor + "22", color: zoneColor, padding: "2px 8px", borderRadius: 4, fontSize: 9, fontWeight: 700 }}>{d.rangeZone}</span>
+              </div>
+              {/* Day Range Progress Bar */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ color: RED, fontSize: 10, fontWeight: 700, minWidth: 50 }}>{d.low?.toLocaleString("en-IN")}</span>
+                <div style={{ flex: 1, background: "#1a1a25", borderRadius: 4, height: 6, position: "relative" }}>
+                  <div style={{ position: "absolute", left: `${d.rangePosition || 50}%`, top: -2, width: 10, height: 10, borderRadius: "50%", background: ACCENT, transform: "translateX(-50%)" }} />
+                </div>
+                <span style={{ color: GREEN, fontSize: 10, fontWeight: 700, minWidth: 50, textAlign: "right" }}>{d.high?.toLocaleString("en-IN")}</span>
+              </div>
+              <div style={{ textAlign: "center", color: "#555", fontSize: 9, marginTop: 4 }}>Day Range: {d.dayRange} pts</div>
+            </div>
+          )}
+
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 10 }}>
             <Stat label="LTP"    value={d.ltp.toLocaleString("en-IN")} />
             <Stat label="Change" value={`${d.change > 0 ? "+" : ""}${d.change} (${d.changePct}%)`} color={d.change > 0 ? GREEN : RED} />
-            <Stat label="High"   value={d.high.toLocaleString("en-IN")} color={GREEN} />
-            <Stat label="Low"    value={d.low.toLocaleString("en-IN")}  color={RED}   />
+            <Stat label="High"   value={d.high?.toLocaleString("en-IN")} color={GREEN} />
+            <Stat label="Low"    value={d.low?.toLocaleString("en-IN")}  color={RED}   />
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 10 }}>
             <Stat label="PCR" value={d.pcr}
@@ -391,7 +419,7 @@ function LiveDataTab({ liveData }) {
             </div>
           </div>
         </Card>
-      ))}
+      );})}
     </div>
   );
 }

@@ -208,6 +208,13 @@ class MarketEngine:
         self.initial_ltp = {}  # Stores LTP at market open — for seller classification
         self.option_symbols = {}   # {token: "NFO:SYMBOL"} for quote fetching
 
+        # ── Market Open/Close tracking ──
+        self.market_open_price = {}  # {"NIFTY": price_at_915, "BANKNIFTY": price_at_915}
+        self.market_open_type = {}   # {"NIFTY": "GAP UP", ...}
+        self.day_high = {}
+        self.day_low = {}
+        self.market_open_recorded = False
+
         # ── Hourly OI snapshots for Hidden Shift detection ──
         self.oi_snapshots = []
         self._last_snapshot_time = 0
@@ -299,12 +306,42 @@ class MarketEngine:
             atm_iv = self._get_atm_iv(index, ltp)
             ivr = compute_ivr(atm_iv) if atm_iv > 0 else 0
 
+            # Market open info
+            open_price = self.market_open_price.get(index, 0)
+            open_type = self.market_open_type.get(index, "UNKNOWN")
+            day_hi = self.day_high.get(index, spot.get("high", 0))
+            day_lo = self.day_low.get(index, spot.get("low", 0))
+            day_range = round(day_hi - day_lo, 1) if day_hi and day_lo else 0
+            from_open = round(ltp - open_price, 1) if open_price else 0
+            from_open_pct = round((from_open / open_price) * 100, 2) if open_price > 0 else 0
+
+            # Where is price relative to day range
+            if day_range > 0:
+                range_pos = round((ltp - day_lo) / day_range * 100)
+                if range_pos > 75:
+                    range_zone = "NEAR HIGH"
+                elif range_pos < 25:
+                    range_zone = "NEAR LOW"
+                else:
+                    range_zone = "MID RANGE"
+            else:
+                range_pos = 50
+                range_zone = "FLAT"
+
             result[key] = {
                 "ltp": ltp,
                 "change": change,
                 "changePct": change_pct,
-                "high": spot.get("high", 0),
-                "low": spot.get("low", 0),
+                "prevClose": prev_close,
+                "high": day_hi or spot.get("high", 0),
+                "low": day_lo or spot.get("low", 0),
+                "dayRange": day_range,
+                "rangePosition": range_pos,
+                "rangeZone": range_zone,
+                "openPrice": open_price,
+                "openType": open_type,
+                "fromOpen": from_open,
+                "fromOpenPct": from_open_pct,
                 "pcr": pcr,
                 "ivr": ivr,
                 "totalCE_OI": total_ce_oi,
@@ -2196,10 +2233,59 @@ class MarketEngine:
         if now - self._last_snapshot_time >= 1800:
             self._take_oi_snapshot()
 
+        # Market open detection + day high/low tracking
+        if not self.market_open_recorded:
+            self._detect_market_open()
+        self._update_day_range()
+
         # Price Action: record ATM±3 LTP every 10 seconds
         if now - self._pa_last_record >= 10:
             self._pa_last_record = now
             self._record_price_action()
+
+    def _detect_market_open(self):
+        """Detect how market opened: Gap Up / Gap Down / Flat. Called once after 9:16 AM."""
+        if self.market_open_recorded:
+            return
+        now = ist_now()
+        if now.hour == 9 and now.minute >= 16 or now.hour > 9:
+            for index in ["NIFTY", "BANKNIFTY"]:
+                spot_token = self.spot_tokens.get(index)
+                ltp = self.prices.get(spot_token, {}).get("ltp", 0)
+                prev_close = self.spot_prev_close.get(index, 0)
+                if ltp <= 0 or prev_close <= 0:
+                    continue
+
+                self.market_open_price[index] = ltp
+                self.day_high[index] = ltp
+                self.day_low[index] = ltp
+
+                gap = ltp - prev_close
+                gap_pct = round((gap / prev_close) * 100, 2)
+
+                if gap_pct > 0.3:
+                    self.market_open_type[index] = "GAP UP"
+                elif gap_pct < -0.3:
+                    self.market_open_type[index] = "GAP DOWN"
+                else:
+                    self.market_open_type[index] = "FLAT OPEN"
+
+                print(f"[MARKET] {index} opened {self.market_open_type[index]}: {ltp} (prev close: {prev_close}, gap: {gap_pct:+.2f}%)")
+
+            if self.market_open_price:
+                self.market_open_recorded = True
+
+    def _update_day_range(self):
+        """Track intraday high/low."""
+        for index in ["NIFTY", "BANKNIFTY"]:
+            spot_token = self.spot_tokens.get(index)
+            ltp = self.prices.get(spot_token, {}).get("ltp", 0)
+            if ltp <= 0:
+                continue
+            if index not in self.day_high or ltp > self.day_high[index]:
+                self.day_high[index] = ltp
+            if index not in self.day_low or ltp < self.day_low[index]:
+                self.day_low[index] = ltp
 
     def _record_price_action(self):
         """Record LTP + OI for ATM±3 strikes every 10s for Price Action analysis."""
