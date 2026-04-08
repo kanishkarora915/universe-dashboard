@@ -356,6 +356,24 @@ async def trades_stats():
         return {"total": 0, "open": 0, "wins": 0, "losses": 0, "winRate": 0, "totalPnl": 0}
     return engine.trade_manager.get_stats()
 
+@app.get("/api/trades/date/{date}")
+async def trades_by_date(date: str):
+    if not engine or not hasattr(engine, 'trade_manager') or not engine.trade_manager:
+        return []
+    return engine.trade_manager.get_trades_by_date(date)
+
+@app.get("/api/trades/monthly/{year}/{month}")
+async def trades_monthly(year: int, month: int):
+    if not engine or not hasattr(engine, 'trade_manager') or not engine.trade_manager:
+        return {"month": f"{year}-{month:02d}", "trades": [], "stats": {"total": 0}}
+    return engine.trade_manager.get_monthly_report(year, month)
+
+@app.get("/api/trades/dates")
+async def trades_dates():
+    if not engine or not hasattr(engine, 'trade_manager') or not engine.trade_manager:
+        return []
+    return engine.trade_manager.get_all_dates()
+
 @app.get("/api/trades/stop-hunts")
 async def trades_stop_hunts():
     if not engine or not hasattr(engine, 'trade_manager') or not engine.trade_manager:

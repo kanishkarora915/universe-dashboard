@@ -294,6 +294,81 @@ class TradeManager:
         conn.close()
         return [dict(r) for r in rows]
 
+    def get_trades_by_date(self, date_str):
+        """Get all trades for a specific date (YYYY-MM-DD)."""
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE entry_time LIKE ? ORDER BY entry_time DESC",
+            (f"{date_str}%",)
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def get_monthly_report(self, year, month):
+        """Get monthly stats + all trades for a given month."""
+        prefix = f"{year}-{str(month).zfill(2)}"
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE entry_time LIKE ? ORDER BY entry_time DESC",
+            (f"{prefix}%",)
+        ).fetchall()
+        conn.close()
+
+        trades = [dict(r) for r in rows]
+        if not trades:
+            return {"month": prefix, "trades": [], "stats": {"total": 0}}
+
+        closed = [t for t in trades if t["status"] != "OPEN"]
+        wins = [t for t in trades if t["status"] in ("T1_HIT", "T2_HIT")]
+        losses = [t for t in trades if t["status"] == "SL_HIT"]
+        hunts = [t for t in trades if t["status"] == "STOP_HUNTED"]
+        total_pnl = sum(t["pnl_rupees"] for t in closed)
+        win_pnls = [t["pnl_rupees"] for t in wins]
+        loss_pnls = [t["pnl_rupees"] for t in losses]
+
+        # Daily breakdown
+        daily = {}
+        for t in trades:
+            day = t["entry_time"][:10]
+            if day not in daily:
+                daily[day] = {"trades": 0, "wins": 0, "losses": 0, "pnl": 0}
+            daily[day]["trades"] += 1
+            if t["status"] in ("T1_HIT", "T2_HIT"):
+                daily[day]["wins"] += 1
+            elif t["status"] == "SL_HIT":
+                daily[day]["losses"] += 1
+            if t["status"] != "OPEN":
+                daily[day]["pnl"] += t["pnl_rupees"]
+
+        return {
+            "month": prefix,
+            "trades": trades,
+            "daily": daily,
+            "stats": {
+                "total": len(trades),
+                "wins": len(wins),
+                "losses": len(losses),
+                "stopHunts": len(hunts),
+                "winRate": round(len(wins) / len(closed) * 100) if closed else 0,
+                "totalPnl": round(total_pnl),
+                "avgWin": round(sum(win_pnls) / len(win_pnls)) if win_pnls else 0,
+                "avgLoss": round(sum(loss_pnls) / len(loss_pnls)) if loss_pnls else 0,
+                "bestDay": max(daily.values(), key=lambda x: x["pnl"])["pnl"] if daily else 0,
+                "worstDay": min(daily.values(), key=lambda x: x["pnl"])["pnl"] if daily else 0,
+            },
+        }
+
+    def get_all_dates(self):
+        """Get list of all dates that have trades."""
+        conn = _conn()
+        rows = conn.execute(
+            "SELECT DISTINCT substr(entry_time, 1, 10) as d FROM trades ORDER BY d DESC"
+        ).fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+
     def get_stats(self, days=30):
         cutoff = (ist_now() - timedelta(days=days)).isoformat()
         conn = _conn()

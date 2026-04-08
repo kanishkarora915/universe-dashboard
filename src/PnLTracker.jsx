@@ -17,23 +17,52 @@ export default function PnLTracker() {
   const [stats, setStats] = useState(null);
   const [stopHunts, setStopHunts] = useState([]);
   const [tab, setTab] = useState("open");
+  const [dates, setDates] = useState([]);
+  const [selectedDate, setSelectedDate] = useState("");
+  const [dateTrades, setDateTrades] = useState([]);
+  const [monthlyReport, setMonthlyReport] = useState(null);
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  });
 
   const refresh = useCallback(async () => {
     try {
-      const [o, c, s, h] = await Promise.all([
+      const [o, c, s, h, d] = await Promise.all([
         fetch("/api/trades/open").then(r => r.json()).catch(() => []),
         fetch("/api/trades/closed").then(r => r.json()).catch(() => []),
         fetch("/api/trades/stats").then(r => r.json()).catch(() => null),
         fetch("/api/trades/stop-hunts").then(r => r.json()).catch(() => []),
+        fetch("/api/trades/dates").then(r => r.json()).catch(() => []),
       ]);
       if (Array.isArray(o)) setOpenTrades(o);
       if (Array.isArray(c)) setClosedTrades(c);
       if (s) setStats(s);
       if (Array.isArray(h)) setStopHunts(h);
+      if (Array.isArray(d)) setDates(d);
     } catch {}
   }, []);
 
   useEffect(() => { refresh(); const iv = setInterval(refresh, 5000); return () => clearInterval(iv); }, [refresh]);
+
+  // Fetch trades for selected date
+  useEffect(() => {
+    if (selectedDate) {
+      fetch(`/api/trades/date/${selectedDate}`).then(r => r.json()).then(d => {
+        if (Array.isArray(d)) setDateTrades(d);
+      }).catch(() => {});
+    }
+  }, [selectedDate]);
+
+  // Fetch monthly report
+  useEffect(() => {
+    if (selectedMonth && tab === "monthly") {
+      const [y, m] = selectedMonth.split("-");
+      fetch(`/api/trades/monthly/${y}/${m}`).then(r => r.json()).then(d => {
+        if (d) setMonthlyReport(d);
+      }).catch(() => {});
+    }
+  }, [selectedMonth, tab]);
 
   const fmt = (n) => `${"\u20B9"}${Math.round(n || 0).toLocaleString("en-IN")}`;
 
@@ -79,6 +108,8 @@ export default function PnLTracker() {
           { id: "open", label: `Open (${openTrades.length})`, c: ACCENT },
           { id: "closed", label: `Closed (${closedTrades.length})`, c: GREEN },
           { id: "hunts", label: `Stop Hunts (${stopHunts.length})`, c: PURPLE },
+          { id: "history", label: "Date History", c: ORANGE },
+          { id: "monthly", label: "Monthly Report", c: YELLOW },
         ].map(t => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
             background: tab === t.id ? t.c + "22" : "#111118", color: tab === t.id ? t.c : "#555",
@@ -115,6 +146,98 @@ export default function PnLTracker() {
           </div>
           {stopHunts.length === 0 && <div style={{ textAlign: "center", padding: 30, color: "#555", fontSize: 12 }}>No stop hunts detected yet.</div>}
           {stopHunts.map((t, i) => <TradeCard key={i} t={t} />)}
+        </>
+      )}
+
+      {/* DATE HISTORY */}
+      {tab === "history" && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <span style={{ color: ORANGE, fontWeight: 700, fontSize: 12 }}>Select Date:</span>
+            <select value={selectedDate} onChange={e => setSelectedDate(e.target.value)} style={{
+              background: "#0D0D15", color: ORANGE, border: `1px solid ${ORANGE}44`,
+              borderRadius: 8, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", outline: "none",
+            }}>
+              <option value="">-- Pick a date --</option>
+              {dates.map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
+            {selectedDate && <span style={{ color: "#555", fontSize: 11 }}>{dateTrades.length} trades on {selectedDate}</span>}
+          </div>
+          {!selectedDate && <div style={{ textAlign: "center", padding: 30, color: "#555", fontSize: 12 }}>Select a date to view that day's trades.</div>}
+          {selectedDate && dateTrades.length === 0 && <div style={{ textAlign: "center", padding: 30, color: "#555", fontSize: 12 }}>No trades on {selectedDate}.</div>}
+          {dateTrades.map((t, i) => <TradeCard key={i} t={t} />)}
+        </>
+      )}
+
+      {/* MONTHLY REPORT */}
+      {tab === "monthly" && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <span style={{ color: YELLOW, fontWeight: 700, fontSize: 12 }}>Month:</span>
+            <input type="month" value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)} style={{
+              background: "#0D0D15", color: YELLOW, border: `1px solid ${YELLOW}44`,
+              borderRadius: 8, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", outline: "none",
+            }} />
+          </div>
+          {monthlyReport && monthlyReport.stats?.total > 0 ? (
+            <>
+              {/* Monthly Stats */}
+              <div style={{ background: "#0D0D15", borderRadius: 10, padding: "12px", border: `1px solid ${BORDER}` }}>
+                <div style={{ color: YELLOW, fontWeight: 900, fontSize: 13, marginBottom: 10 }}>MONTHLY REPORT — {monthlyReport.month}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 8, marginBottom: 8 }}>
+                  {[
+                    { l: "TOTAL", v: monthlyReport.stats.total, c: "#ccc" },
+                    { l: "WINS", v: monthlyReport.stats.wins, c: GREEN },
+                    { l: "LOSSES", v: monthlyReport.stats.losses, c: RED },
+                    { l: "WIN RATE", v: `${monthlyReport.stats.winRate}%`, c: monthlyReport.stats.winRate >= 60 ? GREEN : RED },
+                    { l: "TOTAL P&L", v: fmt(monthlyReport.stats.totalPnl), c: monthlyReport.stats.totalPnl >= 0 ? GREEN : RED },
+                  ].map((s, i) => (
+                    <div key={i} style={{ textAlign: "center", background: "#111118", borderRadius: 8, padding: "6px" }}>
+                      <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>{s.l}</div>
+                      <div style={{ color: s.c, fontSize: 16, fontWeight: 900 }}>{s.v}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Daily Breakdown */}
+                {monthlyReport.daily && Object.keys(monthlyReport.daily).length > 0 && (
+                  <div>
+                    <div style={{ color: "#888", fontSize: 10, fontWeight: 700, marginBottom: 6 }}>DAILY BREAKDOWN</div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                        <thead>
+                          <tr style={{ borderBottom: `1px solid ${BORDER}` }}>
+                            <th style={{ padding: "4px 6px", color: "#555", textAlign: "left" }}>Date</th>
+                            <th style={{ padding: "4px 6px", color: "#555", textAlign: "center" }}>Trades</th>
+                            <th style={{ padding: "4px 6px", color: GREEN, textAlign: "center" }}>Wins</th>
+                            <th style={{ padding: "4px 6px", color: RED, textAlign: "center" }}>Losses</th>
+                            <th style={{ padding: "4px 6px", color: "#555", textAlign: "right" }}>P&L</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Object.entries(monthlyReport.daily).sort().map(([day, d]) => (
+                            <tr key={day} style={{ borderBottom: `1px solid ${BORDER}33`, cursor: "pointer" }} onClick={() => { setSelectedDate(day); setTab("history"); }}>
+                              <td style={{ padding: "4px 6px", color: ACCENT, fontWeight: 700 }}>{day}</td>
+                              <td style={{ padding: "4px 6px", textAlign: "center", color: "#ccc" }}>{d.trades}</td>
+                              <td style={{ padding: "4px 6px", textAlign: "center", color: GREEN }}>{d.wins}</td>
+                              <td style={{ padding: "4px 6px", textAlign: "center", color: RED }}>{d.losses}</td>
+                              <td style={{ padding: "4px 6px", textAlign: "right", color: d.pnl >= 0 ? GREEN : RED, fontWeight: 700 }}>{fmt(d.pnl)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Monthly Trades */}
+              <div style={{ color: "#666", fontSize: 11, fontWeight: 700, marginTop: 8 }}>ALL TRADES ({monthlyReport.trades.length})</div>
+              {monthlyReport.trades.map((t, i) => <TradeCard key={i} t={t} />)}
+            </>
+          ) : (
+            <div style={{ textAlign: "center", padding: 30, color: "#555", fontSize: 12 }}>No trades in {selectedMonth}.</div>
+          )}
         </>
       )}
 
