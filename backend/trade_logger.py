@@ -263,9 +263,9 @@ class TradeManager:
         if existing > 0:
             return False
 
-        # Don't trade after 3:00 PM
+        # Don't trade after 3:20 PM
         now = ist_now()
-        if now.hour >= 15:
+        if now.hour > 15 or (now.hour == 15 and now.minute > 20):
             return False
 
         # Don't trade before 9:20 AM
