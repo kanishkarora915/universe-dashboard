@@ -241,8 +241,22 @@ class MarketEngine:
         self._fetch_initial_data()      # <-- NEW: Full REST fetch before ticks
         self._connect_ticker()
         self._start_trap_scanner()
+        self._start_trade_manager()
         self.running = True
         print("[ENGINE] Market engine started with REAL data.")
+
+    def _start_trade_manager(self):
+        """Initialize the auto trade logger."""
+        try:
+            from trade_logger import TradeManager, init_trades_db
+            import os
+            db_path = os.path.join(os.path.dirname(__file__), "trades.db")
+            init_trades_db(db_path)
+            self.trade_manager = TradeManager()
+            print("[ENGINE] Trade manager started")
+        except Exception as e:
+            print(f"[ENGINE] Trade manager init failed: {e}")
+            self.trade_manager = None
 
     def _start_trap_scanner(self):
         """Initialize and start the Trap Fingerprint Engine."""
@@ -2528,6 +2542,35 @@ class MarketEngine:
         if now - self._pa_last_record >= 10:
             self._pa_last_record = now
             self._record_price_action()
+
+        # Auto-trade: check verdict + monitor open trades every 15 seconds
+        if hasattr(self, 'trade_manager') and self.trade_manager and now - self.trade_manager._last_sl_check >= 15:
+            self.trade_manager._last_sl_check = now
+            try:
+                # 1. Monitor open trades for SL/target hits
+                self.trade_manager.check_and_update(self.chains, self.prices, self.spot_tokens, self.token_to_info)
+                # 2. Check for stop hunts on recently SL'd trades
+                self.trade_manager.check_stop_hunts(self.chains)
+                # 3. Check if we should enter new trades (every 60s)
+                if now - self.trade_manager._last_verdict_check >= 60:
+                    self.trade_manager._last_verdict_check = now
+                    verdict = self.get_trap_verdict()
+                    for idx in ["NIFTY", "BANKNIFTY"]:
+                        key = idx.lower()
+                        v = verdict.get(key, {})
+                        if self.trade_manager.should_enter_trade(idx, v):
+                            trade = v.get("trade", {})
+                            self.trade_manager.log_trade(
+                                idx=idx,
+                                action=v.get("action", ""),
+                                strike=trade.get("strike", 0),
+                                entry_price=trade.get("entry", 0),
+                                probability=v.get("winProbability", 0),
+                                source="verdict",
+                                expiry=str(self.nearest_expiry.get(idx, "")),
+                            )
+            except Exception as e:
+                print(f"[TRADE] Auto-trade error: {e}")
 
     def _detect_market_open(self):
         """Detect how market opened: Gap Up / Gap Down / Flat. Called once after 9:16 AM."""

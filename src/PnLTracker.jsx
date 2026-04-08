@@ -1,285 +1,185 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
 const RED = "#FF453A";
 const YELLOW = "#FFD60A";
 const PURPLE = "#BF5AF2";
-const CARD = "#111118";
+const ORANGE = "#FF9F0A";
 const BORDER = "#1E1E2E";
 
-const NIFTY_LOT = 75;
-const BANKNIFTY_LOT = 30;
+const statusColor = { OPEN: ACCENT, T1_HIT: GREEN, T2_HIT: GREEN, SL_HIT: RED, STOP_HUNTED: PURPLE };
+const statusLabel = { OPEN: "OPEN", T1_HIT: "T1 HIT ✓", T2_HIT: "T2 HIT ✓✓", SL_HIT: "SL HIT ✗", STOP_HUNTED: "STOP HUNTED" };
 
-function getLotSize(instrument) {
-  return instrument === "BANKNIFTY" ? BANKNIFTY_LOT : NIFTY_LOT;
-}
+export default function PnLTracker() {
+  const [openTrades, setOpenTrades] = useState([]);
+  const [closedTrades, setClosedTrades] = useState([]);
+  const [stats, setStats] = useState(null);
+  const [stopHunts, setStopHunts] = useState([]);
+  const [tab, setTab] = useState("open");
 
-function loadTrades() {
-  try {
-    return JSON.parse(localStorage.getItem("universe_pnl_trades") || "[]");
-  } catch { return []; }
-}
+  const refresh = useCallback(async () => {
+    try {
+      const [o, c, s, h] = await Promise.all([
+        fetch("/api/trades/open").then(r => r.json()).catch(() => []),
+        fetch("/api/trades/closed").then(r => r.json()).catch(() => []),
+        fetch("/api/trades/stats").then(r => r.json()).catch(() => null),
+        fetch("/api/trades/stop-hunts").then(r => r.json()).catch(() => []),
+      ]);
+      if (Array.isArray(o)) setOpenTrades(o);
+      if (Array.isArray(c)) setClosedTrades(c);
+      if (s) setStats(s);
+      if (Array.isArray(h)) setStopHunts(h);
+    } catch {}
+  }, []);
 
-function saveTrades(trades) {
-  localStorage.setItem("universe_pnl_trades", JSON.stringify(trades));
-}
+  useEffect(() => { refresh(); const iv = setInterval(refresh, 5000); return () => clearInterval(iv); }, [refresh]);
 
-export default function PnLTracker({ signals }) {
-  const [trades, setTrades] = useState(loadTrades);
-  const [tab, setTab] = useState("open"); // open | closed | analytics
-
-  useEffect(() => { saveTrades(trades); }, [trades]);
-
-  // Auto-add new signals as open trades
-  useEffect(() => {
-    if (!signals || signals.length === 0) return;
-    const existingIds = new Set(trades.map(t => t.signalId));
-    const newTrades = [];
-    for (const s of signals) {
-      const sid = `${s.instrument}-${s.strike}-${s.time}`;
-      if (!existingIds.has(sid) && s.status === "ACTIVE") {
-        const entryParts = s.entry.split("\u2013");
-        const entryAvg = entryParts.length === 2
-          ? (parseFloat(entryParts[0]) + parseFloat(entryParts[1])) / 2
-          : parseFloat(s.entry) || 0;
-        newTrades.push({
-          signalId: sid,
-          instrument: s.instrument,
-          type: s.type,
-          strike: s.strike,
-          expiry: s.expiry,
-          entryPrice: Math.round(entryAvg),
-          exitPrice: null,
-          t1: parseFloat(s.t1) || 0,
-          t2: parseFloat(s.t2) || 0,
-          sl: parseFloat(s.sl) || 0,
-          score: s.score,
-          entryTime: s.time,
-          exitTime: null,
-          status: "OPEN",
-          lots: 1,
-        });
-      }
-    }
-    if (newTrades.length > 0) {
-      setTrades(prev => [...newTrades, ...prev]);
-    }
-  }, [signals]);
-
-  const openTrades = trades.filter(t => t.status === "OPEN");
-  const closedTrades = trades.filter(t => t.status !== "OPEN");
-
-  const markExit = (idx, exitPrice) => {
-    setTrades(prev => prev.map((t, i) => i === idx ? {
-      ...t, exitPrice: parseFloat(exitPrice), exitTime: new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: true }),
-      status: parseFloat(exitPrice) >= t.entryPrice ? "WIN" : "LOSS"
-    } : t));
-  };
-
-  const deleteTrade = (idx) => {
-    setTrades(prev => prev.filter((_, i) => i !== idx));
-  };
-
-  const clearAll = () => {
-    if (confirm("Clear all trade history?")) {
-      setTrades([]);
-    }
-  };
-
-  // Analytics
-  const totalTrades = closedTrades.length;
-  const wins = closedTrades.filter(t => t.status === "WIN").length;
-  const losses = closedTrades.filter(t => t.status === "LOSS").length;
-  const winRate = totalTrades > 0 ? ((wins / totalTrades) * 100).toFixed(1) : 0;
-
-  const pnlList = closedTrades.map(t => {
-    const lot = getLotSize(t.instrument);
-    return (t.exitPrice - t.entryPrice) * lot * t.lots;
-  });
-  const totalPnL = pnlList.reduce((a, b) => a + b, 0);
-  const avgProfit = pnlList.filter(p => p > 0).length > 0
-    ? pnlList.filter(p => p > 0).reduce((a, b) => a + b, 0) / pnlList.filter(p => p > 0).length : 0;
-  const avgLoss = pnlList.filter(p => p < 0).length > 0
-    ? pnlList.filter(p => p < 0).reduce((a, b) => a + b, 0) / pnlList.filter(p => p < 0).length : 0;
-  const bestTrade = pnlList.length > 0 ? Math.max(...pnlList) : 0;
-  const worstTrade = pnlList.length > 0 ? Math.min(...pnlList) : 0;
+  const fmt = (n) => `${"\u20B9"}${Math.round(n || 0).toLocaleString("en-IN")}`;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* Sub-tabs */}
-      <div style={{ display: "flex", gap: 0, background: CARD, borderRadius: 10, overflow: "hidden", border: `1px solid ${BORDER}` }}>
-        {[["open", `Open (${openTrades.length})`], ["closed", `Closed (${closedTrades.length})`], ["analytics", "Analytics"]].map(([id, label]) => (
-          <button key={id} onClick={() => setTab(id)} style={{
-            flex: 1, padding: "10px", background: tab === id ? ACCENT + "22" : "transparent",
-            color: tab === id ? ACCENT : "#555", border: "none", cursor: "pointer",
-            fontWeight: tab === id ? 700 : 400, fontSize: 12, borderBottom: tab === id ? `2px solid ${ACCENT}` : "none",
-          }}>{label}</button>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* STATS */}
+      {stats && (
+        <div style={{ background: "#0D0D15", borderRadius: 12, padding: "14px", border: `1px solid ${BORDER}` }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 8, marginBottom: 8 }}>
+            {[
+              { l: "TOTAL", v: stats.total, c: "#ccc" },
+              { l: "OPEN", v: stats.open, c: ACCENT },
+              { l: "WINS", v: stats.wins, c: GREEN },
+              { l: "LOSSES", v: stats.losses, c: RED },
+              { l: "STOP HUNTS", v: stats.stopHunts, c: PURPLE },
+              { l: "WIN RATE", v: `${stats.winRate}%`, c: stats.winRate >= 60 ? GREEN : stats.winRate >= 40 ? YELLOW : RED },
+            ].map((s, i) => (
+              <div key={i} style={{ textAlign: "center", background: "#111118", borderRadius: 8, padding: "6px" }}>
+                <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>{s.l}</div>
+                <div style={{ color: s.c, fontSize: 16, fontWeight: 900 }}>{s.v}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+            {[
+              { l: "TOTAL P&L", v: fmt(stats.totalPnl), c: stats.totalPnl >= 0 ? GREEN : RED },
+              { l: "AVG WIN", v: fmt(stats.avgWin), c: GREEN },
+              { l: "AVG LOSS", v: fmt(stats.avgLoss), c: RED },
+              { l: "BEST TRADE", v: fmt(stats.bestTrade), c: GREEN },
+            ].map((s, i) => (
+              <div key={i} style={{ textAlign: "center", background: "#111118", borderRadius: 8, padding: "6px" }}>
+                <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>{s.l}</div>
+                <div style={{ color: s.c, fontSize: 16, fontWeight: 900 }}>{s.v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* TABS */}
+      <div style={{ display: "flex", gap: 6 }}>
+        {[
+          { id: "open", label: `Open (${openTrades.length})`, c: ACCENT },
+          { id: "closed", label: `Closed (${closedTrades.length})`, c: GREEN },
+          { id: "hunts", label: `Stop Hunts (${stopHunts.length})`, c: PURPLE },
+        ].map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)} style={{
+            background: tab === t.id ? t.c + "22" : "#111118", color: tab === t.id ? t.c : "#555",
+            border: `1px solid ${tab === t.id ? t.c : BORDER}`, borderRadius: 8, padding: "6px 16px", fontSize: 11, fontWeight: 700, cursor: "pointer",
+          }}>{t.label}</button>
         ))}
-        <button onClick={clearAll} style={{
-          padding: "10px 14px", background: RED + "11", color: RED, border: "none",
-          cursor: "pointer", fontSize: 10, fontWeight: 700,
-        }}>Clear All</button>
       </div>
 
-      {/* Open Trades */}
+      {/* CONTENT */}
       {tab === "open" && (
-        openTrades.length === 0 ? (
-          <div style={{ textAlign: "center", padding: 40, color: "#555" }}>
-            <div style={{ fontSize: 14 }}>No open trades. Signals with score 5+ auto-add here.</div>
-          </div>
-        ) : openTrades.map((t, idx) => {
-          const realIdx = trades.indexOf(t);
-          const lot = getLotSize(t.instrument);
-          return (
-            <TradeCard key={t.signalId} t={t} lot={lot} onExit={(price) => markExit(realIdx, price)} onDelete={() => deleteTrade(realIdx)} />
-          );
-        })
-      )}
-
-      {/* Closed Trades */}
-      {tab === "closed" && (
-        closedTrades.length === 0 ? (
-          <div style={{ textAlign: "center", padding: 40, color: "#555" }}>
-            <div style={{ fontSize: 14 }}>No closed trades yet. Mark exit on open trades to see PnL.</div>
-          </div>
-        ) : closedTrades.map((t, idx) => {
-          const lot = getLotSize(t.instrument);
-          const pnl = (t.exitPrice - t.entryPrice) * lot * t.lots;
-          return (
-            <div key={idx} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "14px 18px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <div>
-                  <span style={{ color: ACCENT, fontWeight: 700, fontSize: 14 }}>{t.instrument}</span>
-                  <span style={{ color: t.type.includes("PUT") ? RED : GREEN, fontSize: 11, marginLeft: 8, fontWeight: 700 }}>{t.type}</span>
-                  <span style={{ color: "#555", fontSize: 11, marginLeft: 8 }}>{t.strike}</span>
-                </div>
-                <span style={{ color: t.status === "WIN" ? GREEN : RED, fontWeight: 900, fontSize: 16 }}>
-                  {pnl >= 0 ? "+" : ""}{Math.round(pnl).toLocaleString("en-IN")}
-                </span>
-              </div>
-              <div style={{ display: "flex", gap: 20, fontSize: 11, color: "#666" }}>
-                <span>Entry: {t.entryPrice} | Exit: {t.exitPrice}</span>
-                <span>Lots: {t.lots} x {lot}</span>
-                <span>{t.entryTime} → {t.exitTime}</span>
-                <span style={{ color: t.status === "WIN" ? GREEN : RED, fontWeight: 700 }}>{t.status}</span>
-              </div>
-            </div>
-          );
-        })
-      )}
-
-      {/* Analytics */}
-      {tab === "analytics" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10 }}>
-            <AnalCard label="Total Trades" value={totalTrades} color="#ccc" />
-            <AnalCard label="Win Rate" value={`${winRate}%`} color={parseFloat(winRate) >= 50 ? GREEN : RED} />
-            <AnalCard label="Total PnL" value={`${totalPnL >= 0 ? "+" : ""}${Math.round(totalPnL).toLocaleString("en-IN")}`} color={totalPnL >= 0 ? GREEN : RED} />
-            <AnalCard label="Wins / Losses" value={`${wins} / ${losses}`} color={YELLOW} />
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10 }}>
-            <AnalCard label="Avg Profit" value={`+${Math.round(avgProfit).toLocaleString("en-IN")}`} color={GREEN} />
-            <AnalCard label="Avg Loss" value={Math.round(avgLoss).toLocaleString("en-IN")} color={RED} />
-            <AnalCard label="Best Trade" value={`+${Math.round(bestTrade).toLocaleString("en-IN")}`} color={GREEN} />
-            <AnalCard label="Worst Trade" value={Math.round(worstTrade).toLocaleString("en-IN")} color={RED} />
-          </div>
-
-          {/* PnL Bar Chart */}
-          {pnlList.length > 0 && (
-            <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "16px 18px" }}>
-              <div style={{ color: "#555", fontSize: 10, fontWeight: 700, letterSpacing: 1.5, marginBottom: 12 }}>TRADE-BY-TRADE PNL</div>
-              <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 120 }}>
-                {pnlList.map((pnl, i) => {
-                  const maxAbs = Math.max(...pnlList.map(Math.abs), 1);
-                  const h = Math.max(Math.abs(pnl) / maxAbs * 100, 4);
-                  return (
-                    <div key={i} style={{
-                      flex: 1, maxWidth: 40,
-                      height: h, background: pnl >= 0 ? GREEN : RED,
-                      borderRadius: "4px 4px 0 0", opacity: 0.8,
-                      alignSelf: "flex-end",
-                    }} title={`Trade ${i + 1}: ${pnl >= 0 ? "+" : ""}${Math.round(pnl)}`} />
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {totalTrades === 0 && (
+        <>
+          {openTrades.length === 0 && (
             <div style={{ textAlign: "center", padding: 40, color: "#555" }}>
-              <div style={{ fontSize: 14 }}>Close some trades to see analytics</div>
+              <div style={{ fontSize: 13 }}>No open trades. Auto-enters when verdict shows {">"}60% probability.</div>
+              <div style={{ fontSize: 11, color: "#444", marginTop: 4 }}>NIFTY: 20L × 65 = 1,300 qty | BANKNIFTY: 20L × 30 = 600 qty | SL: 15% max</div>
             </div>
           )}
+          {openTrades.map((t, i) => <TradeCard key={i} t={t} />)}
+        </>
+      )}
+
+      {tab === "closed" && (
+        <>
+          {closedTrades.length === 0 && <div style={{ textAlign: "center", padding: 30, color: "#555", fontSize: 12 }}>No closed trades yet.</div>}
+          {closedTrades.map((t, i) => <TradeCard key={i} t={t} />)}
+        </>
+      )}
+
+      {tab === "hunts" && (
+        <>
+          <div style={{ background: PURPLE + "0A", borderRadius: 10, padding: "10px 14px", border: `1px solid ${PURPLE}33` }}>
+            <div style={{ color: PURPLE, fontWeight: 700, fontSize: 12 }}>STOP HUNT DETECTION</div>
+            <div style={{ color: "#888", fontSize: 11, marginTop: 4 }}>Trades where SL hit but price reversed {">"}50% — institutions flushed retail then moved in original direction.</div>
+          </div>
+          {stopHunts.length === 0 && <div style={{ textAlign: "center", padding: 30, color: "#555", fontSize: 12 }}>No stop hunts detected yet.</div>}
+          {stopHunts.map((t, i) => <TradeCard key={i} t={t} />)}
+        </>
+      )}
+
+      {/* Config */}
+      <div style={{ background: "#0A0A12", borderRadius: 8, padding: "8px 12px", border: `1px solid ${BORDER}33` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#555" }}>
+          <span>NIFTY: 20L × 65 = 1,300</span>
+          <span>BANKNIFTY: 20L × 30 = 600</span>
+          <span>SL: 15%</span>
+          <span>T1: +20% | T2: +40%</span>
+          <span>Auto @ {">"}60%</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TradeCard({ t }) {
+  const sc = statusColor[t.status] || "#555";
+  const pc = (t.pnl_rupees || 0) > 0 ? GREEN : (t.pnl_rupees || 0) < 0 ? RED : "#888";
+  const ac = t.action?.includes("CE") ? GREEN : RED;
+  const et = t.entry_time ? new Date(t.entry_time).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: true, day: "2-digit", month: "short" }) : "";
+  const xt = t.exit_time ? new Date(t.exit_time).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: true }) : "";
+
+  return (
+    <div style={{ background: "#111118", borderRadius: 10, padding: "12px 14px", border: `1px solid ${sc}33` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ color: "#fff", fontWeight: 900, fontSize: 14 }}>{t.idx}</span>
+          <span style={{ background: ac + "22", color: ac, padding: "3px 10px", borderRadius: 4, fontSize: 12, fontWeight: 900 }}>{t.action}</span>
+          <span style={{ color: "#ccc", fontWeight: 700 }}>{t.strike}</span>
+          <span style={{ background: sc + "22", color: sc, padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{statusLabel[t.status] || t.status}</span>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ color: pc, fontWeight: 900, fontSize: 18 }}>{"\u20B9"}{Math.round(t.pnl_rupees || 0).toLocaleString("en-IN")}</div>
+          <div style={{ color: pc, fontSize: 10 }}>{(t.pnl_pts || 0) > 0 ? "+" : ""}{(t.pnl_pts || 0).toFixed(1)} pts</div>
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 6, marginBottom: 8 }}>
+        {[
+          { l: "ENTRY", v: `\u20B9${t.entry_price}`, c: "#ccc" },
+          { l: t.status === "OPEN" ? "CURRENT" : "EXIT", v: `\u20B9${(t.status === "OPEN" ? t.current_ltp : t.exit_price || 0).toFixed?.(1) || 0}`, c: t.status === "OPEN" ? ACCENT : sc },
+          { l: "SL (15%)", v: `\u20B9${t.sl_price}`, c: RED },
+          { l: "T1 (+20%)", v: `\u20B9${t.t1_price}`, c: GREEN },
+          { l: "T2 (+40%)", v: `\u20B9${t.t2_price}`, c: GREEN },
+        ].map((s, i) => (
+          <div key={i} style={{ textAlign: "center" }}>
+            <div style={{ color: "#555", fontSize: 8, fontWeight: 700 }}>{s.l}</div>
+            <div style={{ color: s.c, fontSize: 12, fontWeight: 700 }}>{s.v}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#666" }}>
+        <span>{t.lots}L × {t.lot_size} = {t.qty} qty</span>
+        <span>{et}{xt ? ` → ${xt}` : ""}</span>
+        <span style={{ color: t.probability >= 70 ? GREEN : YELLOW }}>Prob: {t.probability}%</span>
+      </div>
+      {t.exit_reason && (
+        <div style={{ marginTop: 8, padding: "6px 10px", background: sc + "11", borderRadius: 6, color: sc, fontSize: 11 }}>{t.exit_reason}</div>
+      )}
+      {t.status === "STOP_HUNTED" && t.reversal_price > 0 && (
+        <div style={{ marginTop: 6, padding: "6px 10px", background: PURPLE + "11", borderRadius: 6, color: PURPLE, fontSize: 11 }}>
+          Reversal: price recovered to {"\u20B9"}{t.reversal_price.toFixed?.(1) || t.reversal_price} after institutional SL flush
         </div>
       )}
-    </div>
-  );
-}
-
-function TradeCard({ t, lot, onExit, onDelete }) {
-  const [exitInput, setExitInput] = useState("");
-  const [showInput, setShowInput] = useState(false);
-
-  return (
-    <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "14px 18px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-        <div>
-          <span style={{ color: ACCENT, fontWeight: 700, fontSize: 14 }}>{t.instrument}</span>
-          <span style={{ color: t.type.includes("PUT") ? RED : GREEN, fontSize: 11, marginLeft: 8, fontWeight: 700,
-            padding: "2px 8px", background: (t.type.includes("PUT") ? RED : GREEN) + "22", borderRadius: 10 }}>{t.type}</span>
-          <span style={{ color: PURPLE, fontSize: 11, marginLeft: 8, fontWeight: 700 }}>{t.score}/9</span>
-          <div style={{ color: "#555", fontSize: 11, marginTop: 4 }}>{t.strike} | {t.expiry} | {t.entryTime}</div>
-        </div>
-        <button onClick={onDelete} style={{
-          background: "transparent", color: "#333", border: "none", cursor: "pointer", fontSize: 16,
-        }}>x</button>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 10 }}>
-        <MiniStat label="Entry" value={`${t.entryPrice}`} color="#ccc" />
-        <MiniStat label="T1" value={`${t.t1}`} color={GREEN} />
-        <MiniStat label="T2" value={`${t.t2}`} color={GREEN} />
-        <MiniStat label="SL" value={`${t.sl}`} color={RED} />
-      </div>
-
-      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-        <span style={{ color: "#555", fontSize: 11 }}>Lot: {t.lots} x {lot} = {t.lots * lot} qty</span>
-        {!showInput ? (
-          <button onClick={() => setShowInput(true)} style={{
-            background: YELLOW + "22", color: YELLOW, border: `1px solid ${YELLOW}44`,
-            borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, marginLeft: "auto",
-          }}>Mark Exit</button>
-        ) : (
-          <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-            <input type="number" placeholder="Exit price" value={exitInput} onChange={e => setExitInput(e.target.value)}
-              style={{ width: 80, padding: "4px 8px", background: "#0D0D15", border: `1px solid ${BORDER}`,
-                borderRadius: 6, color: "#fff", fontSize: 12 }} />
-            <button onClick={() => { if (exitInput) onExit(exitInput); }} style={{
-              background: GREEN + "22", color: GREEN, border: `1px solid ${GREEN}44`,
-              borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700,
-            }}>Save</button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function MiniStat({ label, value, color }) {
-  return (
-    <div style={{ background: "#0D0D15", borderRadius: 6, padding: "6px 10px" }}>
-      <div style={{ color: "#555", fontSize: 9, marginBottom: 2 }}>{label}</div>
-      <div style={{ color, fontWeight: 700, fontSize: 13 }}>{value}</div>
-    </div>
-  );
-}
-
-function AnalCard({ label, value, color }) {
-  return (
-    <div style={{ background: "#0D0D15", borderRadius: 8, padding: "10px 14px", textAlign: "center" }}>
-      <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1, marginBottom: 4 }}>{label}</div>
-      <div style={{ color, fontWeight: 900, fontSize: 18 }}>{value}</div>
     </div>
   );
 }

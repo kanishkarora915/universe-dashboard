@@ -2582,7 +2582,7 @@ export default function Universe({ onLogout }) {
       case "priceact":return <PriceActionTab />;
       case "aibrain": return <AIBrainTab />;
       case "oichange":return <OIChangeTab oiData={oiSummary} />;
-      case "pnl":     return <PnLTracker signals={signals} />;
+      case "pnl":     return <PnLTracker />;
       case "prompt":  return <PromptTab />;
       default:        return null;
     }

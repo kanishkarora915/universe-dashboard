@@ -338,6 +338,31 @@ async def trap_clusters():
     return engine.trap_scanner.get_clusters()
 
 
+@app.get("/api/trades/open")
+async def trades_open():
+    if not engine or not hasattr(engine, 'trade_manager') or not engine.trade_manager:
+        return []
+    return engine.trade_manager.get_open_trades()
+
+@app.get("/api/trades/closed")
+async def trades_closed():
+    if not engine or not hasattr(engine, 'trade_manager') or not engine.trade_manager:
+        return []
+    return engine.trade_manager.get_closed_trades()
+
+@app.get("/api/trades/stats")
+async def trades_stats():
+    if not engine or not hasattr(engine, 'trade_manager') or not engine.trade_manager:
+        return {"total": 0, "open": 0, "wins": 0, "losses": 0, "winRate": 0, "totalPnl": 0}
+    return engine.trade_manager.get_stats()
+
+@app.get("/api/trades/stop-hunts")
+async def trades_stop_hunts():
+    if not engine or not hasattr(engine, 'trade_manager') or not engine.trade_manager:
+        return []
+    return engine.trade_manager.get_stop_hunts()
+
+
 @app.get("/api/ai-analysis")
 async def ai_analysis():
     """Run Claude AI analysis on ALL dashboard data."""
