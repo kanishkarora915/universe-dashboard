@@ -250,10 +250,12 @@ class MarketEngine:
         try:
             from trade_logger import TradeManager, init_trades_db
             import os
-            db_path = os.path.join(os.path.dirname(__file__), "trades.db")
+            # Use /data/ on Render (persistent disk), fallback to local
+            data_dir = "/data" if os.path.isdir("/data") else os.path.dirname(__file__)
+            db_path = os.path.join(data_dir, "trades.db")
             init_trades_db(db_path)
             self.trade_manager = TradeManager()
-            print("[ENGINE] Trade manager started")
+            print(f"[ENGINE] Trade manager started (DB: {db_path})")
         except Exception as e:
             print(f"[ENGINE] Trade manager init failed: {e}")
             self.trade_manager = None
@@ -263,7 +265,8 @@ class MarketEngine:
         try:
             from trap_engine import TrapScanner, init_db
             import os
-            db_path = os.path.join(os.path.dirname(__file__), "trap_data.db")
+            data_dir = "/data" if os.path.isdir("/data") else os.path.dirname(__file__)
+            db_path = os.path.join(data_dir, "trap_data.db")
             init_db(db_path)
             self.trap_scanner = TrapScanner(self.kite, self.nfo_instruments)
             self.trap_scanner.start_auto_scan(interval_sec=300)  # Every 5 min

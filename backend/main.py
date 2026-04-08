@@ -32,7 +32,8 @@ DIST_DIR = Path(__file__).parent.parent / "dist"
 
 # ── Data cache (persists across sessions) ────────────────────────────────
 
-CACHE_FILE = Path(__file__).parent / "data_cache.json"
+_data_dir = Path("/data") if Path("/data").is_dir() else Path(__file__).parent
+CACHE_FILE = _data_dir / "data_cache.json"
 
 def load_cache() -> dict:
     try:
