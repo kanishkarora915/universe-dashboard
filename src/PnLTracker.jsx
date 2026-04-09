@@ -123,23 +123,25 @@ export default function PnLTracker() {
 
   const [posAlerts, setPosAlerts] = useState([]);
 
+  const safeFetch = async (url, fallback) => {
+    try { const r = await fetch(url); if (!r.ok) return fallback; return await r.json(); } catch { return fallback; }
+  };
+
   const refresh = useCallback(async () => {
-    try {
-      const [o, c, s, h, d, a] = await Promise.all([
-        fetch("/api/trades/open").then(r => r.json()).catch(() => []),
-        fetch("/api/trades/closed").then(r => r.json()).catch(() => []),
-        fetch("/api/trades/stats").then(r => r.json()).catch(() => null),
-        fetch("/api/trades/stop-hunts").then(r => r.json()).catch(() => []),
-        fetch("/api/trades/dates").then(r => r.json()).catch(() => []),
-        fetch("/api/trades/alerts").then(r => r.json()).catch(() => []),
-      ]);
-      if (Array.isArray(o)) setOpenTrades(o);
-      if (Array.isArray(a)) setPosAlerts(a);
-      if (Array.isArray(c)) setClosedTrades(c);
-      if (s) setStats(s);
-      if (Array.isArray(h)) setStopHunts(h);
-      if (Array.isArray(d)) setDates(d);
-    } catch {}
+    const [o, c, s, h, d, a] = await Promise.all([
+      safeFetch("/api/trades/open", []),
+      safeFetch("/api/trades/closed", []),
+      safeFetch("/api/trades/stats", null),
+      safeFetch("/api/trades/stop-hunts", []),
+      safeFetch("/api/trades/dates", []),
+      safeFetch("/api/trades/alerts", []),
+    ]);
+    if (Array.isArray(o)) setOpenTrades(o);
+    if (Array.isArray(a)) setPosAlerts(a);
+    if (Array.isArray(c)) setClosedTrades(c);
+    if (s && s.total !== undefined) setStats(s);
+    if (Array.isArray(h)) setStopHunts(h);
+    if (Array.isArray(d)) setDates(d);
   }, []);
 
   useEffect(() => { refresh(); const iv = setInterval(refresh, 5000); return () => clearInterval(iv); }, [refresh]);

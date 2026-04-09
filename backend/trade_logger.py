@@ -616,6 +616,18 @@ class TradeManager:
         return [r[0] for r in rows]
 
     def get_stats(self, days=30):
+        try:
+            return self._get_stats_inner(days)
+        except Exception as e:
+            print(f"[TRADES] Stats error: {e}")
+            return {"total": 0, "open": 0, "wins": 0, "losses": 0, "stopHunts": 0, "breakevens": 0,
+                    "winRate": 0, "totalPnl": 0, "closedPnl": 0, "openPnl": 0, "totalProfit": 0,
+                    "totalLoss": 0, "avgWin": 0, "avgLoss": 0, "bestTrade": 0, "worstTrade": 0,
+                    "totalInvested": 0, "openInvested": 0, "openCurrentValue": 0,
+                    "currentStreak": 0, "streakType": "", "maxCapital": MAX_CAPITAL,
+                    "capitalUsedPct": 0, "availableCapital": MAX_CAPITAL, "error": str(e)}
+
+    def _get_stats_inner(self, days=30):
         cutoff = (ist_now() - timedelta(days=days)).isoformat()
         conn = _conn()
         conn.row_factory = sqlite3.Row
@@ -660,7 +672,7 @@ class TradeManager:
         # Streak
         streak = 0
         streak_type = ""
-        for t in sorted(closed, key=lambda x: x.get("exit_time", ""), reverse=True):
+        for t in sorted(closed, key=lambda x: x.get("exit_time") or "", reverse=True):
             is_win = t["status"] in ("T1_HIT", "T2_HIT", "TRAIL_EXIT")
             if streak == 0:
                 streak_type = "WIN" if is_win else "LOSS"
