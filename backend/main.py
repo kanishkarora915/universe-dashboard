@@ -7,6 +7,7 @@ Serves React frontend static build in production.
 import asyncio
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -178,18 +179,36 @@ async def logout():
 
 # ── Data Routes ──────────────────────────────────────────────────────────
 
-def _get_or_cache(key, fetcher):
-    """Get live data from engine, cache it. If engine down, return cached."""
+_cache_timestamps = {}  # {key: timestamp}
+_memory_cache = {}  # {key: data} — fast in-memory cache
+
+def _get_or_cache(key, fetcher, ttl=5):
+    """Get live data with TTL-based caching. ttl=seconds before refresh."""
+    now = time.time()
+    # Return memory cache if fresh
+    if key in _memory_cache and key in _cache_timestamps:
+        if now - _cache_timestamps[key] < ttl:
+            return _memory_cache[key]
+
     if engine and engine.running:
         try:
             data = fetcher()
+            _memory_cache[key] = data
+            _cache_timestamps[key] = now
             save_cache(key, data)
             return data
         except Exception as e:
             print(f"[CACHE] Fetch error for {key}: {e}")
-    # Engine not running — serve last cached data
+            # Return stale memory cache if available
+            if key in _memory_cache:
+                return _memory_cache[key]
+
+    # Engine not running — serve cached data
+    if key in _memory_cache:
+        return _memory_cache[key]
     cached = get_cached(key)
     if cached:
+        _memory_cache[key] = cached
         return cached
     return JSONResponse({"error": "No data available. Login to Kite."}, status_code=503)
 
@@ -223,22 +242,22 @@ async def oi_summary():
 
 @app.get("/api/seller-summary")
 async def seller_summary():
-    return _get_or_cache("seller_summary", lambda: engine.get_seller_summary())
+    return _get_or_cache("seller_summary", lambda: engine.get_seller_summary(), ttl=15)
 
 
 @app.get("/api/trade-analysis")
 async def trade_analysis():
-    return _get_or_cache("trade_analysis", lambda: engine.get_trade_analysis())
+    return _get_or_cache("trade_analysis", lambda: engine.get_trade_analysis(), ttl=15)
 
 
 @app.get("/api/hidden-shift")
 async def hidden_shift():
-    return _get_or_cache("hidden_shift", lambda: engine.get_hidden_shift())
+    return _get_or_cache("hidden_shift", lambda: engine.get_hidden_shift(), ttl=30)
 
 
 @app.get("/api/signals")
 async def signals():
-    return _get_or_cache("signals", lambda: engine.get_signals())
+    return _get_or_cache("signals", lambda: engine.get_signals(), ttl=30)
 
 
 @app.get("/api/price-action")
@@ -309,7 +328,7 @@ async def trap_alerts():
 @app.get("/api/trap/verdict")
 async def trap_verdict():
     """Cross-engine trap verdict — combines all engines."""
-    return _get_or_cache("trap_verdict", lambda: engine.get_trap_verdict())
+    return _get_or_cache("trap_verdict", lambda: engine.get_trap_verdict(), ttl=60)
 
 
 @app.get("/api/trap/history")

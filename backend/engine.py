@@ -2546,48 +2546,52 @@ class MarketEngine:
             self._pa_last_record = now
             self._record_price_action()
 
-        # Auto-trade: check verdict + monitor open trades every 15 seconds
-        if hasattr(self, 'trade_manager') and self.trade_manager and now - self.trade_manager._last_sl_check >= 15:
+        # Auto-trade: SL/target check every 5s (lightweight), verdict every 120s (heavy, background)
+        if hasattr(self, 'trade_manager') and self.trade_manager and now - self.trade_manager._last_sl_check >= 5:
             self.trade_manager._last_sl_check = now
             try:
-                # 1. Monitor open trades for SL/target hits
+                # 1. Monitor open trades for SL/target hits (FAST — just reads chain data)
                 self.trade_manager.check_and_update(self.chains, self.prices, self.spot_tokens, self.token_to_info)
-                # 2. Check for stop hunts on recently SL'd trades
-                self.trade_manager.check_stop_hunts(self.chains)
-                # 3. Check position alerts (reversal, conviction drop) every 30s
-                if now - self.trade_manager._last_verdict_check >= 30:
-                    self.trade_manager._last_verdict_check = now
-                    verdict = self.get_trap_verdict()
-                    # 3a. Feed verdict to trade manager for SL override decisions
-                    self.trade_manager.update_verdict_cache(verdict)
-                    # 3b. Alert open positions if market reversed
-                    self.trade_manager.check_position_alerts(self.chains, verdict)
-                    # 3b. Check if we should enter new trades (only every 60s)
-                    for idx in ["NIFTY", "BANKNIFTY"]:
-                        key = idx.lower()
-                        v = verdict.get(key, {})
-                        if self.trade_manager.should_enter_trade(idx, v):
-                            # Get straddle for smart SL/targets
-                            chain = self.chains.get(idx, {})
-                            cfg = INDEX_CONFIG[idx]
-                            spot_ltp = self.prices.get(self.spot_tokens.get(idx), {}).get("ltp", 0)
-                            atm = round(spot_ltp / cfg["strike_gap"]) * cfg["strike_gap"] if spot_ltp > 0 else 0
-                            atm_data = chain.get(atm, {})
-                            straddle = round(atm_data.get("ce_ltp", 0) + atm_data.get("pe_ltp", 0), 2)
 
-                            trade = v.get("trade", {})
-                            self.trade_manager.log_trade(
-                                idx=idx,
-                                action=v.get("action", ""),
-                                strike=trade.get("strike", 0),
-                                entry_price=trade.get("entry", 0),
-                                probability=v.get("winProbability", 0),
-                                source="verdict",
-                                expiry=str(self.nearest_expiry.get(idx, "")),
-                                straddle=straddle,
-                            )
+                # 2. Heavy verdict check every 120s in BACKGROUND thread (doesn't block ticks)
+                if now - self.trade_manager._last_verdict_check >= 120:
+                    self.trade_manager._last_verdict_check = now
+                    threading.Thread(target=self._background_verdict_check, daemon=True).start()
             except Exception as e:
-                print(f"[TRADE] Auto-trade error: {e}")
+                pass
+
+    def _background_verdict_check(self):
+        """Run heavy verdict + stop hunt + trade entry checks in background."""
+        try:
+            verdict = self.get_trap_verdict()
+            if not hasattr(self, 'trade_manager') or not self.trade_manager:
+                return
+            self.trade_manager.update_verdict_cache(verdict)
+            self.trade_manager.check_stop_hunts(self.chains)
+            self.trade_manager.check_position_alerts(self.chains, verdict)
+            for idx in ["NIFTY", "BANKNIFTY"]:
+                key = idx.lower()
+                v = verdict.get(key, {})
+                if self.trade_manager.should_enter_trade(idx, v):
+                    chain = self.chains.get(idx, {})
+                    cfg = INDEX_CONFIG[idx]
+                    spot_ltp = self.prices.get(self.spot_tokens.get(idx), {}).get("ltp", 0)
+                    atm = round(spot_ltp / cfg["strike_gap"]) * cfg["strike_gap"] if spot_ltp > 0 else 0
+                    atm_data = chain.get(atm, {})
+                    straddle = round(atm_data.get("ce_ltp", 0) + atm_data.get("pe_ltp", 0), 2)
+                    trade = v.get("trade", {})
+                    self.trade_manager.log_trade(
+                        idx=idx,
+                        action=v.get("action", ""),
+                        strike=trade.get("strike", 0),
+                        entry_price=trade.get("entry", 0),
+                        probability=v.get("winProbability", 0),
+                        source="verdict",
+                        expiry=str(self.nearest_expiry.get(idx, "")),
+                        straddle=straddle,
+                    )
+        except Exception as e:
+            print(f"[TRADE] Background verdict error: {e}")
 
     def _detect_market_open(self):
         """Detect how market opened: Gap Up / Gap Down / Flat. Called once after 9:16 AM."""
