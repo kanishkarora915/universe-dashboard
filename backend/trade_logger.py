@@ -252,10 +252,24 @@ class TradeManager:
             # SMART SL MANAGEMENT
             # ══════════════════════════════════════════════
 
+            # STAGE 0: CONVICTION DROP + PROFIT → Early breakeven
+            # If engines no longer support AND we're profitable → protect profit NOW
+            cached_verdict = self._cached_verdict.get(idx.lower(), {})
+            our_side = "bullPct" if "CE" in action else "bearPct"
+            current_conviction = cached_verdict.get(our_side, 50)
+
+            if not breakeven_active and profit_pct > 5 and current_conviction < 50:
+                # Conviction dropped below 50% but we have profit → move SL to entry
+                breakeven_active = 1
+                new_sl = entry
+                trail_level = "CONVICTION_BE"
+                alerts_list.append(f"EARLY BREAKEVEN: Conviction dropped to {current_conviction}% but profit +{profit_pct:.0f}%. SL moved to entry ₹{entry}. Zero loss protected.")
+                print(f"[TRADE] EARLY BREAKEVEN (conviction): {action} {idx} {strike} — conviction {current_conviction}%, profit +{profit_pct:.0f}%")
+
             # STAGE 1: BREAKEVEN — activate when 15% profit from entry
             if not breakeven_active and profit_pct >= 15:
                 breakeven_active = 1
-                new_sl = entry  # Move SL to entry = zero loss guaranteed
+                new_sl = entry
                 trail_level = "BREAKEVEN"
                 alerts_list.append(f"BREAKEVEN activated at +{profit_pct:.0f}% — SL moved to entry ₹{entry}")
                 print(f"[TRADE] BREAKEVEN: {action} {idx} {strike} — SL moved to entry ₹{entry} (was ₹{sl})")
