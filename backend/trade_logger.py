@@ -252,16 +252,16 @@ class TradeManager:
                         new_status = "BREAKEVEN_EXIT"
                         exit_reason = f"Breakeven exit at ₹{entry} — no loss. Price reached ₹{peak:.1f} (+{round((peak/entry-1)*100)}%) then reversed"
                 elif self._engines_favor_hold(t, idx, action):
-                    # ENGINES SAY HOLD — don't hit SL, widen it temporarily
-                    widened_sl = round(new_sl * 0.95)  # Widen 5% more
-                    new_sl = widened_sl
-                    alerts_list.append(f"SL OVERRIDE: Price at ₹{current_ltp:.1f} near SL ₹{new_sl:.0f} but engines favor HOLD. SL widened to ₹{widened_sl}. Will exit at entry ₹{entry} if reversal fails.")
-                    # Set a safety net: if engines override SL, worst case exit at entry-20%
-                    hard_stop = round(entry * 0.80)
+                    # ENGINES SAY HOLD — keep SL same (don't widen), just don't exit yet
+                    # SL stays at 15% — it will NOT change
+                    # But we give it one more check cycle before closing
+                    alerts_list.append(f"SL ZONE: Price ₹{current_ltp:.1f} at SL ₹{new_sl} but engines favor HOLD. Giving 1 more cycle. Max loss stays 15%.")
+                    # Hard stop = same 15% SL, absolutely no more
+                    hard_stop = round(entry * 0.85)
                     if current_ltp <= hard_stop:
                         new_status = "SL_HIT"
-                        exit_price = current_ltp
-                        exit_reason = f"Hard stop at ₹{current_ltp:.1f} (-20%). Engine override failed. Entry: ₹{entry}"
+                        exit_price = hard_stop
+                        exit_reason = f"Stoploss hit at ₹{hard_stop} (-15% max). Engines tried to hold but hard limit reached. Entry: ₹{entry}"
                 else:
                     new_status = "SL_HIT"
                     exit_price = new_sl
