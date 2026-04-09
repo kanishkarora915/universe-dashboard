@@ -86,6 +86,36 @@ class TradeManager:
     def __init__(self):
         self._last_verdict_check = 0
         self._last_sl_check = 0
+        self._cached_verdict = {}  # Cached verdict from last check
+        self._sl_override_count = {}  # {trade_id: count} — max 3 overrides per trade
+
+    def update_verdict_cache(self, verdict):
+        """Called by engine every 30s with latest verdict data."""
+        self._cached_verdict = verdict or {}
+
+    def _engines_favor_hold(self, trade, idx, action):
+        """Check if engines still support the trade direction.
+        Returns True if engines say HOLD (don't exit at SL)."""
+        v = self._cached_verdict.get(idx.lower(), {})
+        if not v:
+            return False  # No data = don't override, let SL hit
+
+        # Max 3 SL overrides per trade (safety)
+        trade_id = trade.get("id", 0)
+        override_count = self._sl_override_count.get(trade_id, 0)
+        if override_count >= 3:
+            return False  # Already overridden 3 times, let SL hit now
+
+        v_action = v.get("action", "")
+        win_pct = v.get("winProbability", 0)
+
+        # Engines must strongly agree with our trade direction
+        # AND probability must be >55% (not just barely above 50%)
+        if v_action == action and win_pct >= 55:
+            self._sl_override_count[trade_id] = override_count + 1
+            return True
+
+        return False
 
     def log_trade(self, idx, action, strike, entry_price, probability, source="verdict", expiry="",
                   straddle=0, big_wall=0):
@@ -204,13 +234,15 @@ class TradeManager:
                     trail_level = "TRAIL_60"
 
             # ══════════════════════════════════════════════
-            # EXIT CONDITIONS
+            # EXIT CONDITIONS (with engine override)
             # ══════════════════════════════════════════════
 
-            # Check SL hit (uses current SL which may have been trailed up)
-            if current_ltp <= new_sl:
+            # Check SL zone (within 3% of SL)
+            sl_zone = current_ltp <= new_sl * 1.03
+            sl_breached = current_ltp <= new_sl
+
+            if sl_breached:
                 if breakeven_active and new_sl >= entry:
-                    # Breakeven or profit exit
                     exit_price = new_sl
                     final_pnl = round((exit_price - entry) * t["qty"], 2)
                     if exit_price > entry:
@@ -219,10 +251,28 @@ class TradeManager:
                     else:
                         new_status = "BREAKEVEN_EXIT"
                         exit_reason = f"Breakeven exit at ₹{entry} — no loss. Price reached ₹{peak:.1f} (+{round((peak/entry-1)*100)}%) then reversed"
+                elif self._engines_favor_hold(t, idx, action):
+                    # ENGINES SAY HOLD — don't hit SL, widen it temporarily
+                    widened_sl = round(new_sl * 0.95)  # Widen 5% more
+                    new_sl = widened_sl
+                    alerts_list.append(f"SL OVERRIDE: Price at ₹{current_ltp:.1f} near SL ₹{new_sl:.0f} but engines favor HOLD. SL widened to ₹{widened_sl}. Will exit at entry ₹{entry} if reversal fails.")
+                    # Set a safety net: if engines override SL, worst case exit at entry-20%
+                    hard_stop = round(entry * 0.80)
+                    if current_ltp <= hard_stop:
+                        new_status = "SL_HIT"
+                        exit_price = current_ltp
+                        exit_reason = f"Hard stop at ₹{current_ltp:.1f} (-20%). Engine override failed. Entry: ₹{entry}"
                 else:
                     new_status = "SL_HIT"
                     exit_price = new_sl
                     exit_reason = f"Stoploss hit at ₹{new_sl} (entry ₹{entry}, loss {round((1-new_sl/entry)*100)}%). Original SL was ₹{t.get('original_sl', sl)}"
+
+            elif sl_zone and not breakeven_active:
+                # Near SL zone — check if engines say hold
+                if self._engines_favor_hold(t, idx, action):
+                    alerts_list.append(f"NEAR SL (₹{current_ltp:.1f} vs SL ₹{new_sl}) but engines still favor {action}. HOLDING. Will exit at entry if reversal fails.")
+                else:
+                    alerts_list.append(f"WARNING: Price ₹{current_ltp:.1f} approaching SL ₹{new_sl}. Engines NOT supporting — prepare for SL exit.")
 
             # Check T2 (full target)
             elif current_ltp >= t2:

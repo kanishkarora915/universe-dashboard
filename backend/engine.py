@@ -2558,7 +2558,9 @@ class MarketEngine:
                 if now - self.trade_manager._last_verdict_check >= 30:
                     self.trade_manager._last_verdict_check = now
                     verdict = self.get_trap_verdict()
-                    # 3a. Alert open positions if market reversed
+                    # 3a. Feed verdict to trade manager for SL override decisions
+                    self.trade_manager.update_verdict_cache(verdict)
+                    # 3b. Alert open positions if market reversed
                     self.trade_manager.check_position_alerts(self.chains, verdict)
                     # 3b. Check if we should enter new trades (only every 60s)
                     for idx in ["NIFTY", "BANKNIFTY"]:
