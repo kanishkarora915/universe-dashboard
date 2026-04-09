@@ -536,30 +536,71 @@ class TradeManager:
                     "winRate": 0, "totalPnl": 0, "avgWin": 0, "avgLoss": 0, "bestTrade": 0, "worstTrade": 0}
 
         open_trades = [t for t in all_trades if t["status"] == "OPEN"]
-        wins = [t for t in all_trades if t["status"] in ("T1_HIT", "T2_HIT")]
-        losses = [t for t in all_trades if t["status"] == "SL_HIT"]
+        wins = [t for t in all_trades if t["status"] in ("T1_HIT", "T2_HIT", "TRAIL_EXIT")]
+        losses = [t for t in all_trades if t["status"] in ("SL_HIT",)]
+        breakevens = [t for t in all_trades if t["status"] == "BREAKEVEN_EXIT"]
         hunts = [t for t in all_trades if t["status"] == "STOP_HUNTED"]
         closed = [t for t in all_trades if t["status"] != "OPEN"]
 
-        total_pnl = sum(t["pnl_rupees"] for t in closed)
+        # Capital calculations
+        # Capital invested per trade = entry_price × qty
+        total_invested = sum(t["entry_price"] * t["qty"] for t in all_trades)
+        open_invested = sum(t["entry_price"] * t["qty"] for t in open_trades)
+        open_current_value = sum((t["current_ltp"] or t["entry_price"]) * t["qty"] for t in open_trades)
+        open_pnl = round(open_current_value - open_invested)
+
+        # Closed PnL
+        closed_pnl = sum(t["pnl_rupees"] for t in closed)
+        total_pnl = round(closed_pnl + open_pnl)
+
+        # Loss tracking
+        total_loss = sum(t["pnl_rupees"] for t in closed if t["pnl_rupees"] < 0)
+        total_profit = sum(t["pnl_rupees"] for t in closed if t["pnl_rupees"] > 0)
+
         win_pnls = [t["pnl_rupees"] for t in wins]
         loss_pnls = [t["pnl_rupees"] for t in losses]
 
         closed_count = len(closed)
         win_rate = round(len(wins) / closed_count * 100) if closed_count > 0 else 0
 
+        # Streak
+        streak = 0
+        streak_type = ""
+        for t in sorted(closed, key=lambda x: x.get("exit_time", ""), reverse=True):
+            is_win = t["status"] in ("T1_HIT", "T2_HIT", "TRAIL_EXIT")
+            if streak == 0:
+                streak_type = "WIN" if is_win else "LOSS"
+                streak = 1
+            elif (streak_type == "WIN" and is_win) or (streak_type == "LOSS" and not is_win):
+                streak += 1
+            else:
+                break
+
         return {
             "total": total,
             "open": len(open_trades),
             "wins": len(wins),
             "losses": len(losses),
+            "breakevens": len(breakevens),
             "stopHunts": len(hunts),
             "winRate": win_rate,
-            "totalPnl": round(total_pnl),
+            # Capital
+            "totalInvested": round(total_invested),
+            "openInvested": round(open_invested),
+            "openCurrentValue": round(open_current_value),
+            "openPnl": open_pnl,
+            # PnL
+            "closedPnl": round(closed_pnl),
+            "totalPnl": total_pnl,
+            "totalProfit": round(total_profit),
+            "totalLoss": round(total_loss),
             "avgWin": round(sum(win_pnls) / len(win_pnls)) if win_pnls else 0,
             "avgLoss": round(sum(loss_pnls) / len(loss_pnls)) if loss_pnls else 0,
             "bestTrade": round(max(win_pnls)) if win_pnls else 0,
             "worstTrade": round(min(loss_pnls)) if loss_pnls else 0,
+            # Streak
+            "currentStreak": streak,
+            "streakType": streak_type,
         }
 
     def get_stop_hunts(self):

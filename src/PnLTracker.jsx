@@ -198,34 +198,67 @@ export default function PnLTracker() {
         </button>
       </div>
 
-      {/* STATS */}
+      {/* OVERALL P&L HERO */}
       {stats && (
-        <div style={{ background: "#0D0D15", borderRadius: 12, padding: "14px", border: `1px solid ${BORDER}` }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 8, marginBottom: 8 }}>
+        <div style={{ background: (stats.totalPnl || 0) >= 0 ? GREEN + "08" : RED + "08", borderRadius: 12, padding: "16px", border: `1px solid ${(stats.totalPnl || 0) >= 0 ? GREEN : RED}33` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div>
+              <div style={{ color: "#888", fontSize: 10, fontWeight: 700 }}>OVERALL P&L (LIVE)</div>
+              <div style={{ color: (stats.totalPnl || 0) >= 0 ? GREEN : RED, fontSize: 28, fontWeight: 900 }}>{fmt(stats.totalPnl)}</div>
+              <div style={{ color: "#666", fontSize: 10, marginTop: 2 }}>
+                Closed: {fmt(stats.closedPnl)} | Open: <span style={{ color: (stats.openPnl || 0) >= 0 ? GREEN : RED }}>{fmt(stats.openPnl)}</span>
+              </div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ color: "#888", fontSize: 10 }}>Win Rate</div>
+              <div style={{ color: stats.winRate >= 60 ? GREEN : stats.winRate >= 40 ? YELLOW : RED, fontSize: 24, fontWeight: 900 }}>{stats.winRate}%</div>
+              {stats.currentStreak > 0 && <div style={{ color: stats.streakType === "WIN" ? GREEN : RED, fontSize: 10 }}>{stats.currentStreak} {stats.streakType} streak</div>}
+            </div>
+          </div>
+
+          {/* Row 1: Trade Counts */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 6, marginBottom: 8 }}>
             {[
               { l: "TOTAL", v: stats.total, c: "#ccc" },
               { l: "OPEN", v: stats.open, c: ACCENT },
               { l: "WINS", v: stats.wins, c: GREEN },
               { l: "LOSSES", v: stats.losses, c: RED },
+              { l: "BREAKEVEN", v: stats.breakevens || 0, c: ACCENT },
               { l: "STOP HUNTS", v: stats.stopHunts, c: PURPLE },
-              { l: "WIN RATE", v: `${stats.winRate}%`, c: stats.winRate >= 60 ? GREEN : stats.winRate >= 40 ? YELLOW : RED },
             ].map((s, i) => (
-              <div key={i} style={{ textAlign: "center", background: "#111118", borderRadius: 8, padding: "6px" }}>
-                <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>{s.l}</div>
-                <div style={{ color: s.c, fontSize: 16, fontWeight: 900 }}>{s.v}</div>
+              <div key={i} style={{ textAlign: "center", background: "#0A0A12", borderRadius: 6, padding: "5px" }}>
+                <div style={{ color: "#555", fontSize: 8, fontWeight: 700 }}>{s.l}</div>
+                <div style={{ color: s.c, fontSize: 14, fontWeight: 900 }}>{s.v}</div>
               </div>
             ))}
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+
+          {/* Row 2: Capital + PnL */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6, marginBottom: 8 }}>
             {[
-              { l: "TOTAL P&L", v: fmt(stats.totalPnl), c: stats.totalPnl >= 0 ? GREEN : RED },
+              { l: "CAPITAL DEPLOYED", v: fmt(stats.totalInvested), c: "#ccc" },
+              { l: "OPEN POSITIONS", v: fmt(stats.openInvested), c: ACCENT },
+              { l: "OPEN VALUE", v: fmt(stats.openCurrentValue), c: (stats.openPnl || 0) >= 0 ? GREEN : RED },
+              { l: "TOTAL PROFIT", v: fmt(stats.totalProfit), c: GREEN },
+            ].map((s, i) => (
+              <div key={i} style={{ textAlign: "center", background: "#0A0A12", borderRadius: 6, padding: "5px" }}>
+                <div style={{ color: "#555", fontSize: 8, fontWeight: 700 }}>{s.l}</div>
+                <div style={{ color: s.c, fontSize: 13, fontWeight: 700 }}>{s.v}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Row 3: Loss + Averages */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6 }}>
+            {[
+              { l: "TOTAL LOSS", v: fmt(stats.totalLoss), c: RED },
               { l: "AVG WIN", v: fmt(stats.avgWin), c: GREEN },
               { l: "AVG LOSS", v: fmt(stats.avgLoss), c: RED },
               { l: "BEST TRADE", v: fmt(stats.bestTrade), c: GREEN },
             ].map((s, i) => (
-              <div key={i} style={{ textAlign: "center", background: "#111118", borderRadius: 8, padding: "6px" }}>
-                <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>{s.l}</div>
-                <div style={{ color: s.c, fontSize: 16, fontWeight: 900 }}>{s.v}</div>
+              <div key={i} style={{ textAlign: "center", background: "#0A0A12", borderRadius: 6, padding: "5px" }}>
+                <div style={{ color: "#555", fontSize: 8, fontWeight: 700 }}>{s.l}</div>
+                <div style={{ color: s.c, fontSize: 13, fontWeight: 700 }}>{s.v}</div>
               </div>
             ))}
           </div>
