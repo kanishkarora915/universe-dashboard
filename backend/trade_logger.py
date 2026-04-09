@@ -15,10 +15,35 @@ import pytz
 IST = pytz.timezone("Asia/Kolkata")
 DB_PATH = None
 
+MAX_CAPITAL = 1000000  # ₹10 lakh total capital
+MAX_PER_TRADE_PCT = 50  # Max 50% of capital per trade
+
 LOT_CONFIG = {
-    "NIFTY": {"lot_size": 65, "lots": 20, "qty": 1300},
-    "BANKNIFTY": {"lot_size": 30, "lots": 20, "qty": 600},
+    "NIFTY": {"lot_size": 65},
+    "BANKNIFTY": {"lot_size": 30},
 }
+
+
+def calc_position_size(idx, entry_price):
+    """Calculate lots and qty based on ₹10L capital and entry premium."""
+    cfg = LOT_CONFIG.get(idx, LOT_CONFIG["NIFTY"])
+    lot_size = cfg["lot_size"]
+    max_per_trade = MAX_CAPITAL * MAX_PER_TRADE_PCT / 100  # ₹5L per trade max
+
+    if entry_price <= 0:
+        return 1, lot_size, lot_size
+
+    # How much 1 lot costs
+    one_lot_cost = entry_price * lot_size
+    if one_lot_cost <= 0:
+        return 1, lot_size, lot_size
+
+    # Max lots we can afford
+    max_lots = int(max_per_trade / one_lot_cost)
+    lots = max(1, min(max_lots, 20))  # Min 1 lot, max 20 lots
+    qty = lots * lot_size
+
+    return lots, lot_size, qty
 
 
 def ist_now():
@@ -67,6 +92,25 @@ def init_trades_db(db_path):
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON trades(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_time ON trades(entry_time)")
+
+    # Migrate: add new columns if missing (for old DBs)
+    existing_cols = [row[1] for row in conn.execute("PRAGMA table_info(trades)").fetchall()]
+    migrations = {
+        "original_sl": "REAL DEFAULT 0",
+        "peak_ltp": "REAL DEFAULT 0",
+        "breakeven_active": "INTEGER DEFAULT 0",
+        "trailing_active": "INTEGER DEFAULT 0",
+        "trail_level": "TEXT DEFAULT ''",
+        "alerts": "TEXT DEFAULT ''",
+    }
+    for col, col_type in migrations.items():
+        if col not in existing_cols:
+            try:
+                conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_type}")
+                print(f"[TRADES] Migrated: added column {col}")
+            except Exception:
+                pass
+
     conn.commit()
     conn.close()
     # Purge very old trades (>90 days)
@@ -123,7 +167,7 @@ class TradeManager:
         if entry_price <= 0:
             return None
 
-        cfg = LOT_CONFIG.get(idx, LOT_CONFIG["NIFTY"])
+        lots, lot_size, qty = calc_position_size(idx, entry_price)
 
         # Smart SL: 15% of entry, but minimum ₹5
         sl_price = round(max(entry_price * 0.85, entry_price - max(straddle * 0.15, 5)))
@@ -153,14 +197,15 @@ class TradeManager:
             now.isoformat(), idx, action, strike, expiry,
             entry_price, sl_price, sl_price, t1_price, t2_price,
             entry_price, entry_price,
-            cfg["lots"], cfg["lot_size"], cfg["qty"],
+            lots, lot_size, qty,
             probability, source,
         ))
         trade_id = cursor.lastrowid
         conn.commit()
         conn.close()
 
-        print(f"[TRADE] NEW: {action} {idx} {strike} @ {entry_price} | SL: {sl_price} | T1: {t1_price} | T2: {t2_price} | {cfg['lots']}L x {cfg['lot_size']} = {cfg['qty']} qty | Prob: {probability}%")
+        capital_used = round(entry_price * qty)
+        print(f"[TRADE] NEW: {action} {idx} {strike} @ {entry_price} | SL: {sl_price} | T1: {t1_price} | T2: {t2_price} | {lots}L x {lot_size} = {qty} qty | Capital: ₹{capital_used:,} | Prob: {probability}%")
         return trade_id
 
     def check_and_update(self, chains, prices, spot_tokens, token_to_info):
@@ -651,6 +696,10 @@ class TradeManager:
             # Streak
             "currentStreak": streak,
             "streakType": streak_type,
+            # Capital
+            "maxCapital": MAX_CAPITAL,
+            "capitalUsedPct": round(open_invested / MAX_CAPITAL * 100) if MAX_CAPITAL > 0 else 0,
+            "availableCapital": round(MAX_CAPITAL - open_invested),
         }
 
     def get_stop_hunts(self):

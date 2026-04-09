@@ -233,13 +233,14 @@ export default function PnLTracker() {
             ))}
           </div>
 
-          {/* Row 2: Capital + PnL */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6, marginBottom: 8 }}>
+          {/* Row 2: Capital */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 6, marginBottom: 8 }}>
             {[
-              { l: "CAPITAL DEPLOYED", v: fmt(stats.totalInvested), c: "#ccc" },
-              { l: "OPEN POSITIONS", v: fmt(stats.openInvested), c: ACCENT },
+              { l: "MAX CAPITAL", v: fmt(stats.maxCapital || 1000000), c: "#ccc" },
+              { l: "IN USE", v: fmt(stats.openInvested), c: ACCENT },
+              { l: "AVAILABLE", v: fmt(stats.availableCapital), c: GREEN },
+              { l: "USED %", v: `${stats.capitalUsedPct || 0}%`, c: (stats.capitalUsedPct || 0) > 80 ? RED : (stats.capitalUsedPct || 0) > 50 ? YELLOW : GREEN },
               { l: "OPEN VALUE", v: fmt(stats.openCurrentValue), c: (stats.openPnl || 0) >= 0 ? GREEN : RED },
-              { l: "TOTAL PROFIT", v: fmt(stats.totalProfit), c: GREEN },
             ].map((s, i) => (
               <div key={i} style={{ textAlign: "center", background: "#0A0A12", borderRadius: 6, padding: "5px" }}>
                 <div style={{ color: "#555", fontSize: 8, fontWeight: 700 }}>{s.l}</div>
