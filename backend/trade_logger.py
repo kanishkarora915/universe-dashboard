@@ -468,45 +468,88 @@ class TradeManager:
                 print(f"[TRADE] STOP HUNT DETECTED: {action} {idx} {strike} — SL at {sl}, now at {current_ltp:.1f}")
 
     def should_enter_trade(self, idx, verdict_data):
-        """Check if we should enter a new trade based on verdict."""
+        """Strict entry rules to prevent overtrading and protect capital."""
         if not verdict_data or verdict_data.get("action") == "NO TRADE":
             return False
 
         win_pct = verdict_data.get("winProbability", 0)
-        if win_pct < 60:
+        if win_pct < 65:  # Raised from 60 to 65 — need stronger edge
             return False
 
-        # Check no existing OPEN trade for this index
+        now = ist_now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+
         conn = _conn()
-        existing = conn.execute(
+
+        # Rule 1: No OPEN trade for this index
+        existing_open = conn.execute(
             "SELECT COUNT(*) FROM trades WHERE idx=? AND status='OPEN'", (idx,)
         ).fetchone()[0]
-
-        # Also check cooldown: don't re-enter same index within 30 min of last trade
-        last_trade = conn.execute(
-            "SELECT entry_time FROM trades WHERE idx=? ORDER BY entry_time DESC LIMIT 1", (idx,)
-        ).fetchone()
-        conn.close()
-
-        if existing > 0:
+        if existing_open > 0:
+            conn.close()
             return False
 
-        if last_trade:
+        # Rule 2: Max 2 trades per index per day (not 5!)
+        today_trades = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE idx=? AND entry_time > ?", (idx, today_start)
+        ).fetchone()[0]
+        if today_trades >= 2:
+            conn.close()
+            return False
+
+        # Rule 3: Max 3 total trades per day across all indices
+        total_today = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE entry_time > ?", (today_start,)
+        ).fetchone()[0]
+        if total_today >= 3:
+            conn.close()
+            return False
+
+        # Rule 4: Stop trading if daily loss > 5% of capital (₹50,000)
+        today_closed = conn.execute(
+            "SELECT COALESCE(SUM(pnl_rupees), 0) FROM trades WHERE entry_time > ? AND status != 'OPEN'",
+            (today_start,)
+        ).fetchone()[0] or 0
+        if today_closed < -(MAX_CAPITAL * 0.05):  # -₹50,000 daily loss limit
+            conn.close()
+            return False
+
+        # Rule 5: Cooldown 60 min after SL hit (was 30 — too fast re-entry)
+        last_sl = conn.execute(
+            "SELECT exit_time FROM trades WHERE idx=? AND status='SL_HIT' ORDER BY exit_time DESC LIMIT 1", (idx,)
+        ).fetchone()
+        if last_sl and last_sl[0]:
             try:
-                last_time = datetime.fromisoformat(last_trade[0])
-                if (ist_now() - last_time).total_seconds() < 1800:  # 30 min cooldown
+                sl_time = datetime.fromisoformat(last_sl[0])
+                if (now - sl_time).total_seconds() < 3600:  # 60 min cooldown after SL
+                    conn.close()
                     return False
             except Exception:
                 pass
 
-        # Don't trade after 3:20 PM
-        now = ist_now()
+        # Rule 6: Don't flip direction on same day
+        # If last trade was BUY CE and lost, don't immediately BUY PE
+        last_trade = conn.execute(
+            "SELECT action, status FROM trades WHERE idx=? AND entry_time > ? ORDER BY entry_time DESC LIMIT 1",
+            (idx, today_start)
+        ).fetchone()
+        if last_trade and last_trade[1] == "SL_HIT":
+            last_action = last_trade[0]
+            new_action = verdict_data.get("action", "")
+            if last_action != new_action:
+                # Direction flip after loss — skip (confused market)
+                conn.close()
+                return False
+
+        conn.close()
+
+        # Rule 7: Time restrictions
         if now.hour > 15 or (now.hour == 15 and now.minute > 20):
             return False
-
-        # Don't trade before 9:20 AM
-        if now.hour == 9 and now.minute < 20:
+        if now.hour == 9 and now.minute < 25:  # Wait 10 min after open for stability
             return False
+        if now.hour == 14 and now.minute > 45:
+            return False  # No new trades in last 35 min — theta crush
 
         return True
 
@@ -632,15 +675,20 @@ class TradeManager:
         conn = _conn()
         conn.row_factory = sqlite3.Row
 
-        all_trades = conn.execute(
+        rows = conn.execute(
             "SELECT * FROM trades WHERE entry_time > ?", (cutoff,)
         ).fetchall()
         conn.close()
+        all_trades = [dict(r) for r in rows]
 
         total = len(all_trades)
         if total == 0:
-            return {"total": 0, "open": 0, "wins": 0, "losses": 0, "stopHunts": 0,
-                    "winRate": 0, "totalPnl": 0, "avgWin": 0, "avgLoss": 0, "bestTrade": 0, "worstTrade": 0}
+            return {"total": 0, "open": 0, "wins": 0, "losses": 0, "stopHunts": 0, "breakevens": 0,
+                    "winRate": 0, "totalPnl": 0, "closedPnl": 0, "openPnl": 0,
+                    "totalProfit": 0, "totalLoss": 0, "avgWin": 0, "avgLoss": 0,
+                    "bestTrade": 0, "worstTrade": 0, "totalInvested": 0, "openInvested": 0,
+                    "openCurrentValue": 0, "currentStreak": 0, "streakType": "",
+                    "maxCapital": MAX_CAPITAL, "capitalUsedPct": 0, "availableCapital": MAX_CAPITAL}
 
         open_trades = [t for t in all_trades if t["status"] == "OPEN"]
         wins = [t for t in all_trades if t["status"] in ("T1_HIT", "T2_HIT", "TRAIL_EXIT")]
