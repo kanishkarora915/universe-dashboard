@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useMarketData } from "./useMarketData";
 import OIChangeTab from "./OIChangeTab";
 import PnLTracker from "./PnLTracker";
+import ReportsTab from "./ReportsTab";
 import { exportSignalsToPDF, exportFullReport } from "./pdfExport";
 import { fetchTrapScan, fetchAIAnalysis, fetchTrapHistory, fetchTrapToday, fetchPriceAction, fetchTrapVerdict } from "./api";
 
@@ -30,6 +31,7 @@ const TABS = [
   { id: "aibrain", icon: "\uD83E\uDD16", label: "AI Brain" },
   { id: "oichange",icon: "\uD83D\uDCC8", label: "OI Change" },
   { id: "pnl",     icon: "\uD83D\uDCB0", label: "PnL Tracker" },
+  { id: "reports", icon: "\uD83D\uDCCA", label: "Reports & Data" },
   { id: "prompt",  icon: "\uD83E\uDD16", label: "Claude Prompt" },
 ];
 
@@ -2644,6 +2646,7 @@ export default function Universe({ onLogout }) {
       case "aibrain": return <AIBrainTab />;
       case "oichange":return <OIChangeTab oiData={oiSummary} />;
       case "pnl":     return <PnLTracker />;
+      case "reports": return <ReportsTab />;
       case "prompt":  return <PromptTab />;
       default:        return null;
     }

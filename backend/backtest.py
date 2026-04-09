@@ -17,6 +17,13 @@ def ist_now():
     return datetime.now(IST)
 
 
+# Engine score column names — must match engine keys in verdict
+ENGINE_SCORE_COLS = [
+    "seller_pts", "trap_pts", "price_action_pts", "oi_flow_pts",
+    "market_context_pts", "vwap_pts", "mtf_pts", "fii_dii_pts", "global_cues_pts",
+]
+
+
 def init_backtest_db(db_path):
     global DB_PATH
     DB_PATH = db_path
@@ -39,6 +46,28 @@ def init_backtest_db(db_path):
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bt_ts ON backtest_log(timestamp)")
+
+    # ── Safe migration: add per-engine score columns if missing ──
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(backtest_log)").fetchall()}
+    for col in ENGINE_SCORE_COLS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE backtest_log ADD COLUMN {col} INTEGER DEFAULT 0")
+            print(f"[BACKTEST] Added column: {col}")
+
+    # ── Training log table ──
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS training_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            accuracy_before REAL DEFAULT 0,
+            accuracy_after REAL DEFAULT 0,
+            old_weights TEXT,
+            new_weights TEXT,
+            data_points INTEGER DEFAULT 0,
+            notes TEXT
+        )
+    """)
+
     conn.commit()
     conn.close()
     # Purge >60 days
@@ -58,8 +87,8 @@ class BacktestTracker:
     def __init__(self):
         self._last_log = 0
 
-    def log_verdict(self, idx, action, probability, spot_price):
-        """Log a verdict signal for later verification."""
+    def log_verdict(self, idx, action, probability, spot_price, engine_scores=None):
+        """Log a verdict signal with per-engine score breakdown for later verification."""
         if action == "NO TRADE" or probability < 60 or spot_price <= 0:
             return
         # Don't log more than once per 2 minutes per index
@@ -68,11 +97,32 @@ class BacktestTracker:
             return
         self._last_log = now
 
+        es = engine_scores or {}
+        cols = "timestamp, idx, verdict_action, verdict_probability, spot_at_verdict"
+        vals = [ist_now().isoformat(), idx, action, probability, spot_price]
+
+        # Add per-engine scores
+        for col in ENGINE_SCORE_COLS:
+            cols += f", {col}"
+            # Map column name to engine key: seller_pts → seller_positioning
+            key = col.replace("_pts", "")
+            # Handle naming mismatches
+            key_map = {
+                "seller": "seller_positioning",
+                "trap": "trap_fingerprints",
+                "price_action": "price_action",
+                "oi_flow": "oi_flow",
+                "market_context": "market_context",
+                "vwap": "vwap",
+                "mtf": "multi_timeframe",
+                "fii_dii": "fii_dii",
+                "global_cues": "global_cues",
+            }
+            vals.append(es.get(key_map.get(key, key), 0))
+
+        placeholders = ", ".join(["?"] * len(vals))
         conn = _conn()
-        conn.execute("""
-            INSERT INTO backtest_log (timestamp, idx, verdict_action, verdict_probability, spot_at_verdict)
-            VALUES (?, ?, ?, ?, ?)
-        """, (ist_now().isoformat(), idx, action, probability, spot_price))
+        conn.execute(f"INSERT INTO backtest_log ({cols}) VALUES ({placeholders})", vals)
         conn.commit()
         conn.close()
 

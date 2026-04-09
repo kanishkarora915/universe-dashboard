@@ -8,9 +8,11 @@ import math
 import time
 import threading
 import asyncio
+import json
 from datetime import datetime, timedelta
 from collections import defaultdict
 from typing import Optional, Callable
+from pathlib import Path
 
 import numpy as np
 import pytz
@@ -49,6 +51,47 @@ INDEX_CONFIG = {
         "atm_range": 10,
     },
 }
+
+
+# ── Dynamic Weight Loading ────────────────────────────────────────────────
+
+_WEIGHT_DEFAULTS = {
+    "seller_positioning": 30,
+    "trap_fingerprints": 20,
+    "price_action": 20,
+    "oi_flow": 15,
+    "market_context": 15,
+    "vwap": 5,
+    "multi_timeframe": 15,
+    "fii_dii": 10,
+    "global_cues": 10,
+}
+_weights_cache = None
+_weights_cache_time = 0
+
+
+def _load_dynamic_weights():
+    """Load engine weights from JSON config. Cached for 60s."""
+    global _weights_cache, _weights_cache_time
+    now = time.time()
+    if _weights_cache and now - _weights_cache_time < 60:
+        return _weights_cache
+
+    _data_dir = Path("/data") if Path("/data").is_dir() else Path(__file__).parent
+    weights_file = _data_dir / "engine_weights.json"
+    try:
+        if weights_file.exists():
+            data = json.loads(weights_file.read_text())
+            w = {k: data.get(k, v) for k, v in _WEIGHT_DEFAULTS.items()}
+            _weights_cache = w
+            _weights_cache_time = now
+            return w
+    except Exception:
+        pass
+
+    _weights_cache = dict(_WEIGHT_DEFAULTS)
+    _weights_cache_time = now
+    return _weights_cache
 
 
 # ── Black-Scholes Greeks ─────────────────────────────────────────────────
@@ -271,9 +314,46 @@ class MarketEngine:
             init_backtest_db(db_path)
             self.backtest_tracker = BacktestTracker()
             print(f"[ENGINE] Backtest tracker started (DB: {db_path})")
+            # Start auto-trainer
+            self._start_auto_trainer()
         except Exception as e:
             print(f"[ENGINE] Backtest tracker init failed: {e}")
             self.backtest_tracker = None
+
+    def _start_auto_trainer(self):
+        """Background thread: auto-train weights every Sunday 8 PM IST.
+        Also trains on startup if last training was >7 days ago."""
+        def _trainer_loop():
+            try:
+                from ml_feedback import run_auto_train, get_last_training_time
+                # Check if training is overdue on startup
+                last_train = get_last_training_time()
+                if last_train is None or (ist_now() - last_train).days >= 7:
+                    print("[AUTO-TRAIN] Training overdue — running now...")
+                    result = run_auto_train()
+                    print(f"[AUTO-TRAIN] Startup training done: {result.get('notes', 'OK')}")
+            except Exception as e:
+                print(f"[AUTO-TRAIN] Startup check failed: {e}")
+
+            while True:
+                try:
+                    now = ist_now()
+                    # Sunday = 6, check at 8 PM IST
+                    if now.weekday() == 6 and now.hour == 20 and now.minute < 5:
+                        from ml_feedback import run_auto_train, get_last_training_time
+                        last_train = get_last_training_time()
+                        if last_train is None or (now - last_train).days >= 6:
+                            print("[AUTO-TRAIN] Weekly training triggered...")
+                            result = run_auto_train()
+                            print(f"[AUTO-TRAIN] Done: {result.get('notes', 'OK')}")
+                    time.sleep(300)  # Check every 5 minutes
+                except Exception as e:
+                    print(f"[AUTO-TRAIN] Error: {e}")
+                    time.sleep(600)
+
+        t = threading.Thread(target=_trainer_loop, daemon=True, name="auto-trainer")
+        t.start()
+        print("[ENGINE] Auto-trainer thread started (trains Sunday 8 PM IST)")
 
     def _start_trap_scanner(self):
         """Initialize and start the Trap Fingerprint Engine."""
@@ -1569,12 +1649,21 @@ class MarketEngine:
             # BULLISH PROBABILITY (0-100) — Why BUY CE?
             # BEARISH PROBABILITY (0-100) — Why BUY PE?
             # ════════════════════════════════════════════════
+            W = _load_dynamic_weights()
             bull_score = 0  # out of 100
             bear_score = 0
             bull_reasons = []
             bear_reasons = []
 
+            # Per-engine score tracking for ML feedback
+            _eng = {
+                "seller_positioning": 0, "trap_fingerprints": 0, "price_action": 0,
+                "oi_flow": 0, "market_context": 0, "vwap": 0,
+                "multi_timeframe": 0, "fii_dii": 0, "global_cues": 0,
+            }
+
             # ── 1. SELLER POSITIONING (30 pts max) — Most important ──
+            _bs0, _be0 = bull_score, bear_score
             sd = seller.get(key, {})
             ce_writing = sd.get("ceWritingOI", 0)
             pe_writing = sd.get("peWritingOI", 0)
@@ -1582,11 +1671,11 @@ class MarketEngine:
             pe_sc = sd.get("peShortCoverOI", 0)
 
             if pe_writing > ce_writing * 1.5 and pe_writing > 100000:
-                pts = min(30, int((pe_writing / max(ce_writing, 1)) * 10))
+                pts = min(W["seller_positioning"], int((pe_writing / max(ce_writing, 1)) * 10))
                 bull_score += pts
                 bull_reasons.append(f"PE sellers writing {pe_writing/100000:.1f}L (vs CE {ce_writing/100000:.1f}L) = strong support [{pts}pts]")
             if ce_writing > pe_writing * 1.5 and ce_writing > 100000:
-                pts = min(30, int((ce_writing / max(pe_writing, 1)) * 10))
+                pts = min(W["seller_positioning"], int((ce_writing / max(pe_writing, 1)) * 10))
                 bear_score += pts
                 bear_reasons.append(f"CE sellers writing {ce_writing/100000:.1f}L (vs PE {pe_writing/100000:.1f}L) = strong resistance [{pts}pts]")
             if ce_sc > 100000:
@@ -1596,7 +1685,10 @@ class MarketEngine:
                 bear_score += min(10, int(pe_sc / 100000))
                 bear_reasons.append(f"PE short covering {pe_sc/100000:.1f}L = support weakening")
 
+            _eng["seller_positioning"] = (bull_score - _bs0) + (bear_score - _be0)
+
             # ── 2. TRAP FINGERPRINTS (20 pts max) — Institutional hidden positioning ──
+            _bs0, _be0 = bull_score, bear_score
             trap = trap_data.get(key, {})
             trap_strikes = trap.get("strikes", [])
             ce_traps = [s for s in trap_strikes if s.get("buySignal") == "BUY CE" and s.get("trapScore", 0) >= 4]
@@ -1605,11 +1697,11 @@ class MarketEngine:
             pe_trap_total = sum(s["trapScore"] for s in pe_traps)
 
             if ce_trap_total > pe_trap_total and ce_traps:
-                pts = min(20, ce_trap_total * 2)
+                pts = min(W["trap_fingerprints"], ce_trap_total * 2)
                 bull_score += pts
                 bull_reasons.append(f"{len(ce_traps)} trap fingerprints favor CE (score: {ce_trap_total}) [{pts}pts]")
             if pe_trap_total > ce_trap_total and pe_traps:
-                pts = min(20, pe_trap_total * 2)
+                pts = min(W["trap_fingerprints"], pe_trap_total * 2)
                 bear_score += pts
                 bear_reasons.append(f"{len(pe_traps)} trap fingerprints favor PE (score: {pe_trap_total}) [{pts}pts]")
 
@@ -1622,7 +1714,10 @@ class MarketEngine:
                     bear_score += 5
                     bear_reasons.append(f"Cluster: {cluster.get('signal','')[:80]}")
 
+            _eng["trap_fingerprints"] = (bull_score - _bs0) + (bear_score - _be0)
+
             # ── 3. PRICE ACTION (20 pts max) — Real-time premium movement ──
+            _bs0, _be0 = bull_score, bear_score
             pad = pa.get(key, {})
             prem_ratio = pad.get("premRatio", 1)
             mom_bias = pad.get("momBias", "NEUTRAL")
@@ -1645,7 +1740,10 @@ class MarketEngine:
                 bear_score += 10
                 bear_reasons.append(f"PE premiums rising (+{pe_mom:.1f}), CE falling ({ce_mom:.1f}) [10pts]")
 
+            _eng["price_action"] = (bull_score - _bs0) + (bear_score - _be0)
+
             # ── 4. OI FLOW (15 pts max) — Where is money going ──
+            _bs0, _be0 = bull_score, bear_score
             oi_data = self.get_oi_change_summary()
             oi_idx = oi_data.get(key, {})
             ce_net = (oi_idx.get("ceOIChangePos", 0) + oi_idx.get("ceOIChangeNeg", 0))
@@ -1665,7 +1763,10 @@ class MarketEngine:
                 bear_score += 7
                 bear_reasons.append(f"PE OI unwinding {pe_net/100000:.1f}L = support weakening [7pts]")
 
+            _eng["oi_flow"] = (bull_score - _bs0) + (bear_score - _be0)
+
             # ── 5. MARKET CONTEXT (15 pts max) ──
+            _bs0, _be0 = bull_score, bear_score
             # Market open
             if open_type == "GAP UP" and ltp > open_price:
                 bull_score += 5
@@ -1694,7 +1795,10 @@ class MarketEngine:
                 bear_score += 3
                 bear_reasons.append(f"VIX {vix:.1f} elevated = fear [3pts]")
 
+            _eng["market_context"] = (bull_score - _bs0) + (bear_score - _be0)
+
             # ── 6. VWAP (5 pts max) ──
+            _bs0, _be0 = bull_score, bear_score
             vwap = self._get_vwap(index)
             if vwap > 0:
                 if ltp > vwap * 1.002:
@@ -1704,7 +1808,10 @@ class MarketEngine:
                     bear_score += 5
                     bear_reasons.append(f"Price {ltp:.0f} below VWAP {vwap:.0f} = sellers winning [5pts]")
 
+            _eng["vwap"] = (bull_score - _bs0) + (bear_score - _be0)
+
             # ── 7. MULTI-TIMEFRAME (15 pts max) ──
+            _bs0, _be0 = bull_score, bear_score
             mtf = self.get_multi_timeframe()
             mtf_data = mtf.get(key, {})
             mtf_conf = mtf_data.get("confluence", "")
@@ -1716,7 +1823,10 @@ class MarketEngine:
                 bear_score += mtf_score
                 bear_reasons.append(f"Multi-TF: {mtf_conf} (5m+15m+1hr) [{mtf_score}pts]")
 
+            _eng["multi_timeframe"] = (bull_score - _bs0) + (bear_score - _be0)
+
             # ── 8. FII/DII (10 pts max) ──
+            _bs0, _be0 = bull_score, bear_score
             fii = self.get_fii_dii()
             fii_signal = fii.get("signal", "NEUTRAL")
             fii_net = fii.get("fiiNet", 0)
@@ -1729,7 +1839,10 @@ class MarketEngine:
                 bear_score += pts
                 bear_reasons.append(f"FII net: {fii_net:.0f}Cr ({fii_signal}) [{pts}pts]")
 
+            _eng["fii_dii"] = (bull_score - _bs0) + (bear_score - _be0)
+
             # ── 9. GLOBAL CUES (10 pts max) ──
+            _bs0, _be0 = bull_score, bear_score
             gl = self.get_global_cues()
             gl_signal = gl.get("signal", "NEUTRAL")
             dow_pct = gl.get("dow", {}).get("changePct", 0)
@@ -1739,6 +1852,8 @@ class MarketEngine:
             elif gl_signal == "BEARISH":
                 bear_score += 10
                 bear_reasons.append(f"Global BEARISH: Dow {dow_pct:+.1f}% [10pts]")
+
+            _eng["global_cues"] = (bull_score - _bs0) + (bear_score - _be0)
 
             # ════════════════════════════════════════════════
             # FINAL DECISION — Based on probability spread (out of ~140 max)
@@ -1865,6 +1980,7 @@ class MarketEngine:
                 "currentExpiry": current_pred,
                 "nextWeek": next_pred,
                 "timestamp": ist_now().strftime("%I:%M:%S %p IST"),
+                "engineScores": dict(_eng),
             }
 
         return result
@@ -2866,7 +2982,10 @@ class MarketEngine:
                     v = verdict.get(idx.lower(), {})
                     if v.get("action") and v["action"] != "NO TRADE":
                         spot = self.prices.get(self.spot_tokens.get(idx), {}).get("ltp", 0)
-                        self.backtest_tracker.log_verdict(idx, v["action"], v.get("winProbability", 0), spot)
+                        self.backtest_tracker.log_verdict(
+                            idx, v["action"], v.get("winProbability", 0), spot,
+                            engine_scores=v.get("engineScores")
+                        )
                 self.backtest_tracker.check_outcomes(self.prices, self.spot_tokens)
 
             if not hasattr(self, 'trade_manager') or not self.trade_manager:

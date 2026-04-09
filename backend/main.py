@@ -19,6 +19,12 @@ from fastapi.staticfiles import StaticFiles
 from kiteconnect import KiteConnect
 
 from engine import MarketEngine
+from ml_feedback import (
+    get_engine_accuracy, get_optimal_weights, get_hourly_analysis,
+    get_pattern_analysis, get_weekly_report, get_weights_info,
+    apply_recommended_weights, reset_weights, get_trading_windows,
+    run_auto_train, get_training_history, get_auto_train_status,
+)
 
 # ── Config ───────────────────────────────────────────────────────────────
 
@@ -464,6 +470,53 @@ async def export_daily():
         "nextday": _get_or_cache("nextday", lambda: engine.get_nextday() if engine else {}),
         "weekly": _get_or_cache("weekly", lambda: engine.get_weekly() if engine else {}),
     }
+
+
+# ── Reports & ML Feedback Routes ─────────────────────────────────────────
+
+@app.get("/api/reports/engine-accuracy")
+async def report_engine_accuracy(days: int = 30):
+    return get_engine_accuracy(days)
+
+@app.get("/api/reports/weekly")
+async def report_weekly():
+    return get_weekly_report()
+
+@app.get("/api/reports/hourly")
+async def report_hourly(days: int = 30):
+    return get_hourly_analysis(days)
+
+@app.get("/api/reports/patterns")
+async def report_patterns(days: int = 30):
+    return get_pattern_analysis(days)
+
+@app.get("/api/reports/weights")
+async def report_weights():
+    return get_weights_info()
+
+@app.post("/api/reports/apply-weights")
+async def report_apply_weights():
+    return apply_recommended_weights()
+
+@app.post("/api/reports/reset-weights")
+async def report_reset_weights():
+    return reset_weights()
+
+@app.get("/api/reports/trading-windows")
+async def report_trading_windows(days: int = 30):
+    return get_trading_windows(days)
+
+@app.post("/api/reports/run-train")
+async def report_run_train():
+    return run_auto_train()
+
+@app.get("/api/reports/training-history")
+async def report_training_history(limit: int = 20):
+    return get_training_history(limit)
+
+@app.get("/api/reports/auto-train-status")
+async def report_auto_train_status():
+    return get_auto_train_status()
 
 
 # ── WebSocket Route ──────────────────────────────────────────────────────
