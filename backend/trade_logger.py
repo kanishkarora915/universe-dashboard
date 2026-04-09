@@ -571,8 +571,8 @@ class TradeManager:
         losses = [t for t in trades if t["status"] == "SL_HIT"]
         hunts = [t for t in trades if t["status"] == "STOP_HUNTED"]
         total_pnl = sum(t["pnl_rupees"] for t in closed)
-        win_pnls = [t["pnl_rupees"] for t in wins]
-        loss_pnls = [t["pnl_rupees"] for t in losses]
+        win_pnls = [(t["pnl_rupees"] or 0) for t in wins]
+        loss_pnls = [(t["pnl_rupees"] or 0) for t in losses]
 
         # Daily breakdown
         daily = {}
@@ -637,23 +637,22 @@ class TradeManager:
         hunts = [t for t in all_trades if t["status"] == "STOP_HUNTED"]
         closed = [t for t in all_trades if t["status"] != "OPEN"]
 
-        # Capital calculations
-        # Capital invested per trade = entry_price × qty
-        total_invested = sum(t["entry_price"] * t["qty"] for t in all_trades)
-        open_invested = sum(t["entry_price"] * t["qty"] for t in open_trades)
-        open_current_value = sum((t["current_ltp"] or t["entry_price"]) * t["qty"] for t in open_trades)
+        # Capital calculations — safe with None/0 values
+        total_invested = sum((t["entry_price"] or 0) * (t["qty"] or 0) for t in all_trades)
+        open_invested = sum((t["entry_price"] or 0) * (t["qty"] or 0) for t in open_trades)
+        open_current_value = sum((t["current_ltp"] or t["entry_price"] or 0) * (t["qty"] or 0) for t in open_trades)
         open_pnl = round(open_current_value - open_invested)
 
         # Closed PnL
-        closed_pnl = sum(t["pnl_rupees"] for t in closed)
+        closed_pnl = sum((t["pnl_rupees"] or 0) for t in closed)
         total_pnl = round(closed_pnl + open_pnl)
 
         # Loss tracking
-        total_loss = sum(t["pnl_rupees"] for t in closed if t["pnl_rupees"] < 0)
-        total_profit = sum(t["pnl_rupees"] for t in closed if t["pnl_rupees"] > 0)
+        total_loss = sum((t["pnl_rupees"] or 0) for t in closed if (t["pnl_rupees"] or 0) < 0)
+        total_profit = sum((t["pnl_rupees"] or 0) for t in closed if (t["pnl_rupees"] or 0) > 0)
 
-        win_pnls = [t["pnl_rupees"] for t in wins]
-        loss_pnls = [t["pnl_rupees"] for t in losses]
+        win_pnls = [(t["pnl_rupees"] or 0) for t in wins]
+        loss_pnls = [(t["pnl_rupees"] or 0) for t in losses]
 
         closed_count = len(closed)
         win_rate = round(len(wins) / closed_count * 100) if closed_count > 0 else 0
