@@ -6,3 +6,5 @@ scipy>=1.12.0
 pandas>=2.1.0
 pytz>=2024.1
 anthropic>=0.39.0
+yfinance>=0.2.30
+requests>=2.31.0

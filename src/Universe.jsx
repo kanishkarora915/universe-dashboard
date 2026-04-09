@@ -333,6 +333,21 @@ const Stat = ({ label, value, color = "#fff", sub }) => (
 // \u2500\u2500 TAB: LIVE DATA \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 function LiveDataTab({ liveData }) {
+  const [fii, setFii] = useState(null);
+  const [global_, setGlobal] = useState(null);
+  const [backtest, setBacktest] = useState(null);
+
+  useEffect(() => {
+    const load = () => {
+      fetch("/api/fii-dii").then(r => r.ok ? r.json() : null).then(d => d && setFii(d)).catch(() => {});
+      fetch("/api/global-cues").then(r => r.ok ? r.json() : null).then(d => d && setGlobal(d)).catch(() => {});
+      fetch("/api/backtest-stats").then(r => r.ok ? r.json() : null).then(d => d && setBacktest(d)).catch(() => {});
+    };
+    load();
+    const iv = setInterval(load, 60000);
+    return () => clearInterval(iv);
+  }, []);
+
   if (!liveData || !liveData.nifty || liveData.nifty.ltp <= 0) {
     return (<div style={{ textAlign: "center", padding: 60, color: "#555" }}>
       <div style={{ fontSize: 40, marginBottom: 12 }}>⚡</div>
@@ -341,8 +356,54 @@ function LiveDataTab({ liveData }) {
     </div>);
   }
   const data = liveData;
+  const fiiColor = fii?.signal === "STRONG_BULL" || fii?.signal === "BULL" ? GREEN : fii?.signal === "STRONG_BEAR" || fii?.signal === "BEAR" ? RED : "#888";
+  const glColor = global_?.signal === "BULLISH" ? GREEN : global_?.signal === "BEARISH" ? RED : "#888";
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* GLOBAL CUES + FII/DII + BACKTEST BAR */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {/* FII/DII */}
+        {fii && fii.fiiNet !== undefined && (
+          <div style={{ flex: 1, background: "#0D0D15", borderRadius: 8, padding: "8px 12px", border: `1px solid ${fiiColor}33`, minWidth: 150 }}>
+            <div style={{ color: "#555", fontSize: 9, fontWeight: 700, marginBottom: 4 }}>FII/DII (NSE)</div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ color: fiiColor, fontSize: 13, fontWeight: 900 }}>FII: {fii.fiiNet > 0 ? "+" : ""}{Math.round(fii.fiiNet)}Cr</div>
+                <div style={{ color: "#888", fontSize: 10 }}>DII: {fii.diiNet > 0 ? "+" : ""}{Math.round(fii.diiNet)}Cr</div>
+              </div>
+              <span style={{ color: fiiColor, fontSize: 10, fontWeight: 700, alignSelf: "center" }}>{fii.signal}</span>
+            </div>
+          </div>
+        )}
+        {/* Global Cues */}
+        {global_ && global_.dow && (
+          <div style={{ flex: 2, background: "#0D0D15", borderRadius: 8, padding: "8px 12px", border: `1px solid ${glColor}33`, minWidth: 250 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <span style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>GLOBAL CUES</span>
+              <span style={{ color: glColor, fontSize: 10, fontWeight: 700 }}>{global_.signal}</span>
+            </div>
+            <div style={{ display: "flex", gap: 12, fontSize: 11 }}>
+              {[
+                { n: "DOW", d: global_.dow },
+                { n: "S&P", d: global_.sp500 },
+                { n: "DXY", d: global_.dxy },
+                { n: "CRUDE", d: global_.crude },
+              ].map(({ n, d }) => d ? (
+                <span key={n} style={{ color: "#888" }}>{n}: <span style={{ color: (d.changePct || 0) > 0 ? GREEN : (d.changePct || 0) < 0 ? RED : "#888", fontWeight: 700 }}>{d.changePct > 0 ? "+" : ""}{d.changePct}%</span></span>
+              ) : null)}
+            </div>
+          </div>
+        )}
+        {/* Backtest Accuracy */}
+        {backtest && backtest.total > 0 && (
+          <div style={{ background: "#0D0D15", borderRadius: 8, padding: "8px 12px", border: `1px solid ${PURPLE}33`, minWidth: 140 }}>
+            <div style={{ color: "#555", fontSize: 9, fontWeight: 700, marginBottom: 4 }}>VERIFIED ACCURACY</div>
+            <div style={{ color: backtest.winRate30min >= 60 ? GREEN : backtest.winRate30min >= 45 ? YELLOW : RED, fontSize: 18, fontWeight: 900 }}>{backtest.winRate30min}%</div>
+            <div style={{ color: "#555", fontSize: 9 }}>{backtest.checked}/{backtest.total} signals verified (30min)</div>
+          </div>
+        )}
+      </div>
       {[{ name: "NIFTY", d: data.nifty }, { name: "BANKNIFTY", d: data.banknifty }].map(({ name, d }) => {
         const openColor = d.openType === "GAP UP" ? GREEN : d.openType === "GAP DOWN" ? RED : YELLOW;
         const zoneColor = d.rangeZone === "NEAR HIGH" ? GREEN : d.rangeZone === "NEAR LOW" ? RED : YELLOW;

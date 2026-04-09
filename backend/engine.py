@@ -242,6 +242,7 @@ class MarketEngine:
         self._connect_ticker()
         self._start_trap_scanner()
         self._start_trade_manager()
+        self._start_backtest_tracker()
         self.running = True
         print("[ENGINE] Market engine started with REAL data.")
 
@@ -259,6 +260,20 @@ class MarketEngine:
         except Exception as e:
             print(f"[ENGINE] Trade manager init failed: {e}")
             self.trade_manager = None
+
+    def _start_backtest_tracker(self):
+        """Initialize backtest accuracy tracker."""
+        try:
+            from backtest import BacktestTracker, init_backtest_db
+            import os
+            data_dir = "/data" if os.path.isdir("/data") else os.path.dirname(__file__)
+            db_path = os.path.join(data_dir, "backtest.db")
+            init_backtest_db(db_path)
+            self.backtest_tracker = BacktestTracker()
+            print(f"[ENGINE] Backtest tracker started (DB: {db_path})")
+        except Exception as e:
+            print(f"[ENGINE] Backtest tracker init failed: {e}")
+            self.backtest_tracker = None
 
     def _start_trap_scanner(self):
         """Initialize and start the Trap Fingerprint Engine."""
@@ -1288,6 +1303,240 @@ class MarketEngine:
 
         return result
 
+    # ── VWAP SCORE ─────────────────────────────────────────────────────
+
+    def _get_vwap(self, index):
+        """Get VWAP for an index from intraday candles."""
+        try:
+            spot_token = self.spot_tokens.get(index)
+            if not spot_token:
+                return 0
+            today = ist_now().date()
+            candles = self.kite.historical_data(
+                spot_token, today, ist_now(), "5minute"
+            )
+            if not candles or len(candles) < 5:
+                return 0
+            cum_vp = 0
+            cum_v = 0
+            for c in candles:
+                tp = (c["high"] + c["low"] + c["close"]) / 3
+                vol = c.get("volume", 0)
+                cum_vp += tp * vol
+                cum_v += vol
+            return round(cum_vp / cum_v, 2) if cum_v > 0 else 0
+        except Exception:
+            return 0
+
+    # ── MULTI-TIMEFRAME ANALYSIS ──────────────────────────────────────
+
+    def get_multi_timeframe(self) -> dict:
+        """Analyze 5min + 15min + 60min trends. Returns confluence score."""
+        result = {}
+        for index in ["NIFTY", "BANKNIFTY"]:
+            spot_token = self.spot_tokens.get(index)
+            if not spot_token:
+                continue
+            ltp = self.prices.get(spot_token, {}).get("ltp", 0)
+            if ltp <= 0:
+                continue
+
+            tf_results = {}
+            for tf, interval in [("5min", "5minute"), ("15min", "15minute"), ("1hr", "60minute")]:
+                try:
+                    candles = self.kite.historical_data(
+                        spot_token, ist_now() - timedelta(days=5), ist_now(), interval
+                    )
+                    if not candles or len(candles) < 20:
+                        continue
+                    closes = [c["close"] for c in candles]
+                    ema20 = self._ema(closes, 20)
+                    rsi = self._compute_rsi(closes, 14)
+                    _, _, histogram = self._compute_macd(closes)
+
+                    bullish = 0
+                    bearish = 0
+                    if ltp > ema20: bullish += 1
+                    else: bearish += 1
+                    if rsi > 55: bullish += 1
+                    elif rsi < 45: bearish += 1
+                    if histogram > 0: bullish += 1
+                    else: bearish += 1
+
+                    direction = "BULLISH" if bullish > bearish else "BEARISH" if bearish > bullish else "NEUTRAL"
+                    tf_results[tf] = {
+                        "direction": direction,
+                        "ema20": round(ema20, 1),
+                        "rsi": round(rsi, 1),
+                        "macd": round(histogram, 2),
+                        "bullish": bullish,
+                        "bearish": bearish,
+                    }
+                except Exception:
+                    pass
+
+            # Confluence score
+            directions = [v["direction"] for v in tf_results.values()]
+            bull_count = sum(1 for d in directions if d == "BULLISH")
+            bear_count = sum(1 for d in directions if d == "BEARISH")
+            total_tf = len(directions)
+
+            if bull_count == total_tf and total_tf >= 2:
+                confluence = "ALL_BULLISH"
+                conf_score = 15
+            elif bear_count == total_tf and total_tf >= 2:
+                confluence = "ALL_BEARISH"
+                conf_score = 15
+            elif bull_count > bear_count:
+                confluence = "MOSTLY_BULLISH"
+                conf_score = 8
+            elif bear_count > bull_count:
+                confluence = "MOSTLY_BEARISH"
+                conf_score = 8
+            else:
+                confluence = "CONFLICTING"
+                conf_score = 0
+
+            result[index.lower()] = {
+                "timeframes": tf_results,
+                "confluence": confluence,
+                "confScore": conf_score,
+                "bullCount": bull_count,
+                "bearCount": bear_count,
+            }
+        return result
+
+    # ── FII/DII DATA ──────────────────────────────────────────────────
+
+    _fii_cache = {}
+    _fii_cache_time = 0
+
+    def get_fii_dii(self) -> dict:
+        """Fetch FII/DII data from NSE API. Cached for 1 hour."""
+        import requests
+        now = time.time()
+        if self._fii_cache and now - self._fii_cache_time < 3600:
+            return self._fii_cache
+
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/json",
+                "Referer": "https://www.nseindia.com/",
+            }
+            session = requests.Session()
+            session.get("https://www.nseindia.com/", headers=headers, timeout=5)
+            resp = session.get("https://www.nseindia.com/api/fiidiiTradeReact", headers=headers, timeout=10)
+            if resp.status_code != 200:
+                return self._fii_cache or {"error": "NSE API failed"}
+
+            data = resp.json()
+            fii_buy = 0
+            fii_sell = 0
+            dii_buy = 0
+            dii_sell = 0
+            for item in data:
+                cat = item.get("category", "")
+                if "FII" in cat or "FPI" in cat:
+                    fii_buy += float(item.get("buyValue", 0) or 0)
+                    fii_sell += float(item.get("sellValue", 0) or 0)
+                elif "DII" in cat:
+                    dii_buy += float(item.get("buyValue", 0) or 0)
+                    dii_sell += float(item.get("sellValue", 0) or 0)
+
+            fii_net = round(fii_buy - fii_sell, 2)
+            dii_net = round(dii_buy - dii_sell, 2)
+
+            # Signal classification
+            if fii_net > 1000:
+                signal = "STRONG_BULL"
+            elif fii_net > 200:
+                signal = "BULL"
+            elif fii_net < -1000:
+                signal = "STRONG_BEAR"
+            elif fii_net < -200:
+                signal = "BEAR"
+            else:
+                signal = "NEUTRAL"
+
+            result = {
+                "fiiBuy": fii_buy, "fiiSell": fii_sell, "fiiNet": fii_net,
+                "diiBuy": dii_buy, "diiSell": dii_sell, "diiNet": dii_net,
+                "signal": signal,
+                "timestamp": ist_now().strftime("%I:%M %p IST"),
+            }
+            MarketEngine._fii_cache = result
+            MarketEngine._fii_cache_time = now
+            return result
+        except Exception as e:
+            print(f"[FII/DII] Error: {e}")
+            return self._fii_cache or {"fiiNet": 0, "diiNet": 0, "signal": "UNKNOWN"}
+
+    # ── GLOBAL MARKET CUES ────────────────────────────────────────────
+
+    _global_cache = {}
+    _global_cache_time = 0
+
+    def get_global_cues(self) -> dict:
+        """Fetch Dow/S&P/DXY/Crude. Cached for 15 min."""
+        now = time.time()
+        if self._global_cache and now - self._global_cache_time < 900:
+            return self._global_cache
+
+        try:
+            import yfinance as yf
+            tickers = {
+                "dow": "YM=F",
+                "sp500": "ES=F",
+                "dxy": "DX-Y.NYB",
+                "crude": "CL=F",
+            }
+            result = {}
+            for name, symbol in tickers.items():
+                try:
+                    t = yf.Ticker(symbol)
+                    hist = t.history(period="2d")
+                    if len(hist) >= 2:
+                        prev = float(hist.iloc[-2]["Close"])
+                        curr = float(hist.iloc[-1]["Close"])
+                        chg = round(curr - prev, 2)
+                        chg_pct = round((chg / prev) * 100, 2) if prev > 0 else 0
+                        result[name] = {"price": curr, "change": chg, "changePct": chg_pct}
+                    elif len(hist) >= 1:
+                        result[name] = {"price": float(hist.iloc[-1]["Close"]), "change": 0, "changePct": 0}
+                except Exception:
+                    pass
+
+            # Overall signal
+            dow_pct = result.get("dow", {}).get("changePct", 0)
+            sp_pct = result.get("sp500", {}).get("changePct", 0)
+            dxy_pct = result.get("dxy", {}).get("changePct", 0)
+
+            bull_cues = 0
+            bear_cues = 0
+            if dow_pct > 0.3: bull_cues += 1
+            elif dow_pct < -0.3: bear_cues += 1
+            if sp_pct > 0.3: bull_cues += 1
+            elif sp_pct < -0.3: bear_cues += 1
+            if dxy_pct < -0.2: bull_cues += 1  # Dollar down = Nifty up
+            elif dxy_pct > 0.2: bear_cues += 1
+
+            if bull_cues >= 2:
+                signal = "BULLISH"
+            elif bear_cues >= 2:
+                signal = "BEARISH"
+            else:
+                signal = "NEUTRAL"
+
+            result["signal"] = signal
+            result["timestamp"] = ist_now().strftime("%I:%M %p IST")
+            MarketEngine._global_cache = result
+            MarketEngine._global_cache_time = now
+            return result
+        except Exception as e:
+            print(f"[GLOBAL] Error: {e}")
+            return self._global_cache or {"signal": "UNKNOWN"}
+
     # ── TRAP VERDICT — Data-driven trade decision engine ─────────────────
 
     def get_trap_verdict(self) -> dict:
@@ -1445,11 +1694,57 @@ class MarketEngine:
                 bear_score += 3
                 bear_reasons.append(f"VIX {vix:.1f} elevated = fear [3pts]")
 
+            # ── 6. VWAP (5 pts max) ──
+            vwap = self._get_vwap(index)
+            if vwap > 0:
+                if ltp > vwap * 1.002:
+                    bull_score += 5
+                    bull_reasons.append(f"Price {ltp:.0f} above VWAP {vwap:.0f} = buyers winning [5pts]")
+                elif ltp < vwap * 0.998:
+                    bear_score += 5
+                    bear_reasons.append(f"Price {ltp:.0f} below VWAP {vwap:.0f} = sellers winning [5pts]")
+
+            # ── 7. MULTI-TIMEFRAME (15 pts max) ──
+            mtf = self.get_multi_timeframe()
+            mtf_data = mtf.get(key, {})
+            mtf_conf = mtf_data.get("confluence", "")
+            mtf_score = mtf_data.get("confScore", 0)
+            if "BULLISH" in mtf_conf:
+                bull_score += mtf_score
+                bull_reasons.append(f"Multi-TF: {mtf_conf} (5m+15m+1hr) [{mtf_score}pts]")
+            elif "BEARISH" in mtf_conf:
+                bear_score += mtf_score
+                bear_reasons.append(f"Multi-TF: {mtf_conf} (5m+15m+1hr) [{mtf_score}pts]")
+
+            # ── 8. FII/DII (10 pts max) ──
+            fii = self.get_fii_dii()
+            fii_signal = fii.get("signal", "NEUTRAL")
+            fii_net = fii.get("fiiNet", 0)
+            if fii_signal in ("STRONG_BULL", "BULL"):
+                pts = 10 if fii_signal == "STRONG_BULL" else 5
+                bull_score += pts
+                bull_reasons.append(f"FII net: +{fii_net:.0f}Cr ({fii_signal}) [{pts}pts]")
+            elif fii_signal in ("STRONG_BEAR", "BEAR"):
+                pts = 10 if fii_signal == "STRONG_BEAR" else 5
+                bear_score += pts
+                bear_reasons.append(f"FII net: {fii_net:.0f}Cr ({fii_signal}) [{pts}pts]")
+
+            # ── 9. GLOBAL CUES (10 pts max) ──
+            gl = self.get_global_cues()
+            gl_signal = gl.get("signal", "NEUTRAL")
+            dow_pct = gl.get("dow", {}).get("changePct", 0)
+            if gl_signal == "BULLISH":
+                bull_score += 10
+                bull_reasons.append(f"Global BULLISH: Dow {dow_pct:+.1f}% [10pts]")
+            elif gl_signal == "BEARISH":
+                bear_score += 10
+                bear_reasons.append(f"Global BEARISH: Dow {dow_pct:+.1f}% [10pts]")
+
             # ════════════════════════════════════════════════
-            # FINAL DECISION — Based on probability spread
+            # FINAL DECISION — Based on probability spread (out of ~140 max)
             # ════════════════════════════════════════════════
-            bull_prob = min(bull_score, 100)
-            bear_prob = min(bear_score, 100)
+            bull_prob = min(bull_score, 140)
+            bear_prob = min(bear_score, 140)
             total = bull_prob + bear_prob if bull_prob + bear_prob > 0 else 1
             bull_pct = round(bull_prob / total * 100)
             bear_pct = round(bear_prob / total * 100)
@@ -2561,9 +2856,19 @@ class MarketEngine:
                 pass
 
     def _background_verdict_check(self):
-        """Run heavy verdict + stop hunt + trade entry checks in background."""
+        """Run heavy verdict + stop hunt + trade entry + backtest in background."""
         try:
             verdict = self.get_trap_verdict()
+
+            # Backtest: log verdict + check pending outcomes
+            if hasattr(self, 'backtest_tracker') and self.backtest_tracker:
+                for idx in ["NIFTY", "BANKNIFTY"]:
+                    v = verdict.get(idx.lower(), {})
+                    if v.get("action") and v["action"] != "NO TRADE":
+                        spot = self.prices.get(self.spot_tokens.get(idx), {}).get("ltp", 0)
+                        self.backtest_tracker.log_verdict(idx, v["action"], v.get("winProbability", 0), spot)
+                self.backtest_tracker.check_outcomes(self.prices, self.spot_tokens)
+
             if not hasattr(self, 'trade_manager') or not self.trade_manager:
                 return
             self.trade_manager.update_verdict_cache(verdict)

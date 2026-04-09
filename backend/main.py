@@ -240,6 +240,26 @@ async def oi_summary():
     return _get_or_cache("oi_summary", lambda: engine.get_oi_change_summary())
 
 
+@app.get("/api/backtest-stats")
+async def backtest_stats():
+    if not engine or not hasattr(engine, 'backtest_tracker') or not engine.backtest_tracker:
+        return {"total": 0, "message": "Backtest tracker not running"}
+    return engine.backtest_tracker.get_stats()
+
+
+@app.get("/api/fii-dii")
+async def fii_dii():
+    return _get_or_cache("fii_dii", lambda: engine.get_fii_dii(), ttl=3600)
+
+@app.get("/api/global-cues")
+async def global_cues():
+    return _get_or_cache("global_cues", lambda: engine.get_global_cues(), ttl=900)
+
+@app.get("/api/multi-timeframe")
+async def multi_timeframe():
+    return _get_or_cache("multi_tf", lambda: engine.get_multi_timeframe(), ttl=60)
+
+
 @app.get("/api/seller-summary")
 async def seller_summary():
     return _get_or_cache("seller_summary", lambda: engine.get_seller_summary(), ttl=15)

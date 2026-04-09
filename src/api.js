@@ -154,3 +154,21 @@ export async function fetchPriceAction(expiry = null) {
   if (!res.ok) return null;
   return res.json();
 }
+
+export async function fetchFiiDii() {
+  const res = await fetch("/api/fii-dii");
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function fetchGlobalCues() {
+  const res = await fetch("/api/global-cues");
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function fetchBacktestStats() {
+  const res = await fetch("/api/backtest-stats");
+  if (!res.ok) return null;
+  return res.json();
+}
