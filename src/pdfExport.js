@@ -5,40 +5,65 @@
 
 function openPrintWindow(title, htmlContent) {
   const win = window.open("", "_blank", "width=900,height=700");
+  const dateNow = new Date().toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  const timeNow = new Date().toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: true });
+
   win.document.write(`
     <html><head><title>${title}</title>
     <style>
-      body { font-family: -apple-system, sans-serif; background: #fff; color: #111; padding: 24px; margin: 0; }
-      h1 { font-size: 20px; margin-bottom: 4px; }
-      h2 { font-size: 15px; color: #555; margin-top: 24px; margin-bottom: 8px; border-bottom: 2px solid #eee; padding-bottom: 4px; }
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap');
+      * { box-sizing: border-box; }
+      body { font-family: 'Inter', -apple-system, sans-serif; background: #fff; color: #1a1a2e; padding: 0; margin: 0; }
+      .header-bar { background: linear-gradient(135deg, #0a0a14 0%, #1a1a3e 100%); color: #fff; padding: 28px 32px; margin-bottom: 24px; }
+      .header-bar h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: 2px; font-weight: 900; }
+      .header-bar .sub { font-size: 11px; color: #8888aa; margin-top: 6px; }
+      .header-bar .accent { color: #0A84FF; }
+      .content { padding: 0 32px 32px; }
+      h2 { font-size: 14px; color: #0A84FF; margin-top: 28px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 2px solid #0A84FF22; text-transform: uppercase; letter-spacing: 1px; }
       h3 { font-size: 13px; color: #333; margin-top: 16px; margin-bottom: 6px; }
       .meta { font-size: 11px; color: #888; margin-bottom: 16px; }
-      table { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 16px; }
-      th { background: #f5f5f5; padding: 6px 8px; text-align: left; font-weight: 700; border-bottom: 2px solid #ddd; }
-      td { padding: 5px 8px; border-bottom: 1px solid #eee; }
-      .pos { color: #1a8a2e; font-weight: 600; }
-      .neg { color: #cc2020; font-weight: 600; }
+      table { width: 100%; border-collapse: collapse; font-size: 10px; margin-bottom: 16px; border-radius: 8px; overflow: hidden; }
+      th { background: #f0f4ff; padding: 7px 8px; text-align: left; font-weight: 700; border-bottom: 2px solid #dde; color: #555; text-transform: uppercase; font-size: 9px; letter-spacing: 0.5px; }
+      td { padding: 5px 8px; border-bottom: 1px solid #f0f0f5; }
+      tr:hover { background: #f8f9ff; }
+      .pos { color: #0d8a3e; font-weight: 700; }
+      .neg { color: #d4232a; font-weight: 700; }
       .atm { background: #e8f0ff; font-weight: 700; }
-      .summary { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-      .sum-card { background: #f8f8f8; border-radius: 8px; padding: 10px 14px; text-align: center; flex: 1; min-width: 100px; border: 1px solid #eee; }
-      .sum-label { font-size: 9px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
-      .sum-value { font-size: 16px; font-weight: 700; margin-top: 4px; }
-      .signal-card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+      .summary { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+      .sum-card { background: linear-gradient(135deg, #f8f9ff, #fff); border-radius: 10px; padding: 12px 14px; text-align: center; flex: 1; min-width: 90px; border: 1px solid #e8eaf0; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+      .sum-label { font-size: 8px; color: #888; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 700; }
+      .sum-value { font-size: 16px; font-weight: 900; margin-top: 4px; }
+      .signal-card { border: 1px solid #e0e4f0; border-radius: 10px; padding: 12px; margin-bottom: 10px; background: #fafbff; }
       .signal-header { display: flex; justify-content: space-between; margin-bottom: 8px; }
-      .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; }
-      .pass { color: #1a8a2e; } .warn { color: #cc8800; } .fail { color: #999; }
-      .rec-card { border: 1px solid #4a90d9; border-radius: 8px; padding: 12px; margin-bottom: 10px; background: #f0f6ff; }
+      .badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 10px; font-weight: 700; }
+      .pass { color: #0d8a3e; } .warn { color: #cc8800; } .fail { color: #999; }
+      .rec-card { border: 1px solid #0A84FF44; border-radius: 10px; padding: 14px; margin-bottom: 10px; background: linear-gradient(135deg, #f0f6ff, #fff); }
       .reason-item { margin-bottom: 4px; font-size: 11px; color: #333; padding-left: 16px; text-indent: -12px; }
-      .alert-row { padding: 6px 0; border-bottom: 1px solid #f0f0f0; font-size: 11px; display: flex; justify-content: space-between; }
-      .section-divider { border: none; border-top: 2px solid #ddd; margin: 20px 0; }
-      .bias-bullish { color: #1a8a2e; font-weight: 900; font-size: 14px; }
-      .bias-bearish { color: #cc2020; font-weight: 900; font-size: 14px; }
+      .section-divider { border: none; border-top: 2px solid #e8eaf0; margin: 24px 0; }
+      .bias-bullish { color: #0d8a3e; font-weight: 900; font-size: 14px; }
+      .bias-bearish { color: #d4232a; font-weight: 900; font-size: 14px; }
       .bias-neutral { color: #cc8800; font-weight: 900; font-size: 14px; }
       .level-box { display: inline-block; background: #f0f0f0; border-radius: 4px; padding: 4px 10px; margin: 2px; font-weight: 700; font-size: 12px; }
       .page-break { page-break-before: always; }
-      @media print { body { padding: 12px; } .page-break { page-break-before: always; } }
+      .footer { background: linear-gradient(135deg, #0a0a14, #1a1a3e); color: #fff; padding: 20px 32px; margin-top: 32px; text-align: center; }
+      .footer .brand { font-size: 16px; font-weight: 900; letter-spacing: 3px; color: #0A84FF; }
+      .footer .by { font-size: 11px; color: #8888aa; margin-top: 4px; }
+      .footer .info { font-size: 9px; color: #555; margin-top: 8px; }
+      @media print { body { padding: 0; } .page-break { page-break-before: always; } .header-bar { -webkit-print-color-adjust: exact; print-color-adjust: exact; } .footer { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
     </style>
-    </head><body>${htmlContent}</body></html>
+    </head><body>
+      <div class="header-bar">
+        <h1><span class="accent">U N I V E R S E</span></h1>
+        <div style="font-size:13px;color:#ccc">${title}</div>
+        <div class="sub">${dateNow} | ${timeNow} IST | NSE Intelligence</div>
+      </div>
+      <div class="content">${htmlContent}</div>
+      <div class="footer">
+        <div class="brand">U N I V E R S E</div>
+        <div class="by">by Kanishk Arora</div>
+        <div class="info">NSE Options Intelligence Dashboard | Data Source: Zerodha Kite Connect | Generated: ${dateNow} ${timeNow} IST</div>
+      </div>
+    </body></html>
   `);
   win.document.close();
   setTimeout(() => { win.print(); }, 500);
@@ -175,12 +200,7 @@ export function exportFullReport({ live, unusual, signals, oiSummary, sellerData
   const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   const dateStr = new Date().toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", weekday: "long", year: "numeric", month: "long", day: "numeric" });
 
-  let html = `
-    <h1 style="margin-bottom:2px">UNIVERSE - Daily Intelligence Report</h1>
-    <div style="font-size:13px;color:#333;margin-bottom:2px">${dateStr}</div>
-    <div class="meta">Generated: ${now} IST | Market Hours: 9:15 AM - 3:30 PM IST</div>
-    <hr class="section-divider">
-  `;
+  let html = ``;
 
   // ═══════════════════════════════════════════════════════════════════
   // 1. MARKET OVERVIEW
@@ -658,11 +678,5 @@ export function exportFullReport({ live, unusual, signals, oiSummary, sellerData
     }
   } else { html += `<p style="color:#888">No data</p>`; }
 
-  // Footer
-  html += `<hr class="section-divider">
-    <div style="text-align:center;font-size:10px;color:#aaa;margin-top:20px">
-      UNIVERSE Intelligence Report (15 sections) | Generated: ${now} IST | Data Source: NSE via Zerodha Kite Connect
-    </div>`;
-
-  openPrintWindow(`UNIVERSE Daily Report - ${dateStr}`, html);
+  openPrintWindow(`Daily Intelligence Report`, html);
 }
