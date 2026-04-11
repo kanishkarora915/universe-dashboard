@@ -2682,11 +2682,17 @@ export default function Universe({ onLogout }) {
             </div>
           </div>
           <button onClick={async () => {
-              const [pnlStats, pnlTrades] = await Promise.all([
-                fetch("/api/trades/stats").then(r => r.json()).catch(() => null),
-                fetch("/api/trades/closed").then(r => r.json()).catch(() => []),
+              const [pnlStats, pnlTrades, hiddenShiftD, trapVerdictD, priceActionD, oiTimelineD, fiiDiiD, globalCuesD] = await Promise.all([
+                fetch("/api/trades/stats").then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch("/api/trades/closed").then(r => r.ok ? r.json() : []).catch(() => []),
+                fetch("/api/hidden-shift").then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch("/api/trap/verdict").then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch("/api/price-action").then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch("/api/oi-timeline").then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch("/api/fii-dii").then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch("/api/global-cues").then(r => r.ok ? r.json() : null).catch(() => null),
               ]);
-              exportFullReport({ live, unusual, signals, oiSummary, sellerData, tradeAnalysis, intraday, nextday, weekly, pnlStats, pnlTrades });
+              exportFullReport({ live, unusual, signals, oiSummary, sellerData, tradeAnalysis, intraday, nextday, weekly, pnlStats, pnlTrades, hiddenShift: hiddenShiftD, trapVerdict: trapVerdictD, priceAction: priceActionD, oiTimeline: oiTimelineD, fiiDii: fiiDiiD, globalCues: globalCuesD });
           }} style={{
               background: ACCENT + "18", color: ACCENT, border: `1px solid ${ACCENT}33`,
               borderRadius: 8, padding: "6px 14px", cursor: "pointer",

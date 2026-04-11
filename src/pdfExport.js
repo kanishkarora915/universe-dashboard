@@ -114,9 +114,64 @@ export function exportSignalsToPDF(signals) {
 }
 
 
+// ── SINGLE TAB EXPORT ─────────────────────────────────────────────────
+
+export function exportTabReport(tabName, data) {
+  const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+  let html = `<h1>UNIVERSE — ${tabName} Report</h1><div class="meta">Generated: ${now} IST</div><hr style="border:none;border-top:2px solid #ddd;margin:16px 0">`;
+
+  // Convert data to readable HTML
+  if (typeof data === "object" && data !== null) {
+    html += renderDataAsHTML(data, 0);
+  } else {
+    html += `<p>${String(data)}</p>`;
+  }
+
+  html += `<hr style="border:none;border-top:2px solid #ddd;margin:20px 0"><div style="text-align:center;font-size:10px;color:#aaa">UNIVERSE ${tabName} Report | ${now} IST</div>`;
+  openPrintWindow(`UNIVERSE ${tabName} Report`, html);
+}
+
+function renderDataAsHTML(obj, depth) {
+  if (!obj || depth > 3) return "";
+  let html = "";
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) return "<p style='color:#888'>No data</p>";
+    // Check if array of objects with consistent keys → render as table
+    if (typeof obj[0] === "object" && obj[0] !== null && !Array.isArray(obj[0])) {
+      const keys = Object.keys(obj[0]).filter(k => typeof obj[0][k] !== "object");
+      if (keys.length > 0) {
+        html += `<table><tr>${keys.map(k => `<th>${k}</th>`).join("")}</tr>`;
+        for (const item of obj.slice(0, 50)) {
+          html += `<tr>${keys.map(k => {
+            const v = item[k];
+            const cls = typeof v === "number" ? (v > 0 ? 'class="pos"' : v < 0 ? 'class="neg"' : '') : '';
+            return `<td ${cls}>${v !== null && v !== undefined ? v : '-'}</td>`;
+          }).join("")}</tr>`;
+        }
+        html += `</table>`;
+        return html;
+      }
+    }
+    obj.forEach((item, i) => { html += `<div style="margin-bottom:6px">${typeof item === "object" ? renderDataAsHTML(item, depth + 1) : item}</div>`; });
+  } else {
+    for (const [key, val] of Object.entries(obj)) {
+      if (key.startsWith("_")) continue;
+      if (val === null || val === undefined) continue;
+      if (typeof val === "object") {
+        html += `<h3 style="margin-top:12px">${key}</h3>${renderDataAsHTML(val, depth + 1)}`;
+      } else {
+        const cls = typeof val === "number" ? (val > 0 ? 'class="pos"' : val < 0 ? 'class="neg"' : '') : '';
+        html += `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #f0f0f0;font-size:11px"><span style="color:#555;font-weight:700">${key}</span><span ${cls} style="font-weight:600">${val}</span></div>`;
+      }
+    }
+  }
+  return html;
+}
+
+
 // ── FULL A-Z DAILY REPORT ─────────────────────────────────────────────
 
-export function exportFullReport({ live, unusual, signals, oiSummary, sellerData, tradeAnalysis, intraday, nextday, weekly, pnlStats, pnlTrades }) {
+export function exportFullReport({ live, unusual, signals, oiSummary, sellerData, tradeAnalysis, intraday, nextday, weekly, pnlStats, pnlTrades, hiddenShift, trapVerdict, priceAction, oiTimeline, fiiDii, globalCues }) {
   const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   const dateStr = new Date().toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", weekday: "long", year: "numeric", month: "long", day: "numeric" });
 
@@ -486,10 +541,127 @@ export function exportFullReport({ live, unusual, signals, oiSummary, sellerData
     html += `</table>`;
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  // 11. FII/DII + GLOBAL CUES
+  // ═══════════════════════════════════════════════════════════════════
+  html += `<hr class="section-divider"><h2>11. FII/DII + GLOBAL MARKET CUES</h2>`;
+  if (fiiDii && fiiDii.fiiNet !== undefined) {
+    html += `<div class="summary">
+      <div class="sum-card"><div class="sum-label">FII Net</div><div class="sum-value ${fiiDii.fiiNet >= 0 ? 'pos' : 'neg'}">${fiiDii.fiiNet >= 0 ? '+' : ''}${Math.round(fiiDii.fiiNet)} Cr</div></div>
+      <div class="sum-card"><div class="sum-label">DII Net</div><div class="sum-value ${fiiDii.diiNet >= 0 ? 'pos' : 'neg'}">${fiiDii.diiNet >= 0 ? '+' : ''}${Math.round(fiiDii.diiNet)} Cr</div></div>
+      <div class="sum-card"><div class="sum-label">Signal</div><div class="sum-value">${fiiDii.signal}</div></div>
+    </div>`;
+  }
+  if (globalCues && globalCues.dow) {
+    html += `<h3>Global Cues (${globalCues.signal || 'N/A'})</h3><div class="summary">`;
+    for (const [name, d] of Object.entries(globalCues)) {
+      if (d && d.changePct !== undefined) {
+        html += `<div class="sum-card"><div class="sum-label">${name.toUpperCase()}</div><div class="sum-value ${d.changePct >= 0 ? 'pos' : 'neg'}">${d.changePct >= 0 ? '+' : ''}${d.changePct}%</div></div>`;
+      }
+    }
+    html += `</div>`;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // 12. HIDDEN SHIFT
+  // ═══════════════════════════════════════════════════════════════════
+  html += `<hr class="section-divider"><div class="page-break"></div><h2>12. HIDDEN SHIFT — Institutional OI Patterns</h2>`;
+  if (hiddenShift) {
+    for (const key of ["nifty", "banknifty"]) {
+      const d = hiddenShift[key];
+      if (!d) continue;
+      html += `<h3>${key.toUpperCase()} — ${d.overallSignal || 'N/A'} (${d.confidence || ''})</h3>`;
+      html += `<p style="font-size:12px">${d.verdict || ''}</p>`;
+      if (d.patterns?.length) {
+        for (const p of d.patterns) {
+          html += `<div class="signal-card"><strong>P${p.id}: ${p.name}</strong> — ${p.direction} — Target: ${p.targetStrike}<br><span style="font-size:11px;color:#555">${p.insight}</span></div>`;
+        }
+      }
+    }
+  } else { html += `<p style="color:#888">No data</p>`; }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // 13. TRAP FINDER VERDICT
+  // ═══════════════════════════════════════════════════════════════════
+  html += `<hr class="section-divider"><h2>13. TRAP FINDER — Probability Verdict</h2>`;
+  if (trapVerdict) {
+    for (const key of ["nifty", "banknifty"]) {
+      const v = trapVerdict[key];
+      if (!v) continue;
+      html += `<h3>${key.toUpperCase()} — ${v.action || 'N/A'} (${v.confidence}, ${v.winProbability}% edge)</h3>`;
+      html += `<div class="summary">
+        <div class="sum-card"><div class="sum-label">Bullish</div><div class="sum-value pos">${v.bullPct}%</div></div>
+        <div class="sum-card"><div class="sum-label">Bearish</div><div class="sum-value neg">${v.bearPct}%</div></div>
+      </div>`;
+      if (v.trade?.entry) {
+        html += `<table style="width:auto"><tr><td><strong>Strike:</strong> ${v.trade.strike}</td><td><strong>Entry:</strong> ${v.trade.entry}</td><td><strong>SL:</strong> ${v.trade.sl}</td><td><strong>T1:</strong> ${v.trade.t1}</td><td><strong>R:R:</strong> ${v.trade.rr}</td></tr></table>`;
+      }
+      if (v.reasons?.length) {
+        html += `<div style="margin-top:6px">`;
+        v.reasons.forEach((r, i) => { html += `<div style="font-size:11px;margin-bottom:2px">${i+1}. ${r}</div>`; });
+        html += `</div>`;
+      }
+    }
+  } else { html += `<p style="color:#888">No data</p>`; }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // 14. PRICE ACTION
+  // ═══════════════════════════════════════════════════════════════════
+  html += `<hr class="section-divider"><div class="page-break"></div><h2>14. PRICE ACTION — ATM±3 Analysis</h2>`;
+  if (priceAction) {
+    for (const key of ["nifty", "banknifty"]) {
+      const d = priceAction[key];
+      if (!d) continue;
+      const t = d.trade || {};
+      html += `<h3>${key.toUpperCase()} — ${t.action || 'N/A'} (${t.confidence})</h3>`;
+      html += `<div class="summary">
+        <div class="sum-card"><div class="sum-label">Premium Bias</div><div class="sum-value">${d.premBias}</div></div>
+        <div class="sum-card"><div class="sum-label">Momentum</div><div class="sum-value">${d.momBias}</div></div>
+        <div class="sum-card"><div class="sum-label">OI Bias</div><div class="sum-value">${d.oiBias}</div></div>
+        <div class="sum-card"><div class="sum-label">Straddle</div><div class="sum-value">${d.straddle}</div></div>
+      </div>`;
+      if (d.alerts?.length) {
+        html += `<div style="margin-top:6px">`;
+        d.alerts.forEach(a => { html += `<div style="font-size:11px;color:#cc8800">${a.strike}: ${a.msg}</div>`; });
+        html += `</div>`;
+      }
+    }
+  } else { html += `<p style="color:#888">No data</p>`; }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // 15. OI TIMELINE + NEXT DAY PREDICTION
+  // ═══════════════════════════════════════════════════════════════════
+  html += `<hr class="section-divider"><div class="page-break"></div><h2>15. OI TIMELINE + NEXT DAY PREDICTION</h2>`;
+  if (oiTimeline) {
+    for (const key of ["nifty", "banknifty"]) {
+      const d = oiTimeline[key];
+      if (!d) continue;
+      html += `<h3>${key.toUpperCase()}</h3>`;
+      if (d.timeline?.length) {
+        html += `<table><tr><th>Time</th><th>CE OI</th><th>CE Chg</th><th>PE OI</th><th>PE Chg</th><th>PCR</th><th>Spot</th></tr>`;
+        for (const r of d.timeline) {
+          html += `<tr><td>${r.time}</td><td>${fmtL(r.ceOI)}</td><td class="${r.ceChange > 0 ? 'pos' : 'neg'}">${r.ceChange > 0 ? '+' : ''}${fmtL(r.ceChange)}</td><td>${fmtL(r.peOI)}</td><td class="${r.peChange > 0 ? 'pos' : 'neg'}">${r.peChange > 0 ? '+' : ''}${fmtL(r.peChange)}</td><td>${r.pcr}</td><td>${Math.round(r.spot)?.toLocaleString("en-IN")}</td></tr>`;
+        }
+        html += `</table>`;
+      }
+      if (d.behaviors?.length) {
+        html += `<div style="margin-top:8px"><strong>OI Behaviors:</strong></div>`;
+        d.behaviors.forEach(b => { html += `<div style="font-size:11px;color:#cc8800">${b}</div>`; });
+      }
+      const pred = d.prediction;
+      if (pred && pred.direction !== "UNKNOWN") {
+        html += `<div style="margin-top:10px;padding:10px;background:${pred.direction.includes('UP') ? '#e8ffe8' : pred.direction.includes('DOWN') ? '#ffe8e8' : '#fff8e8'};border-radius:8px">
+          <strong>NEXT DAY: ${pred.direction}</strong> (${pred.confidence})<br>`;
+        pred.reasons?.forEach((r, i) => { html += `<div style="font-size:11px">${i+1}. ${r}</div>`; });
+        html += `</div>`;
+      }
+    }
+  } else { html += `<p style="color:#888">No data</p>`; }
+
   // Footer
   html += `<hr class="section-divider">
     <div style="text-align:center;font-size:10px;color:#aaa;margin-top:20px">
-      UNIVERSE Intelligence Report | Generated: ${now} IST | Data Source: NSE via Zerodha Kite Connect
+      UNIVERSE Intelligence Report (15 sections) | Generated: ${now} IST | Data Source: NSE via Zerodha Kite Connect
     </div>`;
 
   openPrintWindow(`UNIVERSE Daily Report - ${dateStr}`, html);
