@@ -19,6 +19,11 @@ from fastapi.staticfiles import StaticFiles
 from kiteconnect import KiteConnect
 
 from engine import MarketEngine
+from trading_times import (
+    get_live_dashboard as tt_live, get_today_timeline as tt_timeline,
+    get_daily_report as tt_daily, get_weekly_report as tt_weekly,
+    get_monthly_report as tt_monthly, init_db as tt_init_db,
+)
 from ml_feedback import (
     get_engine_accuracy, get_optimal_weights, get_hourly_analysis,
     get_pattern_analysis, get_weekly_report, get_weights_info,
@@ -517,6 +522,39 @@ async def report_training_history(limit: int = 20):
 @app.get("/api/reports/auto-train-status")
 async def report_auto_train_status():
     return get_auto_train_status()
+
+
+# ── Trading Times Routes ─────────────────────────────────────────────────
+
+@app.get("/api/trading-times/live/{index}")
+async def trading_times_live(index: str):
+    tt_init_db()
+    idx = index.upper()
+    if idx not in ("NIFTY", "BANKNIFTY"):
+        return JSONResponse({"error": "Invalid index"}, status_code=400)
+    if not engine:
+        return {"signal": {"windowType": "NO_DATA", "blastDirection": "NONE", "confidence": 0, "message": "Engine not running"}}
+    return tt_live(engine, idx)
+
+@app.get("/api/trading-times/timeline/{index}")
+async def trading_times_timeline(index: str):
+    tt_init_db()
+    return tt_timeline(index.upper())
+
+@app.get("/api/trading-times/report/daily")
+async def trading_times_daily(date: str = None):
+    tt_init_db()
+    return tt_daily(date)
+
+@app.get("/api/trading-times/report/weekly")
+async def trading_times_weekly():
+    tt_init_db()
+    return tt_weekly()
+
+@app.get("/api/trading-times/report/monthly")
+async def trading_times_monthly(year: int = None, month: int = None):
+    tt_init_db()
+    return tt_monthly(year, month)
 
 
 # ── WebSocket Route ──────────────────────────────────────────────────────

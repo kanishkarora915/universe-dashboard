@@ -266,6 +266,10 @@ class MarketEngine:
         self.ltp_history = {}  # {(index, strike, opt_type): [{"t": time, "ltp": x, "oi": y}, ...]}
         self._pa_last_record = 0
 
+        # ── Trading Times: 5-min regime detection ──
+        self._tt_last_capture = 0
+        self._tt_yesterday_saved = False
+
         # ── Expiry tracking ──
         self.nearest_expiry = {}   # {"NIFTY": date, "BANKNIFTY": date}
         self.all_expiries = {"NIFTY": [], "BANKNIFTY": []}  # All future expiry dates
@@ -354,6 +358,25 @@ class MarketEngine:
         t = threading.Thread(target=_trainer_loop, daemon=True, name="auto-trainer")
         t.start()
         print("[ENGINE] Auto-trainer thread started (trains Sunday 8 PM IST)")
+
+    def _capture_trading_times(self):
+        """Background: capture 5-min trading times snapshot."""
+        try:
+            from trading_times import capture_snapshot, init_db
+            init_db()  # Idempotent
+            for idx in ["NIFTY", "BANKNIFTY"]:
+                capture_snapshot(self, idx)
+        except Exception as e:
+            print(f"[TRADING-TIMES] Capture error: {e}")
+
+    def _save_yesterday_oi(self):
+        """Background: save EOD OI snapshot for next-day comparison."""
+        try:
+            from trading_times import save_yesterday_oi, init_db
+            init_db()
+            save_yesterday_oi(self)
+        except Exception as e:
+            print(f"[TRADING-TIMES] Yesterday save error: {e}")
 
     def _start_trap_scanner(self):
         """Initialize and start the Trap Fingerprint Engine."""
@@ -2956,6 +2979,17 @@ class MarketEngine:
         if now - self._pa_last_record >= 10:
             self._pa_last_record = now
             self._record_price_action()
+
+        # Trading Times: capture snapshot every 5 min (300 sec)
+        if now - self._tt_last_capture >= 300:
+            self._tt_last_capture = now
+            threading.Thread(target=self._capture_trading_times, daemon=True, name="tt-capture").start()
+
+        # Trading Times: save yesterday OI at 3:25 PM
+        now_ist = ist_now()
+        if now_ist.hour == 15 and now_ist.minute >= 25 and not self._tt_yesterday_saved:
+            self._tt_yesterday_saved = True
+            threading.Thread(target=self._save_yesterday_oi, daemon=True).start()
 
         # Auto-trade: SL/target check every 5s (lightweight), verdict every 120s (heavy, background)
         if hasattr(self, 'trade_manager') and self.trade_manager and now - self.trade_manager._last_sl_check >= 5:
