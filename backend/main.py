@@ -258,6 +258,11 @@ async def backtest_stats():
     return engine.backtest_tracker.get_stats()
 
 
+@app.get("/api/oi-timeline")
+async def oi_timeline():
+    return _get_or_cache("oi_timeline", lambda: engine.get_oi_timeline(), ttl=30)
+
+
 @app.get("/api/fii-dii")
 async def fii_dii():
     return _get_or_cache("fii_dii", lambda: engine.get_fii_dii(), ttl=3600)

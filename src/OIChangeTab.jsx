@@ -22,6 +22,7 @@ export default function OIChangeTab({ oiData }) {
   const [niftyExpiryData, setNiftyExpiryData] = useState(null);
   const [bnExpiryData, setBnExpiryData] = useState(null);
   const [loading, setLoading] = useState({});
+  const [timeline, setTimeline] = useState(null);
 
   // Fetch available expiries on mount
   useEffect(() => {
@@ -66,6 +67,14 @@ export default function OIChangeTab({ oiData }) {
 
   useEffect(() => { loadExpiryChain("NIFTY", selectedNiftyExpiry); }, [selectedNiftyExpiry, loadExpiryChain]);
   useEffect(() => { loadExpiryChain("BANKNIFTY", selectedBnExpiry); }, [selectedBnExpiry, loadExpiryChain]);
+
+  // Fetch OI timeline every 30s
+  useEffect(() => {
+    const load = () => fetch("/api/oi-timeline").then(r => r.ok ? r.json() : null).then(d => d && setTimeline(d)).catch(() => {});
+    load();
+    const iv = setInterval(load, 30000);
+    return () => clearInterval(iv);
+  }, []);
 
   if (!oiData && !niftyExpiryData && !bnExpiryData) {
     return (
@@ -180,6 +189,95 @@ export default function OIChangeTab({ oiData }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {renderIndex("nifty", niftyExpiries, selectedNiftyExpiry, setSelectedNiftyExpiry, niftyExpiryData, loading.nifty)}
       {renderIndex("banknifty", bnExpiries, selectedBnExpiry, setSelectedBnExpiry, bnExpiryData, loading.banknifty)}
+
+      {/* ── 15-MIN OI TIMELINE + NEXT DAY PREDICTION ── */}
+      {timeline && ["nifty", "banknifty"].map(key => {
+        const t = timeline[key];
+        if (!t) return null;
+        const label = key === "nifty" ? "NIFTY" : "BANKNIFTY";
+        const pred = t.prediction || {};
+        const predColor = pred.direction?.includes("UP") || pred.direction?.includes("BULLISH") ? GREEN : pred.direction?.includes("DOWN") || pred.direction?.includes("BEARISH") ? RED : YELLOW;
+
+        return (
+          <div key={key} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {/* Current OI Totals */}
+            <div style={{ background: "#0D0D15", borderRadius: 10, padding: "12px", border: `1px solid ${BORDER}` }}>
+              <div style={{ color: ACCENT, fontWeight: 900, fontSize: 13, marginBottom: 10 }}>{label} — TOTAL OI</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+                <SumCard label="TOTAL CE OI" value={fmtL(t.current?.ceOI)} color={RED} />
+                <SumCard label="TOTAL PE OI" value={fmtL(t.current?.peOI)} color={GREEN} />
+                <SumCard label="TOTAL OI" value={fmtL(t.current?.total)} color="#ccc" />
+                <SumCard label="PCR" value={t.current?.pcr} color={t.current?.pcr > 1.2 ? GREEN : t.current?.pcr < 0.8 ? RED : YELLOW} />
+              </div>
+            </div>
+
+            {/* 15-Min Timeline Table */}
+            {t.timeline?.length > 0 && (
+              <div style={{ background: "#0D0D15", borderRadius: 10, padding: "12px", border: `1px solid ${PURPLE}33` }}>
+                <div style={{ color: PURPLE, fontWeight: 900, fontSize: 13, marginBottom: 10 }}>{label} — 15-MIN OI TIMELINE</div>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                    <thead>
+                      <tr style={{ borderBottom: `1px solid ${BORDER}` }}>
+                        <th style={{ padding: "5px 6px", color: "#555", textAlign: "left" }}>Time</th>
+                        <th style={{ padding: "5px 6px", color: RED, textAlign: "right" }}>CE OI</th>
+                        <th style={{ padding: "5px 6px", color: RED, textAlign: "right" }}>CE Chg</th>
+                        <th style={{ padding: "5px 6px", color: GREEN, textAlign: "right" }}>PE OI</th>
+                        <th style={{ padding: "5px 6px", color: GREEN, textAlign: "right" }}>PE Chg</th>
+                        <th style={{ padding: "5px 6px", color: "#ccc", textAlign: "right" }}>Total</th>
+                        <th style={{ padding: "5px 6px", color: "#ccc", textAlign: "right" }}>Net Chg</th>
+                        <th style={{ padding: "5px 6px", color: YELLOW, textAlign: "right" }}>PCR</th>
+                        <th style={{ padding: "5px 6px", color: "#ccc", textAlign: "right" }}>Spot</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {t.timeline.map((row, i) => (
+                        <tr key={i} style={{ borderBottom: `1px solid ${BORDER}33` }}>
+                          <td style={{ padding: "4px 6px", color: ACCENT, fontWeight: 700 }}>{row.time}</td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", color: "#ccc" }}>{fmtL(row.ceOI)}</td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", color: row.ceChange > 0 ? GREEN : row.ceChange < 0 ? RED : "#555", fontWeight: 700 }}>{row.ceChange > 0 ? "+" : ""}{fmtL(row.ceChange)}</td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", color: "#ccc" }}>{fmtL(row.peOI)}</td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", color: row.peChange > 0 ? GREEN : row.peChange < 0 ? RED : "#555", fontWeight: 700 }}>{row.peChange > 0 ? "+" : ""}{fmtL(row.peChange)}</td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", color: "#888" }}>{fmtL(row.total)}</td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", color: row.netChange > 0 ? GREEN : row.netChange < 0 ? RED : "#555", fontWeight: 700 }}>{row.netChange > 0 ? "+" : ""}{fmtL(row.netChange)}</td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", color: row.pcr > 1.2 ? GREEN : row.pcr < 0.8 ? RED : YELLOW }}>{row.pcr}</td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", color: "#888" }}>{row.spot?.toLocaleString("en-IN")}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* OI Behaviors */}
+            {t.behaviors?.length > 0 && (
+              <div style={{ background: ORANGE + "08", borderRadius: 10, padding: "10px 12px", border: `1px solid ${ORANGE}33` }}>
+                <div style={{ color: ORANGE, fontWeight: 700, fontSize: 12, marginBottom: 6 }}>OI BEHAVIORS DETECTED</div>
+                {t.behaviors.map((b, i) => (
+                  <div key={i} style={{ color: "#ccc", fontSize: 11, marginBottom: 3 }}>{"\u26A0"} {b}</div>
+                ))}
+              </div>
+            )}
+
+            {/* Next Day Prediction */}
+            {pred.direction && pred.direction !== "UNKNOWN" && (
+              <div style={{ background: predColor + "08", borderRadius: 10, padding: "12px 14px", border: `1px solid ${predColor}44` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <div>
+                    <div style={{ color: "#888", fontSize: 10, fontWeight: 700 }}>NEXT DAY PREDICTION</div>
+                    <div style={{ color: predColor, fontSize: 18, fontWeight: 900, marginTop: 2 }}>{pred.direction}</div>
+                  </div>
+                  <span style={{ background: predColor + "22", color: predColor, padding: "3px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{pred.confidence}</span>
+                </div>
+                {pred.reasons?.map((r, i) => (
+                  <div key={i} style={{ color: "#ccc", fontSize: 11, marginBottom: 3, paddingLeft: 8 }}>{i + 1}. {r}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

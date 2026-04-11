@@ -262,6 +262,10 @@ class MarketEngine:
         self.oi_snapshots = []
         self._last_snapshot_time = 0
 
+        # ── 15-min OI timeline for OI Change tab ──
+        self.oi_timeline = []  # [{time, nifty: {ce_oi, pe_oi, total}, banknifty: {...}}]
+        self._last_oi_timeline = 0
+
         # ── Price Action: LTP history for ATM±3 strikes ──
         self.ltp_history = {}  # {(index, strike, opt_type): [{"t": time, "ltp": x, "oi": y}, ...]}
         self._pa_last_record = 0
@@ -1405,6 +1409,206 @@ class MarketEngine:
             }
 
         return result
+
+    # ── 15-MIN OI TIMELINE + NEXT DAY PREDICTION ────────────────────────
+
+    def _record_oi_timeline(self):
+        """Record total CE/PE OI every 15 min for timeline analysis."""
+        entry = {"time": ist_now().strftime("%I:%M %p")}
+        for index in ["NIFTY", "BANKNIFTY"]:
+            chain = self.chains.get(index, {})
+            ce_oi = sum(s.get("ce_oi", 0) for s in chain.values())
+            pe_oi = sum(s.get("pe_oi", 0) for s in chain.values())
+            spot = self.prices.get(self.spot_tokens.get(index), {}).get("ltp", 0)
+
+            # OI change from open
+            ce_initial = sum(self.initial_oi.get(tok, 0) for tok, info in self.token_to_info.items()
+                             if info["index"] == index and info["opt_type"] == "CE")
+            pe_initial = sum(self.initial_oi.get(tok, 0) for tok, info in self.token_to_info.items()
+                             if info["index"] == index and info["opt_type"] == "PE")
+
+            entry[index.lower()] = {
+                "ceOI": ce_oi, "peOI": pe_oi, "total": ce_oi + pe_oi,
+                "ceChange": ce_oi - ce_initial, "peChange": pe_oi - pe_initial,
+                "netChange": (ce_oi - ce_initial) + (pe_oi - pe_initial),
+                "pcr": round(pe_oi / ce_oi, 2) if ce_oi > 0 else 0,
+                "spot": spot,
+            }
+        self.oi_timeline.append(entry)
+        if len(self.oi_timeline) > 30:  # Max ~7.5 hours
+            self.oi_timeline = self.oi_timeline[-30:]
+
+    def get_oi_timeline(self) -> dict:
+        """Return 15-min OI timeline + behavior analysis + next day prediction."""
+        result = {}
+        for index in ["NIFTY", "BANKNIFTY"]:
+            key = index.lower()
+            chain = self.chains.get(index, {})
+            ce_oi_total = sum(s.get("ce_oi", 0) for s in chain.values())
+            pe_oi_total = sum(s.get("pe_oi", 0) for s in chain.values())
+            pcr = round(pe_oi_total / ce_oi_total, 2) if ce_oi_total > 0 else 0
+
+            # Extract timeline for this index
+            timeline = []
+            for entry in self.oi_timeline:
+                d = entry.get(key, {})
+                if d:
+                    timeline.append({
+                        "time": entry["time"],
+                        **d,
+                    })
+
+            # ── OI BEHAVIOR ANALYSIS ──
+            behaviors = []
+            if len(timeline) >= 2:
+                # Check last 2 intervals for sudden changes
+                last = timeline[-1]
+                prev = timeline[-2]
+
+                ce_delta = last["ceChange"] - prev["ceChange"]
+                pe_delta = last["peChange"] - prev["peChange"]
+
+                if abs(ce_delta) > 200000:
+                    direction = "added" if ce_delta > 0 else "removed"
+                    behaviors.append(f"CE OI {direction} {abs(ce_delta)/100000:.1f}L in last 15 min")
+                if abs(pe_delta) > 200000:
+                    direction = "added" if pe_delta > 0 else "removed"
+                    behaviors.append(f"PE OI {direction} {abs(pe_delta)/100000:.1f}L in last 15 min")
+
+                # PCR trend
+                if len(timeline) >= 4:
+                    pcr_start = timeline[-4]["pcr"]
+                    pcr_now = last["pcr"]
+                    if pcr_now > pcr_start + 0.1:
+                        behaviors.append(f"PCR rising: {pcr_start} → {pcr_now} (PE building faster)")
+                    elif pcr_now < pcr_start - 0.1:
+                        behaviors.append(f"PCR falling: {pcr_start} → {pcr_now} (CE building faster)")
+
+                # OI cooking detection
+                spot_change = abs(last.get("spot", 0) - prev.get("spot", 0))
+                if abs(ce_delta) > 300000 and spot_change < 30:
+                    behaviors.append(f"OI COOKING: {abs(ce_delta)/100000:.1f}L CE OI change but spot moved only {spot_change:.0f} pts")
+                if abs(pe_delta) > 300000 and spot_change < 30:
+                    behaviors.append(f"OI COOKING: {abs(pe_delta)/100000:.1f}L PE OI change but spot moved only {spot_change:.0f} pts")
+
+            # ── NEXT DAY PREDICTION from OI patterns ──
+            prediction = self._predict_next_day(index, timeline, chain)
+
+            result[key] = {
+                "timeline": timeline,
+                "current": {
+                    "ceOI": ce_oi_total, "peOI": pe_oi_total,
+                    "total": ce_oi_total + pe_oi_total, "pcr": pcr,
+                },
+                "behaviors": behaviors,
+                "prediction": prediction,
+                "timestamp": ist_now().strftime("%I:%M:%S %p IST"),
+            }
+        return result
+
+    def _predict_next_day(self, index, timeline, chain):
+        """Predict next day gap up/down based on OI patterns big players create."""
+        if not timeline or len(timeline) < 2:
+            return {"direction": "UNKNOWN", "confidence": "LOW", "reasons": ["Not enough data yet"]}
+
+        now = ist_now()
+        reasons = []
+
+        # Get late day data (after 2 PM = institutional positioning window)
+        late_entries = [t for t in timeline if "PM" in t.get("time", "") and
+                        any(h in t["time"] for h in ["02:", "03:"])]
+
+        last = timeline[-1]
+        ce_change = last.get("ceChange", 0)
+        pe_change = last.get("peChange", 0)
+        pcr = last.get("pcr", 1)
+
+        bull_score = 0
+        bear_score = 0
+
+        # Pattern 1: Heavy PE writing in last hour = support = GAP UP likely
+        if pe_change > 500000:  # >5L PE OI added from open
+            bull_score += 3
+            reasons.append(f"PE OI added {pe_change/100000:.1f}L from open — support building")
+        if pe_change < -500000:
+            bear_score += 3
+            reasons.append(f"PE OI removed {abs(pe_change)/100000:.1f}L from open — support weakening")
+
+        # Pattern 2: Heavy CE writing = resistance = GAP DOWN likely
+        if ce_change > 500000:
+            bear_score += 3
+            reasons.append(f"CE OI added {ce_change/100000:.1f}L from open — resistance building")
+        if ce_change < -500000:
+            bull_score += 3
+            reasons.append(f"CE OI removed {abs(ce_change)/100000:.1f}L from open — resistance weakening")
+
+        # Pattern 3: PCR extreme at close
+        if pcr > 1.3:
+            bull_score += 2
+            reasons.append(f"PCR {pcr} very high — PE heavy = bullish bias")
+        elif pcr < 0.7:
+            bear_score += 2
+            reasons.append(f"PCR {pcr} very low — CE heavy = bearish bias")
+
+        # Pattern 4: Late day OI surge = institutional positioning
+        if late_entries:
+            late = late_entries[-1]
+            mid_entries = [t for t in timeline if "AM" in t.get("time", "") and "11:" in t["time"]]
+            if mid_entries:
+                mid = mid_entries[-1]
+                late_ce_surge = late.get("ceChange", 0) - mid.get("ceChange", 0)
+                late_pe_surge = late.get("peChange", 0) - mid.get("peChange", 0)
+                if late_pe_surge > 300000:
+                    bull_score += 2
+                    reasons.append(f"Late PE surge: +{late_pe_surge/100000:.1f}L after 2 PM = institutions building support")
+                if late_ce_surge > 300000:
+                    bear_score += 2
+                    reasons.append(f"Late CE surge: +{late_ce_surge/100000:.1f}L after 2 PM = institutions building resistance")
+
+        # Pattern 5: FII/DII data
+        fii = self.get_fii_dii()
+        fii_signal = fii.get("signal", "NEUTRAL")
+        if fii_signal in ("STRONG_BULL", "BULL"):
+            bull_score += 2
+            reasons.append(f"FII net: +{fii.get('fiiNet', 0):.0f}Cr = institutional buying")
+        elif fii_signal in ("STRONG_BEAR", "BEAR"):
+            bear_score += 2
+            reasons.append(f"FII net: {fii.get('fiiNet', 0):.0f}Cr = institutional selling")
+
+        # Pattern 6: Global cues
+        gl = self.get_global_cues()
+        gl_signal = gl.get("signal", "NEUTRAL")
+        if gl_signal == "BULLISH":
+            bull_score += 1
+            reasons.append("Global cues bullish (Dow/S&P positive)")
+        elif gl_signal == "BEARISH":
+            bear_score += 1
+            reasons.append("Global cues bearish (Dow/S&P negative)")
+
+        # Decision
+        if bull_score > bear_score + 2:
+            direction = "GAP UP EXPECTED"
+            confidence = "HIGH" if bull_score >= 7 else "MEDIUM"
+        elif bear_score > bull_score + 2:
+            direction = "GAP DOWN EXPECTED"
+            confidence = "HIGH" if bear_score >= 7 else "MEDIUM"
+        elif bull_score > bear_score:
+            direction = "SLIGHT BULLISH OPEN"
+            confidence = "LOW"
+        elif bear_score > bull_score:
+            direction = "SLIGHT BEARISH OPEN"
+            confidence = "LOW"
+        else:
+            direction = "FLAT OPEN LIKELY"
+            confidence = "LOW"
+
+        return {
+            "direction": direction,
+            "confidence": confidence,
+            "bullScore": bull_score,
+            "bearScore": bear_score,
+            "reasons": reasons,
+        }
 
     # ── VWAP SCORE ─────────────────────────────────────────────────────
 
@@ -2969,6 +3173,11 @@ class MarketEngine:
         # OI snapshot every 30 minutes for Hidden Shift detection
         if now - self._last_snapshot_time >= 1800:
             self._take_oi_snapshot()
+
+        # 15-min OI timeline for OI Change tab
+        if now - self._last_oi_timeline >= 900:
+            self._last_oi_timeline = now
+            self._record_oi_timeline()
 
         # Market open detection + day high/low tracking
         if not self.market_open_recorded:
