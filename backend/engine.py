@@ -42,6 +42,9 @@ INDEX_CONFIG = {
         "spot_symbol": NIFTY_SPOT_SYMBOL,
         "strike_gap": 50,
         "atm_range": 10,
+        "oi_threshold": 100000,     # Min OI for seller/flow signals
+        "oi_unwind_threshold": 500000,  # Min OI change for unwinding detection
+        "oi_change_filter": 100000,  # Min OI change for seller summary filter
     },
     "BANKNIFTY": {
         "name": "BANKNIFTY",
@@ -49,6 +52,9 @@ INDEX_CONFIG = {
         "spot_symbol": BANKNIFTY_SPOT_SYMBOL,
         "strike_gap": 100,
         "atm_range": 10,
+        "oi_threshold": 200000,     # 2x NIFTY — BN has concentrated OI
+        "oi_unwind_threshold": 800000,  # 1.6x NIFTY
+        "oi_change_filter": 200000,  # 2x NIFTY
     },
 }
 
@@ -905,10 +911,11 @@ class MarketEngine:
             minor_changes = [s for s in strikes_data if s not in major_changes]
 
             # Detect shifts: OI leaving one strike and appearing at another
-            ce_losing = sorted([s for s in strikes_data if s["ceOIChange"] < -100000], key=lambda x: x["ceOIChange"])
-            ce_gaining = sorted([s for s in strikes_data if s["ceOIChange"] > 100000], key=lambda x: x["ceOIChange"], reverse=True)
-            pe_losing = sorted([s for s in strikes_data if s["peOIChange"] < -100000], key=lambda x: x["peOIChange"])
-            pe_gaining = sorted([s for s in strikes_data if s["peOIChange"] > 100000], key=lambda x: x["peOIChange"], reverse=True)
+            oi_chg_filter = cfg.get("oi_change_filter", 100000)
+            ce_losing = sorted([s for s in strikes_data if s["ceOIChange"] < -oi_chg_filter], key=lambda x: x["ceOIChange"])
+            ce_gaining = sorted([s for s in strikes_data if s["ceOIChange"] > oi_chg_filter], key=lambda x: x["ceOIChange"], reverse=True)
+            pe_losing = sorted([s for s in strikes_data if s["peOIChange"] < -oi_chg_filter], key=lambda x: x["peOIChange"])
+            pe_gaining = sorted([s for s in strikes_data if s["peOIChange"] > oi_chg_filter], key=lambda x: x["peOIChange"], reverse=True)
 
             shifts = []
             if ce_losing and ce_gaining:
@@ -1896,20 +1903,21 @@ class MarketEngine:
             pe_writing = sd.get("peWritingOI", 0)
             ce_sc = sd.get("ceShortCoverOI", 0)
             pe_sc = sd.get("peShortCoverOI", 0)
+            oi_thr = cfg.get("oi_threshold", 100000)  # Index-specific threshold
 
-            if pe_writing > ce_writing * 1.5 and pe_writing > 100000:
+            if pe_writing > ce_writing * 1.5 and pe_writing > oi_thr:
                 pts = min(W["seller_positioning"], int((pe_writing / max(ce_writing, 1)) * 10))
                 bull_score += pts
                 bull_reasons.append(f"PE sellers writing {pe_writing/100000:.1f}L (vs CE {ce_writing/100000:.1f}L) = strong support [{pts}pts]")
-            if ce_writing > pe_writing * 1.5 and ce_writing > 100000:
+            if ce_writing > pe_writing * 1.5 and ce_writing > oi_thr:
                 pts = min(W["seller_positioning"], int((ce_writing / max(pe_writing, 1)) * 10))
                 bear_score += pts
                 bear_reasons.append(f"CE sellers writing {ce_writing/100000:.1f}L (vs PE {pe_writing/100000:.1f}L) = strong resistance [{pts}pts]")
-            if ce_sc > 100000:
-                bull_score += min(10, int(ce_sc / 100000))
+            if ce_sc > oi_thr:
+                bull_score += min(10, int(ce_sc / oi_thr))
                 bull_reasons.append(f"CE short covering {ce_sc/100000:.1f}L = resistance weakening")
-            if pe_sc > 100000:
-                bear_score += min(10, int(pe_sc / 100000))
+            if pe_sc > oi_thr:
+                bear_score += min(10, int(pe_sc / oi_thr))
                 bear_reasons.append(f"PE short covering {pe_sc/100000:.1f}L = support weakening")
 
             _eng["seller_positioning"] = (bull_score - _bs0) + (bear_score - _be0)
@@ -1983,10 +1991,11 @@ class MarketEngine:
             elif pcr < 0.8:
                 bear_score += 8
                 bear_reasons.append(f"PCR {pcr} < 0.8 = CE heavy = bearish [8pts]")
-            if ce_net < -500000:  # CE unwinding = bullish
+            oi_unwind_thr = cfg.get("oi_unwind_threshold", 500000)
+            if ce_net < -oi_unwind_thr:  # CE unwinding = bullish
                 bull_score += 7
                 bull_reasons.append(f"CE OI unwinding {ce_net/100000:.1f}L = resistance weakening [7pts]")
-            if pe_net < -500000:  # PE unwinding = bearish
+            if pe_net < -oi_unwind_thr:  # PE unwinding = bearish
                 bear_score += 7
                 bear_reasons.append(f"PE OI unwinding {pe_net/100000:.1f}L = support weakening [7pts]")
 
