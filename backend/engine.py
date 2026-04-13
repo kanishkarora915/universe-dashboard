@@ -3217,6 +3217,12 @@ class MarketEngine:
     def _background_verdict_check(self):
         """Run heavy verdict + stop hunt + trade entry + backtest in background."""
         try:
+            # STRICT: Only run during market hours 9:15 AM - 3:30 PM
+            now_ist = ist_now()
+            market_active = (now_ist.hour == 9 and now_ist.minute >= 15) or (10 <= now_ist.hour <= 14) or (now_ist.hour == 15 and now_ist.minute <= 30)
+            if not market_active:
+                return
+
             verdict = self.get_trap_verdict()
 
             # Backtest: log verdict + check pending outcomes
@@ -3240,18 +3246,41 @@ class MarketEngine:
                 key = idx.lower()
                 v = verdict.get(key, {})
                 if self.trade_manager.should_enter_trade(idx, v):
+                    # ALWAYS use FRESH spot + chain data, not cached verdict
                     chain = self.chains.get(idx, {})
                     cfg = INDEX_CONFIG[idx]
                     spot_ltp = self.prices.get(self.spot_tokens.get(idx), {}).get("ltp", 0)
-                    atm = round(spot_ltp / cfg["strike_gap"]) * cfg["strike_gap"] if spot_ltp > 0 else 0
+
+                    if spot_ltp <= 0:
+                        continue  # No live price = don't trade
+
+                    atm = round(spot_ltp / cfg["strike_gap"]) * cfg["strike_gap"]
                     atm_data = chain.get(atm, {})
                     straddle = round(atm_data.get("ce_ltp", 0) + atm_data.get("pe_ltp", 0), 2)
-                    trade = v.get("trade", {})
+
+                    # Get FRESH entry price from live chain, not verdict cache
+                    action = v.get("action", "")
+                    if "CE" in action:
+                        fresh_entry = atm_data.get("ce_ltp", 0)
+                    else:
+                        fresh_entry = atm_data.get("pe_ltp", 0)
+
+                    # Validate: entry must be reasonable (>₹5 and <₹5000)
+                    if fresh_entry < 5 or fresh_entry > 5000:
+                        print(f"[TRADE] SKIP: {action} {idx} {atm} — entry ₹{fresh_entry} out of range")
+                        continue
+
+                    # Validate: strike must be near ATM (within 3 strikes)
+                    max_offset = cfg["strike_gap"] * 3
+                    if abs(atm - spot_ltp) > max_offset:
+                        print(f"[TRADE] SKIP: ATM {atm} too far from spot {spot_ltp}")
+                        continue
+
                     self.trade_manager.log_trade(
                         idx=idx,
-                        action=v.get("action", ""),
-                        strike=trade.get("strike", 0),
-                        entry_price=trade.get("entry", 0),
+                        action=action,
+                        strike=int(atm),
+                        entry_price=fresh_entry,
                         probability=v.get("winProbability", 0),
                         source="verdict",
                         expiry=str(self.nearest_expiry.get(idx, "")),

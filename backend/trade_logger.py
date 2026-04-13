@@ -549,10 +549,9 @@ class TradeManager:
 
         conn.close()
 
-        # Time restrictions
-        if now.hour > 15 or (now.hour == 15 and now.minute > 20):
-            return False
-        if now.hour == 9 and now.minute < 20:
+        # STRICT market hours: ONLY trade between 9:20 AM and 3:20 PM
+        market_open = (now.hour == 9 and now.minute >= 20) or (10 <= now.hour <= 14) or (now.hour == 15 and now.minute <= 20)
+        if not market_open:
             return False
 
         return True
