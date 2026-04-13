@@ -560,10 +560,6 @@ class TradeManager:
         if not market_open:
             return False
 
-        # ── EXPIRY DAY: No new trades after 2 PM on Thursday ──
-        if now.weekday() == 3 and now.hour >= 14:
-            return False
-
         win_pct = verdict_data.get("winProbability", 0)
         bull_pct = verdict_data.get("bullPct", 50)
         bear_pct = verdict_data.get("bearPct", 50)
