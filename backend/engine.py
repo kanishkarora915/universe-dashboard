@@ -42,9 +42,9 @@ INDEX_CONFIG = {
         "spot_symbol": NIFTY_SPOT_SYMBOL,
         "strike_gap": 50,
         "atm_range": 10,
-        "oi_threshold": 100000,     # Min OI for seller/flow signals
-        "oi_unwind_threshold": 500000,  # Min OI change for unwinding detection
-        "oi_change_filter": 100000,  # Min OI change for seller summary filter
+        "oi_threshold": 100000,     # 1L min for seller signals
+        "oi_unwind_threshold": 500000,  # 5L for unwinding
+        "oi_change_filter": 100000,  # 1L for seller shift filter
     },
     "BANKNIFTY": {
         "name": "BANKNIFTY",
@@ -52,9 +52,9 @@ INDEX_CONFIG = {
         "spot_symbol": BANKNIFTY_SPOT_SYMBOL,
         "strike_gap": 100,
         "atm_range": 10,
-        "oi_threshold": 200000,     # 2x NIFTY — BN has concentrated OI
-        "oi_unwind_threshold": 800000,  # 1.6x NIFTY
-        "oi_change_filter": 200000,  # 2x NIFTY
+        "oi_threshold": 100000,     # Same 1L — BN OI can be low too
+        "oi_unwind_threshold": 500000,  # Same 5L
+        "oi_change_filter": 100000,  # Same 1L
     },
 }
 
@@ -1905,14 +1905,20 @@ class MarketEngine:
             pe_sc = sd.get("peShortCoverOI", 0)
             oi_thr = cfg.get("oi_threshold", 100000)  # Index-specific threshold
 
-            if pe_writing > ce_writing * 1.5 and pe_writing > oi_thr:
-                pts = min(W["seller_positioning"], int((pe_writing / max(ce_writing, 1)) * 10))
-                bull_score += pts
-                bull_reasons.append(f"PE sellers writing {pe_writing/100000:.1f}L (vs CE {ce_writing/100000:.1f}L) = strong support [{pts}pts]")
-            if ce_writing > pe_writing * 1.5 and ce_writing > oi_thr:
-                pts = min(W["seller_positioning"], int((ce_writing / max(pe_writing, 1)) * 10))
-                bear_score += pts
-                bear_reasons.append(f"CE sellers writing {ce_writing/100000:.1f}L (vs PE {pe_writing/100000:.1f}L) = strong resistance [{pts}pts]")
+            # Use RATIO (pe_writing vs ce_writing) as primary signal
+            # Absolute OI threshold only as minimum noise filter
+            total_writing = pe_writing + ce_writing
+            if total_writing > oi_thr:  # At least some activity happening
+                pe_ratio = pe_writing / max(total_writing, 1)
+                ce_ratio = ce_writing / max(total_writing, 1)
+                if pe_ratio > 0.60:  # PE writing is 60%+ of total = bullish support
+                    pts = min(W["seller_positioning"], int(pe_ratio * 30))
+                    bull_score += pts
+                    bull_reasons.append(f"PE sellers {pe_ratio*100:.0f}% of writing ({pe_writing/100000:.1f}L vs CE {ce_writing/100000:.1f}L) = support [{pts}pts]")
+                if ce_ratio > 0.60:  # CE writing is 60%+ of total = bearish resistance
+                    pts = min(W["seller_positioning"], int(ce_ratio * 30))
+                    bear_score += pts
+                    bear_reasons.append(f"CE sellers {ce_ratio*100:.0f}% of writing ({ce_writing/100000:.1f}L vs PE {pe_writing/100000:.1f}L) = resistance [{pts}pts]")
             if ce_sc > oi_thr:
                 bull_score += min(10, int(ce_sc / oi_thr))
                 bull_reasons.append(f"CE short covering {ce_sc/100000:.1f}L = resistance weakening")
