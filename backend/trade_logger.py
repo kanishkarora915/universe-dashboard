@@ -218,6 +218,8 @@ class TradeManager:
         self._cached_verdict = {}  # Cached verdict from last check
         self._sl_override_count = {}  # {trade_id: count} — max 3 overrides per trade
         self._trade_alerts = []  # Recent trade notifications (max 50)
+        self._pending_entry = None  # Price confirmation: wait for LTP to hold above entry
+        self._pending_entry_time = 0  # When pending was created
 
     def update_verdict_cache(self, verdict):
         """Called by engine every 30s with latest verdict data."""
@@ -443,7 +445,37 @@ class TradeManager:
                 else:
                     alerts_list.append(f"WARNING: Price ₹{current_ltp:.1f} approaching SL ₹{new_sl}. Engines NOT supporting — prepare for SL exit.")
 
-            # Check T2 (full target)
+            # Check T1 — PARTIAL PROFIT BOOKING (50% qty booked, rest trails to T2)
+            elif current_ltp >= t1 and not breakeven_active:
+                breakeven_active = 1
+                new_sl = entry  # Move SL to entry (zero loss on remaining)
+
+                # Calculate partial profit (50% of qty)
+                booked_qty = t["qty"] // 2
+                booked_pnl = round((t1 - entry) * booked_qty, 2)
+                remaining_qty = t["qty"] - booked_qty
+
+                trail_level = "T1_PARTIAL"
+                alerts_list.append(f"T1 HIT ₹{t1} — BOOKED 50% ({booked_qty} qty) profit ₹{booked_pnl:+,.0f}. Trailing {remaining_qty} qty to T2 ₹{t2}. SL at entry ₹{entry}.")
+                print(f"[TRADE] T1 PARTIAL: {action} {idx} {strike} — booked {booked_qty} qty @ ₹{t1}, profit ₹{booked_pnl:+,.0f}, trailing {remaining_qty}")
+
+                # Update qty in DB to remaining amount, add partial P&L
+                conn2 = _conn()
+                conn2.execute("UPDATE trades SET qty=?, pnl_rupees=pnl_rupees+? WHERE id=?",
+                              (remaining_qty, booked_pnl, t["id"]))
+                conn2.commit()
+                conn2.close()
+
+                # Alert
+                self._trade_alerts.append({
+                    "type": "PARTIAL_BOOK",
+                    "time": ist_now().strftime("%I:%M:%S %p"),
+                    "message": f"💰 T1 HIT: Booked 50% profit on {action} {idx} {strike}",
+                    "details": f"Booked ₹{booked_pnl:+,.0f} ({booked_qty} qty @ ₹{t1}). Trailing {remaining_qty} qty to T2 ₹{t2}",
+                })
+                self._trade_alerts = self._trade_alerts[-50:]
+
+            # Check T2 (full target on remaining qty)
             elif current_ltp >= t2:
                 new_status = "T2_HIT"
                 exit_price = t2
@@ -467,6 +499,16 @@ class TradeManager:
                       new_sl, breakeven_active, trailing_active, trail_level,
                       new_status, exit_price, ist_now().isoformat(), exit_reason, alerts_str, t["id"]))
                 print(f"[TRADE] CLOSED: {action} {idx} {strike} — {new_status} — PnL: {final_pnl_pts} pts (₹{final_pnl_rupees:+,.0f})")
+
+                # Exit alert
+                emoji = "✅" if final_pnl_rupees > 0 else "❌"
+                self._trade_alerts.append({
+                    "type": "TRADE_EXIT",
+                    "time": ist_now().strftime("%I:%M:%S %p"),
+                    "message": f"{emoji} CLOSED: {action} {idx} {strike} — {new_status}",
+                    "details": f"Exit ₹{exit_price} | PnL: ₹{final_pnl_rupees:+,.0f} | {exit_reason[:100]}",
+                })
+                self._trade_alerts = self._trade_alerts[-50:]
 
                 if new_status == "SL_HIT":
                     oi_at_sl = strike_data.get(f"{opt}_oi", 0)

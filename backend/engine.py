@@ -3252,40 +3252,59 @@ class MarketEngine:
                     spot_ltp = self.prices.get(self.spot_tokens.get(idx), {}).get("ltp", 0)
 
                     if spot_ltp <= 0:
-                        continue  # No live price = don't trade
+                        continue
 
                     atm = round(spot_ltp / cfg["strike_gap"]) * cfg["strike_gap"]
                     atm_data = chain.get(atm, {})
                     straddle = round(atm_data.get("ce_ltp", 0) + atm_data.get("pe_ltp", 0), 2)
 
-                    # Get FRESH entry price from live chain, not verdict cache
                     action = v.get("action", "")
                     if "CE" in action:
                         fresh_entry = atm_data.get("ce_ltp", 0)
                     else:
                         fresh_entry = atm_data.get("pe_ltp", 0)
 
-                    # Validate: entry must be reasonable (>₹5 and <₹5000)
                     if fresh_entry < 5 or fresh_entry > 5000:
                         print(f"[TRADE] SKIP: {action} {idx} {atm} — entry ₹{fresh_entry} out of range")
                         continue
 
-                    # Validate: strike must be near ATM (within 3 strikes)
                     max_offset = cfg["strike_gap"] * 3
                     if abs(atm - spot_ltp) > max_offset:
                         print(f"[TRADE] SKIP: ATM {atm} too far from spot {spot_ltp}")
                         continue
 
-                    self.trade_manager.log_trade(
-                        idx=idx,
-                        action=action,
-                        strike=int(atm),
-                        entry_price=fresh_entry,
-                        probability=v.get("winProbability", 0),
-                        source="verdict",
-                        expiry=str(self.nearest_expiry.get(idx, "")),
-                        straddle=straddle,
-                    )
+                    # PRICE CONFIRMATION: Don't enter immediately.
+                    # Store as pending. If no pending exists, create one.
+                    # If pending exists and LTP still holds → confirm entry.
+                    pending = self.trade_manager._pending_entry
+                    if pending and pending["idx"] == idx and pending["action"] == action and pending["strike"] == int(atm):
+                        # Pending exists — check if LTP still holds after wait
+                        age = time.time() - self.trade_manager._pending_entry_time
+                        if age >= 60:  # Wait at least 60 seconds (half a verdict cycle)
+                            # LTP still above pending entry? Confirmed!
+                            if fresh_entry >= pending["entry_price"] * 0.97:  # Within 3% of pending price
+                                self.trade_manager.log_trade(
+                                    idx=idx, action=action, strike=int(atm),
+                                    entry_price=fresh_entry,
+                                    probability=v.get("winProbability", 0),
+                                    source="verdict_confirmed",
+                                    expiry=str(self.nearest_expiry.get(idx, "")),
+                                    straddle=straddle,
+                                )
+                                self.trade_manager._pending_entry = None
+                                print(f"[TRADE] CONFIRMED: {action} {idx} {atm} @ ₹{fresh_entry} — price held for {age:.0f}s")
+                            else:
+                                # LTP dropped — cancel pending
+                                self.trade_manager._pending_entry = None
+                                print(f"[TRADE] CANCELLED: {action} {idx} {atm} — LTP dropped to ₹{fresh_entry} (was ₹{pending['entry_price']})")
+                    else:
+                        # No matching pending — create new one
+                        self.trade_manager._pending_entry = {
+                            "idx": idx, "action": action, "strike": int(atm),
+                            "entry_price": fresh_entry, "probability": v.get("winProbability", 0),
+                        }
+                        self.trade_manager._pending_entry_time = time.time()
+                        print(f"[TRADE] PENDING: {action} {idx} {atm} @ ₹{fresh_entry} — waiting 60s for price confirmation...")
         except Exception as e:
             print(f"[TRADE] Background verdict error: {e}")
 
