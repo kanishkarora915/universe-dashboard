@@ -634,14 +634,14 @@ class TradeManager:
                 print(f"[TRADE] STOP HUNT DETECTED: {action} {idx} {strike} — SL at {sl}, now at {current_ltp:.1f}")
 
     def should_enter_trade(self, idx, verdict_data):
-        """Smart entry — NEVER stop trading, just raise the bar after losses.
-        System keeps looking for the BEST trade, always. Data hai toh use karo."""
+        """Practical entry — trade when edge exists. Don't overthink.
+        Market waits for no one. If signal is good, take the trade."""
         if not verdict_data or verdict_data.get("action") == "NO TRADE":
             return False
 
         now = ist_now()
 
-        # ── HARD BLOCKS: Calendar + market hours (non-negotiable) ──
+        # ── HARD BLOCKS: Calendar + market hours only ──
         if not _is_trading_day():
             return False
         market_open = (now.hour == 9 and now.minute >= 20) or (10 <= now.hour <= 14) or (now.hour == 15 and now.minute <= 15)
@@ -649,10 +649,16 @@ class TradeManager:
             return False
 
         win_pct = verdict_data.get("winProbability", 0)
-        confidence = verdict_data.get("confidence", "LOW")
         bull_pct = verdict_data.get("bullPct", 50)
         bear_pct = verdict_data.get("bearPct", 50)
         spread = abs(bull_pct - bear_pct)
+
+        # ── BASIC QUALITY: 62%+ probability, 20+ spread ──
+        # Not 75%, not 82% — just a real edge. Market doesn't give perfect signals.
+        if win_pct < 62:
+            return False
+        if spread < 20:
+            return False
 
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         conn = _conn()
@@ -665,67 +671,52 @@ class TradeManager:
             conn.close()
             return False
 
-        # ── Count today's losses (to ADAPT, not to STOP) ──
-        today_loss_count = conn.execute(
-            "SELECT COUNT(*) FROM trades WHERE entry_time > ? AND status != 'OPEN' AND pnl_rupees < 0",
-            (today_start,)
-        ).fetchone()[0]
-        today_loss_amount = conn.execute(
+        # ── SMART RE-ENTRY after loss ──
+        # If last trade was SL hit but NEW signal is STRONGER (higher prob),
+        # don't wait — re-enter immediately. The market gave a second chance.
+        last_trade = conn.execute(
+            "SELECT * FROM trades WHERE idx=? AND entry_time > ? ORDER BY entry_time DESC LIMIT 1",
+            (idx, today_start)
+        ).fetchone()
+
+        if last_trade:
+            lt = dict(last_trade)
+            # Was it a loss?
+            if lt["status"] != "OPEN" and (lt.get("pnl_rupees", 0) or 0) < 0:
+                last_prob = lt.get("probability", 0)
+                last_action = lt.get("action", "")
+                try:
+                    exit_time = datetime.fromisoformat(lt.get("exit_time", now.isoformat()))
+                    time_since_exit = (now - exit_time).total_seconds()
+                except Exception:
+                    time_since_exit = 9999
+
+                if time_since_exit < 300:  # Within 5 min of loss
+                    # SMART RE-ENTRY: Allow if new signal is STRONGER
+                    if win_pct > last_prob + 5:
+                        # Signal improved — re-enter immediately, no cooldown
+                        print(f"[TRADE] SMART RE-ENTRY: {idx} signal improved {last_prob}% → {win_pct}%, re-entering")
+                    elif verdict_data.get("action") != last_action:
+                        # Direction REVERSED — market flipped, take the new signal
+                        print(f"[TRADE] REVERSAL RE-ENTRY: {idx} was {last_action}, now {verdict_data.get('action')}")
+                    else:
+                        # Same signal, not stronger — wait 10 min minimum
+                        if time_since_exit < 600:
+                            conn.close()
+                            return False
+
+        # ── DAILY LOSS CAP: If lost 5% of capital today, need 70%+ (still trade, just careful) ──
+        today_loss = conn.execute(
             "SELECT COALESCE(SUM(pnl_rupees), 0) FROM trades WHERE entry_time > ? AND status != 'OPEN' AND pnl_rupees < 0",
             (today_start,)
         ).fetchone()[0] or 0
 
-        # ── After loss: short cooldown (15 min), then BACK to hunting ──
-        last_loss = conn.execute(
-            "SELECT exit_time FROM trades WHERE entry_time > ? AND status != 'OPEN' AND pnl_rupees < 0 ORDER BY exit_time DESC LIMIT 1",
-            (today_start,)
-        ).fetchone()
-        if last_loss and last_loss[0]:
-            try:
-                loss_time = datetime.fromisoformat(last_loss[0])
-                time_since = (now - loss_time).total_seconds()
-                if time_since < 900:  # 15 min cooldown only (not 45 min)
-                    conn.close()
-                    return False
-            except Exception:
-                pass
-
         conn.close()
 
-        # ── ADAPTIVE QUALITY BAR: More losses = higher bar, but NEVER stop ──
-        # 0 losses today: normal quality (65%+ probability, 20+ spread)
-        # 1 loss today: higher bar (70%+ probability, 25+ spread)
-        # 2 losses today: highest bar (78%+ probability, 30+ spread, HIGH confidence only)
-        # 3+ losses today: elite only (82%+ probability, 35+ spread, HIGH confidence)
-        # System NEVER stops — just demands better and better signals
-
-        if today_loss_count == 0:
-            min_prob = 65
-            min_spread = 20
-        elif today_loss_count == 1:
-            min_prob = 70
-            min_spread = 25
-        elif today_loss_count == 2:
-            min_prob = 78
-            min_spread = 30
-        else:  # 3+ losses
-            min_prob = 82
-            min_spread = 35
-
-        if win_pct < min_prob:
-            return False
-        if spread < min_spread:
-            return False
-
-        # After 2+ losses, only HIGH confidence trades
-        if today_loss_count >= 2 and confidence not in ("HIGH",):
-            return False
-
-        # ── CAPITAL SAFETY: If daily loss exceeds 5%, raise bar to 85%+ ──
         running_capital = _get_running_capital()
-        if today_loss_amount < -(running_capital * MAX_DAILY_LOSS_PCT / 100):
-            if win_pct < 85:
-                return False  # Only ELITE trades after heavy daily loss
+        if today_loss < -(running_capital * MAX_DAILY_LOSS_PCT / 100):
+            if win_pct < 70:
+                return False  # After heavy loss, just slightly more careful
 
         return True
 

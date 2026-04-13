@@ -770,6 +770,7 @@ export default function ReportsTab() {
   const [patterns, setPatterns] = useState(null);
   const [weekly, setWeekly] = useState(null);
   const [trainStatus, setTrainStatus] = useState(null);
+  const [backtest, setBacktest] = useState(null);
   const [applying, setApplying] = useState(false);
   const [training, setTraining] = useState(false);
   const [days, setDays] = useState(30);
@@ -782,6 +783,7 @@ export default function ReportsTab() {
     fetchReport(`patterns?days=${days}`).then(setPatterns);
     fetchReport("weekly").then(setWeekly);
     fetchReport("auto-train-status").then(setTrainStatus);
+    fetchReport(`backtest-simulation?days=${days}`).then(setBacktest);
     setLastRefresh(new Date().toLocaleTimeString("en-IN"));
   }, [days]);
 
@@ -911,6 +913,9 @@ export default function ReportsTab() {
         onRunTrain={handleRunTrain}
         training={training}
       />
+
+      {/* Section G — Historical Validation */}
+      <BacktestSimulation data={backtest} />
     </div>
   );
 }
@@ -1032,6 +1037,107 @@ function AutoTrainSection({ data, onRunTrain, training }) {
       {(!data?.recentRuns || data.recentRuns.length === 0) && (
         <div style={{ color: "#333", textAlign: "center", padding: 12, fontSize: 11 }}>
           No training runs yet. System will auto-train on Sunday 8 PM once enough data is collected.
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// SECTION G — Historical Validation (Backtest Simulation)
+// ══════════════════════════════════════════════════════════════════════════
+
+function BacktestSimulation({ data }) {
+  if (!data) {
+    return (
+      <Card>
+        <SectionTitle icon="📈" title="HISTORICAL VALIDATION" />
+        <div style={{ color: "#555", textAlign: "center", padding: 20 }}>Loading backtest simulation...</div>
+      </Card>
+    );
+  }
+
+  if (data.error) {
+    return (
+      <Card>
+        <SectionTitle icon="📈" title="HISTORICAL VALIDATION" />
+        <div style={{ color: "#555", textAlign: "center", padding: 20 }}>{data.error}</div>
+      </Card>
+    );
+  }
+
+  const isProfitable = data.totalPnl > 0;
+
+  return (
+    <Card>
+      <SectionTitle icon="📈" title="HISTORICAL VALIDATION — Would System Have Made Money?" />
+
+      {/* Verdict Banner */}
+      <div style={{
+        background: isProfitable ? GREEN + "11" : RED + "11",
+        border: `1px solid ${isProfitable ? GREEN : RED}33`,
+        borderRadius: 8, padding: "12px 16px", marginBottom: 14, textAlign: "center",
+      }}>
+        <div style={{ fontSize: 20, fontWeight: 900, color: isProfitable ? GREEN : RED }}>
+          {data.verdict} — ₹{fmt(data.totalPnl)} ({data.totalPnlPct}%)
+        </div>
+        <div style={{ color: "#888", fontSize: 11 }}>
+          {data.period} | {data.totalTrades} trades | ₹{fmt(data.startCapital)} → ₹{fmt(data.endCapital)}
+        </div>
+      </div>
+
+      {/* Key Stats */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+        <Stat label="Win Rate" value={`${data.winRate}%`} color={data.winRate >= 55 ? GREEN : RED} />
+        <Stat label="Wins/Losses" value={`${data.wins}/${data.losses}`} color={ACCENT} />
+        <Stat label="Avg Win" value={`₹${fmt(data.avgWin)}`} color={GREEN} />
+        <Stat label="Avg Loss" value={`₹${fmt(data.avgLoss)}`} color={RED} />
+        <Stat label="Profit Factor" value={data.profitFactor} color={data.profitFactor >= 1.2 ? GREEN : RED} />
+        <Stat label="Max Drawdown" value={`₹${fmt(data.maxDrawdown)}`} color={data.maxDrawdownPct < 15 ? YELLOW : RED} sub={`${data.maxDrawdownPct}%`} />
+        <Stat label="Max Consec Loss" value={data.maxConsecutiveLosses} color={data.maxConsecutiveLosses <= 3 ? YELLOW : RED} />
+      </div>
+
+      {/* Best/Worst */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {data.bestDay && <Stat label="Best Day" value={`₹${fmt(data.bestDay.pnl)}`} color={GREEN} sub={data.bestDay.date} />}
+        {data.worstDay && <Stat label="Worst Day" value={`₹${fmt(data.worstDay.pnl)}`} color={RED} sub={data.worstDay.date} />}
+        {data.bestHour && <Stat label="Best Hour" value={data.bestHour.hour} color={GREEN} sub={`₹${fmt(data.bestHour.pnl)}`} />}
+        {data.worstHour && <Stat label="Worst Hour" value={data.worstHour.hour} color={RED} sub={`₹${fmt(data.worstHour.pnl)}`} />}
+      </div>
+
+      {/* Recommendations */}
+      {data.recommendation && data.recommendation.length > 0 && (
+        <div style={{ background: BG, borderRadius: 8, padding: "12px 14px", marginBottom: 14 }}>
+          <div style={{ color: ACCENT, fontSize: 10, fontWeight: 700, marginBottom: 8 }}>SYSTEM VERDICT</div>
+          {data.recommendation.map((r, i) => (
+            <div key={i} style={{
+              color: r.includes("OK") || r.includes("STRONG") || r.includes("SAFE") || r.includes("positive") ? GREEN
+                : r.includes("LOW") || r.includes("NEGATIVE") || r.includes("HIGH") || r.includes("Not ready") ? RED
+                : "#ccc",
+              fontSize: 11, padding: "3px 0",
+            }}>
+              {r.includes("OK") || r.includes("STRONG") || r.includes("SAFE") || r.includes("positive") ? "✅" : r.includes("VERDICT") ? "📊" : "⚠️"} {r}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Daily P&L chart (simple bar) */}
+      {data.dailyPnl && data.dailyPnl.length > 0 && (
+        <div>
+          <div style={{ color: "#555", fontSize: 10, fontWeight: 700, marginBottom: 6 }}>DAILY P&L</div>
+          <div style={{ display: "flex", gap: 2, alignItems: "flex-end", height: 60, marginBottom: 10 }}>
+            {data.dailyPnl.map((d, i) => {
+              const maxAbs = Math.max(...data.dailyPnl.map(x => Math.abs(x.pnl)), 1);
+              const h = Math.max(4, Math.abs(d.pnl) / maxAbs * 50);
+              return (
+                <div key={i} title={`${d.date}: ₹${d.pnl.toLocaleString("en-IN")}`} style={{
+                  flex: 1, height: h, background: d.pnl >= 0 ? GREEN : RED,
+                  borderRadius: 2, opacity: 0.8, alignSelf: d.pnl >= 0 ? "flex-end" : "flex-end",
+                }} />
+              );
+            })}
+          </div>
         </div>
       )}
     </Card>

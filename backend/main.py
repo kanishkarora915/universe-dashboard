@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from kiteconnect import KiteConnect
 
 from engine import MarketEngine
+from historical_validation import run_validation, get_real_trade_analysis
 from trading_times import (
     get_live_dashboard as tt_live, get_today_timeline as tt_timeline,
     get_daily_report as tt_daily, get_weekly_report as tt_weekly,
@@ -534,6 +535,14 @@ async def report_training_history(limit: int = 20):
 @app.get("/api/reports/auto-train-status")
 async def report_auto_train_status():
     return get_auto_train_status()
+
+@app.get("/api/reports/backtest-simulation")
+async def report_backtest_sim(days: int = 30):
+    return run_validation(days)
+
+@app.get("/api/reports/real-trade-analysis")
+async def report_real_trades():
+    return get_real_trade_analysis()
 
 
 # ── Trading Times Routes ─────────────────────────────────────────────────
