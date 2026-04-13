@@ -238,7 +238,7 @@ export default function PnLTracker() {
           {/* Row 2: Capital */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 6, marginBottom: 8 }}>
             {[
-              { l: "MAX CAPITAL", v: fmt(stats.maxCapital || 1000000), c: "#ccc" },
+              { l: "RUNNING CAPITAL", v: fmt(stats.runningCapital || stats.maxCapital || 1000000), c: (stats.runningCapital || 1000000) < 1000000 ? RED : GREEN },
               { l: "IN USE", v: fmt(stats.openInvested), c: ACCENT },
               { l: "AVAILABLE", v: fmt(stats.availableCapital), c: GREEN },
               { l: "USED %", v: `${stats.capitalUsedPct || 0}%`, c: (stats.capitalUsedPct || 0) > 80 ? RED : (stats.capitalUsedPct || 0) > 50 ? YELLOW : GREEN },

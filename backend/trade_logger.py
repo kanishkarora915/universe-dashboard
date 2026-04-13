@@ -15,8 +15,20 @@ import pytz
 IST = pytz.timezone("Asia/Kolkata")
 DB_PATH = None
 
-MAX_CAPITAL = 1000000  # ₹10 lakh total capital
-MAX_PER_TRADE_PCT = 50  # Max 50% of capital per trade
+INITIAL_CAPITAL = 1000000  # ₹10 lakh starting capital
+MAX_RISK_PER_TRADE_PCT = 1.5  # Risk 1.5% of running capital per trade (₹15K on ₹10L)
+MAX_DAILY_LOSS_PCT = 5  # Stop trading after 5% daily loss
+MAX_SIMULTANEOUS_TRADES = 1  # Only 1 trade at a time (across all indices)
+
+# NSE Holidays 2026 (add more as needed)
+NSE_HOLIDAYS = {
+    "2026-01-26", "2026-02-19", "2026-03-10", "2026-03-17",
+    "2026-03-30", "2026-03-31", "2026-04-02", "2026-04-14",
+    "2026-05-01", "2026-05-25", "2026-06-19", "2026-07-07",
+    "2026-07-10", "2026-08-14", "2026-08-15", "2026-08-28",
+    "2026-09-18", "2026-10-02", "2026-10-20", "2026-10-21",
+    "2026-10-23", "2026-11-04", "2026-11-19", "2026-12-25",
+}
 
 LOT_CONFIG = {
     "NIFTY": {"lot_size": 65},
@@ -24,23 +36,68 @@ LOT_CONFIG = {
 }
 
 
-def calc_position_size(idx, entry_price):
-    """Calculate lots and qty based on ₹10L capital and entry premium."""
+def _is_trading_day():
+    """Check if today is a valid trading day (not weekend/holiday)."""
+    now = ist_now()
+    if now.weekday() >= 5:  # Saturday=5, Sunday=6
+        return False
+    if now.strftime("%Y-%m-%d") in NSE_HOLIDAYS:
+        return False
+    return True
+
+
+def _get_running_capital():
+    """Get current running capital = initial + cumulative realized P&L."""
+    if not DB_PATH:
+        return INITIAL_CAPITAL
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        total_pnl = conn.execute(
+            "SELECT COALESCE(SUM(pnl_rupees), 0) FROM trades WHERE status != 'OPEN'"
+        ).fetchone()[0] or 0
+        conn.close()
+        running = INITIAL_CAPITAL + total_pnl
+        return max(running, INITIAL_CAPITAL * 0.2)  # Never go below 20% of initial (₹2L floor)
+    except Exception:
+        return INITIAL_CAPITAL
+
+
+def calc_position_size(idx, entry_price, sl_price=0):
+    """Risk-based position sizing.
+
+    Instead of fixed lots, calculate based on:
+    - Running capital (reduces after losses)
+    - Max risk per trade = 1.5% of running capital
+    - SL distance determines lot count
+    """
     cfg = LOT_CONFIG.get(idx, LOT_CONFIG["NIFTY"])
     lot_size = cfg["lot_size"]
-    max_per_trade = MAX_CAPITAL * MAX_PER_TRADE_PCT / 100  # ₹5L per trade max
 
     if entry_price <= 0:
         return 1, lot_size, lot_size
 
-    # How much 1 lot costs
-    one_lot_cost = entry_price * lot_size
-    if one_lot_cost <= 0:
-        return 1, lot_size, lot_size
+    running_capital = _get_running_capital()
+    max_risk = running_capital * MAX_RISK_PER_TRADE_PCT / 100  # e.g., ₹15,000 on ₹10L
 
-    # Max lots we can afford
-    max_lots = int(max_per_trade / one_lot_cost)
-    lots = max(1, min(max_lots, 20))  # Min 1 lot, max 20 lots
+    # Risk per unit = entry - SL
+    if sl_price > 0 and sl_price < entry_price:
+        risk_per_unit = entry_price - sl_price
+    else:
+        risk_per_unit = entry_price * 0.15  # Default 15% SL
+
+    risk_per_unit = max(risk_per_unit, 1)  # Prevent division by zero
+
+    # Max qty we can afford based on risk
+    max_qty_by_risk = int(max_risk / risk_per_unit)
+
+    # Also cap by capital (can't buy more than capital allows)
+    max_qty_by_capital = int(running_capital * 0.5 / max(entry_price, 1))  # 50% max capital usage
+
+    # Take the stricter of the two
+    max_qty = min(max_qty_by_risk, max_qty_by_capital)
+
+    # Convert to lots
+    lots = max(1, min(max_qty // lot_size, 20))  # Min 1 lot, max 20 lots
     qty = lots * lot_size
 
     return lots, lot_size, qty
@@ -167,10 +224,16 @@ class TradeManager:
         if entry_price <= 0:
             return None
 
-        lots, lot_size, qty = calc_position_size(idx, entry_price)
+        # Smart SL: 20% of entry for cheap premiums, 15% for expensive, minimum ₹5 drop
+        if entry_price < 100:
+            sl_price = round(entry_price * 0.80)  # 20% SL for cheap options
+        else:
+            sl_price = round(entry_price * 0.85)  # 15% SL for expensive options
+        sl_price = max(sl_price, round(entry_price - max(straddle * 0.15, 5)))
+        sl_price = min(sl_price, round(entry_price * 0.85))  # Never tighter than 15%
 
-        # Smart SL: 15% of entry, but minimum ₹5
-        sl_price = round(max(entry_price * 0.85, entry_price - max(straddle * 0.15, 5)))
+        # Position size based on risk (uses running capital, not fixed ₹10L)
+        lots, lot_size, qty = calc_position_size(idx, entry_price, sl_price)
 
         # Smart T1: based on straddle or 20% of entry
         if straddle > 0:
@@ -482,8 +545,23 @@ class TradeManager:
                 print(f"[TRADE] STOP HUNT DETECTED: {action} {idx} {strike} — SL at {sl}, now at {current_ltp:.1f}")
 
     def should_enter_trade(self, idx, verdict_data):
-        """Smart entry — focus on trade QUALITY, not restriction."""
+        """Smart entry with full validation — weekday, holiday, capital, risk."""
         if not verdict_data or verdict_data.get("action") == "NO TRADE":
+            return False
+
+        now = ist_now()
+
+        # ── CALENDAR CHECK: No weekends, no holidays ──
+        if not _is_trading_day():
+            return False
+
+        # ── MARKET HOURS: Only 9:20 AM to 3:15 PM (not 3:20, tighter) ──
+        market_open = (now.hour == 9 and now.minute >= 20) or (10 <= now.hour <= 14) or (now.hour == 15 and now.minute <= 15)
+        if not market_open:
+            return False
+
+        # ── EXPIRY DAY: No new trades after 2 PM on Thursday ──
+        if now.weekday() == 3 and now.hour >= 14:
             return False
 
         win_pct = verdict_data.get("winProbability", 0)
@@ -491,69 +569,64 @@ class TradeManager:
         bear_pct = verdict_data.get("bearPct", 50)
         spread = abs(bull_pct - bear_pct)
 
-        # QUALITY CHECK 1: Need clear edge (not 52% vs 48% = noise)
-        if win_pct < 62:
+        # ── QUALITY: Need HIGH confidence only (75%+) ──
+        if win_pct < 70:
             return False
-        if spread < 20:
-            return False  # Too close = market confused, skip
+        if spread < 25:
+            return False  # Too close = market confused
 
-        now = ist_now()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         conn = _conn()
 
-        # No OPEN trade for this index
-        existing_open = conn.execute(
-            "SELECT COUNT(*) FROM trades WHERE idx=? AND status='OPEN'", (idx,)
+        # ── GLOBAL POSITION LIMIT: Max 1 open trade across ALL indices ──
+        total_open = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE status='OPEN'"
         ).fetchone()[0]
-        if existing_open > 0:
+        if total_open >= MAX_SIMULTANEOUS_TRADES:
             conn.close()
             return False
 
-        # Daily loss limit: stop at -₹80,000 (8% of capital)
+        # ── DAILY LOSS LIMIT: Count ALL closed losing trades, not just SL_HIT ──
         today_loss = conn.execute(
-            "SELECT COALESCE(SUM(pnl_rupees), 0) FROM trades WHERE entry_time > ? AND status IN ('SL_HIT')",
+            "SELECT COALESCE(SUM(pnl_rupees), 0) FROM trades WHERE entry_time > ? AND status != 'OPEN' AND pnl_rupees < 0",
             (today_start,)
         ).fetchone()[0] or 0
-        if today_loss < -(MAX_CAPITAL * 0.08):
+        running_capital = _get_running_capital()
+        if today_loss < -(running_capital * MAX_DAILY_LOSS_PCT / 100):
             conn.close()
             return False
 
-        # After SL hit: wait 45 min AND need higher probability (70%+)
-        last_sl = conn.execute(
-            "SELECT exit_time FROM trades WHERE idx=? AND status='SL_HIT' ORDER BY exit_time DESC LIMIT 1", (idx,)
+        # ── LOSS COOLDOWN: After any loss, wait 45 min + need 75%+ ──
+        last_loss = conn.execute(
+            "SELECT exit_time FROM trades WHERE entry_time > ? AND status != 'OPEN' AND pnl_rupees < 0 ORDER BY exit_time DESC LIMIT 1",
+            (today_start,)
         ).fetchone()
-        if last_sl and last_sl[0]:
+        if last_loss and last_loss[0]:
             try:
-                sl_time = datetime.fromisoformat(last_sl[0])
-                time_since_sl = (now - sl_time).total_seconds()
-                if time_since_sl < 2700:  # 45 min cooldown
+                loss_time = datetime.fromisoformat(last_loss[0])
+                time_since = (now - loss_time).total_seconds()
+                if time_since < 2700:  # 45 min cooldown
                     conn.close()
                     return False
-                if time_since_sl < 5400 and win_pct < 70:  # 90 min: need 70%+
+                if time_since < 5400 and win_pct < 75:  # 90 min: need 75%+
                     conn.close()
                     return False
             except Exception:
                 pass
 
-        # QUALITY CHECK 2: After a loss, next trade needs HIGHER bar
-        today_losses = conn.execute(
-            "SELECT COUNT(*) FROM trades WHERE idx=? AND entry_time > ? AND status='SL_HIT'",
-            (idx, today_start)
+        # ── DAILY LOSS COUNT: After 2 losses today (any exit reason), stop ──
+        today_loss_count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE entry_time > ? AND status != 'OPEN' AND pnl_rupees < 0",
+            (today_start,)
         ).fetchone()[0]
-        if today_losses >= 1 and win_pct < 70:
+        if today_loss_count >= 2:
             conn.close()
-            return False  # After 1 loss, need 70%+ for next trade
-        if today_losses >= 2:
+            return False  # Hard stop after 2 losses
+        if today_loss_count >= 1 and win_pct < 75:
             conn.close()
-            return False  # After 2 losses on same index, stop for the day
+            return False  # After 1 loss, need 75%+
 
         conn.close()
-
-        # STRICT market hours: ONLY trade between 9:20 AM and 3:20 PM
-        market_open = (now.hour == 9 and now.minute >= 20) or (10 <= now.hour <= 14) or (now.hour == 15 and now.minute <= 20)
-        if not market_open:
-            return False
-
         return True
 
     # ── PUBLIC API METHODS ──
@@ -670,8 +743,9 @@ class TradeManager:
                     "winRate": 0, "totalPnl": 0, "closedPnl": 0, "openPnl": 0, "totalProfit": 0,
                     "totalLoss": 0, "avgWin": 0, "avgLoss": 0, "bestTrade": 0, "worstTrade": 0,
                     "totalInvested": 0, "openInvested": 0, "openCurrentValue": 0,
-                    "currentStreak": 0, "streakType": "", "maxCapital": MAX_CAPITAL,
-                    "capitalUsedPct": 0, "availableCapital": MAX_CAPITAL, "error": str(e)}
+                    "currentStreak": 0, "streakType": "",
+                    "initialCapital": INITIAL_CAPITAL, "runningCapital": _get_running_capital(),
+                    "capitalUsedPct": 0, "availableCapital": _get_running_capital(), "error": str(e)}
 
     def _get_stats_inner(self, days=30):
         cutoff = (ist_now() - timedelta(days=days)).isoformat()
@@ -691,7 +765,8 @@ class TradeManager:
                     "totalProfit": 0, "totalLoss": 0, "avgWin": 0, "avgLoss": 0,
                     "bestTrade": 0, "worstTrade": 0, "totalInvested": 0, "openInvested": 0,
                     "openCurrentValue": 0, "currentStreak": 0, "streakType": "",
-                    "maxCapital": MAX_CAPITAL, "capitalUsedPct": 0, "availableCapital": MAX_CAPITAL}
+                    "initialCapital": INITIAL_CAPITAL, "runningCapital": _get_running_capital(),
+                    "capitalUsedPct": 0, "availableCapital": _get_running_capital()}
 
         open_trades = [t for t in all_trades if t["status"] == "OPEN"]
         wins = [t for t in all_trades if t["status"] in ("T1_HIT", "T2_HIT", "TRAIL_EXIT")]
@@ -758,10 +833,11 @@ class TradeManager:
             # Streak
             "currentStreak": streak,
             "streakType": streak_type,
-            # Capital
-            "maxCapital": MAX_CAPITAL,
-            "capitalUsedPct": round(open_invested / MAX_CAPITAL * 100) if MAX_CAPITAL > 0 else 0,
-            "availableCapital": round(MAX_CAPITAL - open_invested),
+            # Capital (running = initial + realized P&L)
+            "initialCapital": INITIAL_CAPITAL,
+            "runningCapital": round(_get_running_capital()),
+            "capitalUsedPct": round(open_invested / max(_get_running_capital(), 1) * 100),
+            "availableCapital": round(_get_running_capital() - open_invested),
         }
 
     def get_stop_hunts(self):
