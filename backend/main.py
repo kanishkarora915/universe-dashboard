@@ -443,6 +443,13 @@ async def trades_stop_hunts():
     return engine.trade_manager.get_stop_hunts()
 
 
+@app.get("/api/trades/alerts-feed")
+async def trades_alert_feed():
+    if not engine or not hasattr(engine, 'trade_manager') or not engine.trade_manager:
+        return []
+    return engine.trade_manager.get_trade_alerts()
+
+
 @app.get("/api/ai-analysis")
 async def ai_analysis():
     """Run Claude AI analysis on ALL dashboard data."""

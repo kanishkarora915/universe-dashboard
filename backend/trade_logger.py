@@ -107,6 +107,33 @@ def ist_now():
     return datetime.now(IST)
 
 
+def _cleanup_invalid_trades():
+    """Remove trades from weekends/holidays — they should never have existed."""
+    if not DB_PATH:
+        return
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        all_trades = conn.execute("SELECT id, entry_time FROM trades").fetchall()
+        invalid_ids = []
+        for t in all_trades:
+            try:
+                dt = datetime.fromisoformat(t["entry_time"])
+                trade_date = dt.strftime("%Y-%m-%d")
+                if dt.weekday() >= 5 or trade_date in NSE_HOLIDAYS:
+                    invalid_ids.append(t["id"])
+            except Exception:
+                pass
+        if invalid_ids:
+            placeholders = ",".join(str(i) for i in invalid_ids)
+            conn.execute(f"DELETE FROM trades WHERE id IN ({placeholders})")
+            conn.commit()
+            print(f"[TRADES] Cleaned {len(invalid_ids)} invalid trades (weekends/holidays)")
+        conn.close()
+    except Exception as e:
+        print(f"[TRADES] Cleanup error: {e}")
+
+
 def init_trades_db(db_path):
     global DB_PATH
     DB_PATH = db_path
@@ -177,6 +204,7 @@ def init_trades_db(db_path):
     conn.commit()
     conn.close()
     print(f"[TRADES] Database initialized at {db_path}")
+    _cleanup_invalid_trades()
 
 
 def _conn():
@@ -189,6 +217,7 @@ class TradeManager:
         self._last_sl_check = 0
         self._cached_verdict = {}  # Cached verdict from last check
         self._sl_override_count = {}  # {trade_id: count} — max 3 overrides per trade
+        self._trade_alerts = []  # Recent trade notifications (max 50)
 
     def update_verdict_cache(self, verdict):
         """Called by engine every 30s with latest verdict data."""
@@ -268,7 +297,25 @@ class TradeManager:
         conn.close()
 
         capital_used = round(entry_price * qty)
-        print(f"[TRADE] NEW: {action} {idx} {strike} @ {entry_price} | SL: {sl_price} | T1: {t1_price} | T2: {t2_price} | {lots}L x {lot_size} = {qty} qty | Capital: ₹{capital_used:,} | Prob: {probability}%")
+        risk_amount = round((entry_price - sl_price) * qty)
+        print(f"[TRADE] NEW: {action} {idx} {strike} @ {entry_price} | SL: {sl_price} | T1: {t1_price} | T2: {t2_price} | {lots}L x {lot_size} = {qty} qty | Capital: ₹{capital_used:,} | Risk: ₹{risk_amount:,} | Prob: {probability}%")
+
+        # Store alert for frontend notification
+        alert = {
+            "type": "TRADE_ENTRY",
+            "time": now.strftime("%I:%M:%S %p"),
+            "message": f"🚀 NEW TRADE: {action} {idx} {strike} @ ₹{entry_price}",
+            "details": f"SL: ₹{sl_price} | T1: ₹{t1_price} | T2: ₹{t2_price} | {lots} lots ({qty} qty) | Risk: ₹{risk_amount:,}",
+            "tradeId": trade_id,
+            "idx": idx,
+            "action": action,
+            "strike": strike,
+            "entry": entry_price,
+            "probability": probability,
+        }
+        self._trade_alerts.append(alert)
+        self._trade_alerts = self._trade_alerts[-50:]  # Keep last 50
+
         return trade_id
 
     def check_and_update(self, chains, prices, spot_tokens, token_to_info):
@@ -545,36 +592,30 @@ class TradeManager:
                 print(f"[TRADE] STOP HUNT DETECTED: {action} {idx} {strike} — SL at {sl}, now at {current_ltp:.1f}")
 
     def should_enter_trade(self, idx, verdict_data):
-        """Smart entry with full validation — weekday, holiday, capital, risk."""
+        """Smart entry — NEVER stop trading, just raise the bar after losses.
+        System keeps looking for the BEST trade, always. Data hai toh use karo."""
         if not verdict_data or verdict_data.get("action") == "NO TRADE":
             return False
 
         now = ist_now()
 
-        # ── CALENDAR CHECK: No weekends, no holidays ──
+        # ── HARD BLOCKS: Calendar + market hours (non-negotiable) ──
         if not _is_trading_day():
             return False
-
-        # ── MARKET HOURS: Only 9:20 AM to 3:15 PM (not 3:20, tighter) ──
         market_open = (now.hour == 9 and now.minute >= 20) or (10 <= now.hour <= 14) or (now.hour == 15 and now.minute <= 15)
         if not market_open:
             return False
 
         win_pct = verdict_data.get("winProbability", 0)
+        confidence = verdict_data.get("confidence", "LOW")
         bull_pct = verdict_data.get("bullPct", 50)
         bear_pct = verdict_data.get("bearPct", 50)
         spread = abs(bull_pct - bear_pct)
 
-        # ── QUALITY: Need HIGH confidence only (75%+) ──
-        if win_pct < 70:
-            return False
-        if spread < 25:
-            return False  # Too close = market confused
-
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         conn = _conn()
 
-        # ── GLOBAL POSITION LIMIT: Max 1 open trade across ALL indices ──
+        # ── No duplicate: max 1 open trade at a time ──
         total_open = conn.execute(
             "SELECT COUNT(*) FROM trades WHERE status='OPEN'"
         ).fetchone()[0]
@@ -582,17 +623,17 @@ class TradeManager:
             conn.close()
             return False
 
-        # ── DAILY LOSS LIMIT: Count ALL closed losing trades, not just SL_HIT ──
-        today_loss = conn.execute(
+        # ── Count today's losses (to ADAPT, not to STOP) ──
+        today_loss_count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE entry_time > ? AND status != 'OPEN' AND pnl_rupees < 0",
+            (today_start,)
+        ).fetchone()[0]
+        today_loss_amount = conn.execute(
             "SELECT COALESCE(SUM(pnl_rupees), 0) FROM trades WHERE entry_time > ? AND status != 'OPEN' AND pnl_rupees < 0",
             (today_start,)
         ).fetchone()[0] or 0
-        running_capital = _get_running_capital()
-        if today_loss < -(running_capital * MAX_DAILY_LOSS_PCT / 100):
-            conn.close()
-            return False
 
-        # ── LOSS COOLDOWN: After any loss, wait 45 min + need 75%+ ──
+        # ── After loss: short cooldown (15 min), then BACK to hunting ──
         last_loss = conn.execute(
             "SELECT exit_time FROM trades WHERE entry_time > ? AND status != 'OPEN' AND pnl_rupees < 0 ORDER BY exit_time DESC LIMIT 1",
             (today_start,)
@@ -601,28 +642,49 @@ class TradeManager:
             try:
                 loss_time = datetime.fromisoformat(last_loss[0])
                 time_since = (now - loss_time).total_seconds()
-                if time_since < 2700:  # 45 min cooldown
-                    conn.close()
-                    return False
-                if time_since < 5400 and win_pct < 75:  # 90 min: need 75%+
+                if time_since < 900:  # 15 min cooldown only (not 45 min)
                     conn.close()
                     return False
             except Exception:
                 pass
 
-        # ── DAILY LOSS COUNT: After 2 losses today (any exit reason), stop ──
-        today_loss_count = conn.execute(
-            "SELECT COUNT(*) FROM trades WHERE entry_time > ? AND status != 'OPEN' AND pnl_rupees < 0",
-            (today_start,)
-        ).fetchone()[0]
-        if today_loss_count >= 2:
-            conn.close()
-            return False  # Hard stop after 2 losses
-        if today_loss_count >= 1 and win_pct < 75:
-            conn.close()
-            return False  # After 1 loss, need 75%+
-
         conn.close()
+
+        # ── ADAPTIVE QUALITY BAR: More losses = higher bar, but NEVER stop ──
+        # 0 losses today: normal quality (65%+ probability, 20+ spread)
+        # 1 loss today: higher bar (70%+ probability, 25+ spread)
+        # 2 losses today: highest bar (78%+ probability, 30+ spread, HIGH confidence only)
+        # 3+ losses today: elite only (82%+ probability, 35+ spread, HIGH confidence)
+        # System NEVER stops — just demands better and better signals
+
+        if today_loss_count == 0:
+            min_prob = 65
+            min_spread = 20
+        elif today_loss_count == 1:
+            min_prob = 70
+            min_spread = 25
+        elif today_loss_count == 2:
+            min_prob = 78
+            min_spread = 30
+        else:  # 3+ losses
+            min_prob = 82
+            min_spread = 35
+
+        if win_pct < min_prob:
+            return False
+        if spread < min_spread:
+            return False
+
+        # After 2+ losses, only HIGH confidence trades
+        if today_loss_count >= 2 and confidence not in ("HIGH",):
+            return False
+
+        # ── CAPITAL SAFETY: If daily loss exceeds 5%, raise bar to 85%+ ──
+        running_capital = _get_running_capital()
+        if today_loss_amount < -(running_capital * MAX_DAILY_LOSS_PCT / 100):
+            if win_pct < 85:
+                return False  # Only ELITE trades after heavy daily loss
+
         return True
 
     # ── PUBLIC API METHODS ──
@@ -835,6 +897,10 @@ class TradeManager:
             "capitalUsedPct": round(open_invested / max(_get_running_capital(), 1) * 100),
             "availableCapital": round(_get_running_capital() - open_invested),
         }
+
+    def get_trade_alerts(self):
+        """Get recent trade entry/exit alerts for frontend notifications."""
+        return list(reversed(self._trade_alerts))
 
     def get_stop_hunts(self):
         conn = _conn()
