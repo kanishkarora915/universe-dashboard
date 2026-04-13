@@ -20,15 +20,73 @@ MAX_RISK_PER_TRADE_PCT = 1.5  # Risk 1.5% of running capital per trade (₹15K o
 MAX_DAILY_LOSS_PCT = 5  # Stop trading after 5% daily loss
 MAX_SIMULTANEOUS_TRADES = 1  # Only 1 trade at a time (across all indices)
 
-# NSE Holidays 2026 (add more as needed)
-NSE_HOLIDAYS = {
-    "2026-01-26", "2026-02-19", "2026-03-10", "2026-03-17",
-    "2026-03-30", "2026-03-31", "2026-04-02", "2026-04-14",
-    "2026-05-01", "2026-05-25", "2026-06-19", "2026-07-07",
-    "2026-07-10", "2026-08-14", "2026-08-15", "2026-08-28",
-    "2026-09-18", "2026-10-02", "2026-10-20", "2026-10-21",
-    "2026-10-23", "2026-11-04", "2026-11-19", "2026-12-25",
+# NSE Holidays — Auto-fetched from Kite API, fallback to hardcoded
+_NSE_HOLIDAYS_CACHE = None
+_NSE_HOLIDAYS_FALLBACK = {
+    "2026-01-15", "2026-01-26", "2026-03-03", "2026-03-26", "2026-03-31",
+    "2026-04-03", "2026-04-14", "2026-05-01", "2026-05-28", "2026-06-26",
+    "2026-09-14", "2026-10-02", "2026-10-20", "2026-11-10", "2026-11-24", "2026-12-25",
 }
+
+
+def _fetch_nse_holidays():
+    """Fetch NSE trading holidays from Kite Connect API. Cached for entire session."""
+    global _NSE_HOLIDAYS_CACHE
+    if _NSE_HOLIDAYS_CACHE is not None:
+        return _NSE_HOLIDAYS_CACHE
+    try:
+        # Try fetching from Kite API (kite.trading_holidays())
+        # This requires an authenticated kite instance
+        # Fallback: try NSE website or use hardcoded
+        import json
+        from pathlib import Path
+        cache_file = Path(__file__).parent / "nse_holidays_cache.json"
+        if cache_file.exists():
+            data = json.loads(cache_file.read_text())
+            year = ist_now().year
+            if data.get("year") == year:
+                _NSE_HOLIDAYS_CACHE = set(data.get("dates", []))
+                return _NSE_HOLIDAYS_CACHE
+    except Exception:
+        pass
+    _NSE_HOLIDAYS_CACHE = _NSE_HOLIDAYS_FALLBACK
+    return _NSE_HOLIDAYS_CACHE
+
+
+def save_nse_holidays_from_kite(kite):
+    """Call this after Kite login to fetch and cache real holidays."""
+    global _NSE_HOLIDAYS_CACHE
+    try:
+        holidays = kite.trading_holidays()
+        dates = set()
+        for h in holidays:
+            # Kite returns list of dicts with 'date' and 'description'
+            if isinstance(h, dict):
+                d = h.get("date", "")
+                if isinstance(d, str) and len(d) >= 10:
+                    dates.add(d[:10])
+                elif hasattr(d, "strftime"):
+                    dates.add(d.strftime("%Y-%m-%d"))
+            # Also handle list-of-lists format
+            elif isinstance(h, (list, tuple)) and len(h) >= 1:
+                d = str(h[0])[:10]
+                dates.add(d)
+        if dates:
+            _NSE_HOLIDAYS_CACHE = dates
+            # Save to cache file
+            import json
+            from pathlib import Path
+            cache_file = Path(__file__).parent / "nse_holidays_cache.json"
+            cache_file.write_text(json.dumps({
+                "year": ist_now().year,
+                "dates": sorted(dates),
+                "fetched": ist_now().isoformat(),
+            }))
+            print(f"[TRADES] Fetched {len(dates)} NSE holidays from Kite API")
+            return dates
+    except Exception as e:
+        print(f"[TRADES] Could not fetch holidays from Kite: {e}")
+    return _NSE_HOLIDAYS_FALLBACK
 
 LOT_CONFIG = {
     "NIFTY": {"lot_size": 65},
@@ -41,7 +99,8 @@ def _is_trading_day():
     now = ist_now()
     if now.weekday() >= 5:  # Saturday=5, Sunday=6
         return False
-    if now.strftime("%Y-%m-%d") in NSE_HOLIDAYS:
+    holidays = _fetch_nse_holidays()
+    if now.strftime("%Y-%m-%d") in holidays:
         return False
     return True
 
@@ -120,7 +179,8 @@ def _cleanup_invalid_trades():
             try:
                 dt = datetime.fromisoformat(t["entry_time"])
                 trade_date = dt.strftime("%Y-%m-%d")
-                if dt.weekday() >= 5 or trade_date in NSE_HOLIDAYS:
+                holidays = _fetch_nse_holidays()
+                if dt.weekday() >= 5 or trade_date in holidays:
                     invalid_ids.append(t["id"])
             except Exception:
                 pass

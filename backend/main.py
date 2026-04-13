@@ -154,6 +154,13 @@ async def callback(request: Request, request_token: str = Query(...), status: st
 
         print(f"[AUTH] Login successful. Access token: {access_token[:8]}...")
 
+        # Fetch NSE holidays from Kite API (auto-cache for the year)
+        try:
+            from trade_logger import save_nse_holidays_from_kite
+            save_nse_holidays_from_kite(kite)
+        except Exception as e:
+            print(f"[AUTH] Holiday fetch failed (using fallback): {e}")
+
         engine = MarketEngine(
             api_key=session["api_key"],
             access_token=access_token,
