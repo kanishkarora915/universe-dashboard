@@ -280,6 +280,9 @@ class MarketEngine:
         self._tt_last_capture = 0
         self._tt_yesterday_saved = False
 
+        # ── Seller ratio history for cooking detection ──
+        self._seller_ratio_history = {"nifty": [], "banknifty": []}  # List of {time, pe_ratio, ce_ratio}
+
         # ── Expiry tracking ──
         self.nearest_expiry = {}   # {"NIFTY": date, "BANKNIFTY": date}
         self.all_expiries = {"NIFTY": [], "BANKNIFTY": []}  # All future expiry dates
@@ -1896,29 +1899,59 @@ class MarketEngine:
                 "multi_timeframe": 0, "fii_dii": 0, "global_cues": 0,
             }
 
-            # ── 1. SELLER POSITIONING (30 pts max) — Most important ──
+            # ── 1. SELLER POSITIONING (30 pts max) — Detect COOKING, not just obvious ──
             _bs0, _be0 = bull_score, bear_score
             sd = seller.get(key, {})
             ce_writing = sd.get("ceWritingOI", 0)
             pe_writing = sd.get("peWritingOI", 0)
             ce_sc = sd.get("ceShortCoverOI", 0)
             pe_sc = sd.get("peShortCoverOI", 0)
-            oi_thr = cfg.get("oi_threshold", 100000)  # Index-specific threshold
+            oi_thr = cfg.get("oi_threshold", 100000)
 
-            # Use RATIO (pe_writing vs ce_writing) as primary signal
-            # Absolute OI threshold only as minimum noise filter
             total_writing = pe_writing + ce_writing
-            if total_writing > oi_thr:  # At least some activity happening
-                pe_ratio = pe_writing / max(total_writing, 1)
-                ce_ratio = ce_writing / max(total_writing, 1)
-                if pe_ratio > 0.60:  # PE writing is 60%+ of total = bullish support
-                    pts = min(W["seller_positioning"], int(pe_ratio * 30))
+            pe_ratio = pe_writing / max(total_writing, 1) if total_writing > 0 else 0.5
+            ce_ratio = ce_writing / max(total_writing, 1) if total_writing > 0 else 0.5
+
+            # Track ratio history for cooking detection (keep last 6 = ~12 min at 2-min verdict interval)
+            ratio_hist = self._seller_ratio_history.get(key, [])
+            ratio_hist.append({"pe": round(pe_ratio, 3), "ce": round(ce_ratio, 3)})
+            if len(ratio_hist) > 6:
+                ratio_hist = ratio_hist[-6:]
+            self._seller_ratio_history[key] = ratio_hist
+
+            if total_writing > oi_thr:
+                # LAYER 1: COOKING DETECTION — ratio trending one way
+                # Check if PE ratio increasing over last 3+ snapshots
+                if len(ratio_hist) >= 3:
+                    pe_trend = [r["pe"] for r in ratio_hist[-3:]]
+                    ce_trend = [r["ce"] for r in ratio_hist[-3:]]
+                    pe_cooking = all(pe_trend[i] <= pe_trend[i+1] for i in range(len(pe_trend)-1))
+                    ce_cooking = all(ce_trend[i] <= ce_trend[i+1] for i in range(len(ce_trend)-1))
+                    pe_shift = pe_trend[-1] - pe_trend[0]  # How much ratio shifted
+                    ce_shift = ce_trend[-1] - ce_trend[0]
+
+                    # EARLY signal: cooking detected (ratio 50-55% but TRENDING UP)
+                    if pe_cooking and pe_shift > 0.03 and pe_ratio > 0.50:
+                        pts = min(W["seller_positioning"], int(pe_shift * 150))  # 0.05 shift = 7.5 pts
+                        bull_score += pts
+                        bull_reasons.append(f"PE COOKING: ratio {pe_trend[0]*100:.0f}%→{pe_ratio*100:.0f}% in {len(pe_trend)} checks, trending UP [{pts}pts]")
+
+                    if ce_cooking and ce_shift > 0.03 and ce_ratio > 0.50:
+                        pts = min(W["seller_positioning"], int(ce_shift * 150))
+                        bear_score += pts
+                        bear_reasons.append(f"CE COOKING: ratio {ce_trend[0]*100:.0f}%→{ce_ratio*100:.0f}% in {len(ce_trend)} checks, trending UP [{pts}pts]")
+
+                # LAYER 2: CLEAR DOMINANCE — already one-sided (additional points)
+                if pe_ratio > 0.60:
+                    pts = min(15, int((pe_ratio - 0.50) * 100))  # 60% = 10pts, 70% = 20pts capped at 15
                     bull_score += pts
-                    bull_reasons.append(f"PE sellers {pe_ratio*100:.0f}% of writing ({pe_writing/100000:.1f}L vs CE {ce_writing/100000:.1f}L) = support [{pts}pts]")
-                if ce_ratio > 0.60:  # CE writing is 60%+ of total = bearish resistance
-                    pts = min(W["seller_positioning"], int(ce_ratio * 30))
+                    bull_reasons.append(f"PE dominant {pe_ratio*100:.0f}% ({pe_writing/100000:.1f}L vs CE {ce_writing/100000:.1f}L) [{pts}pts]")
+                if ce_ratio > 0.60:
+                    pts = min(15, int((ce_ratio - 0.50) * 100))
                     bear_score += pts
-                    bear_reasons.append(f"CE sellers {ce_ratio*100:.0f}% of writing ({ce_writing/100000:.1f}L vs PE {pe_writing/100000:.1f}L) = resistance [{pts}pts]")
+                    bear_reasons.append(f"CE dominant {ce_ratio*100:.0f}% ({ce_writing/100000:.1f}L vs PE {pe_writing/100000:.1f}L) [{pts}pts]")
+
+            # Short covering (unchanged — these are clear signals)
             if ce_sc > oi_thr:
                 bull_score += min(10, int(ce_sc / oi_thr))
                 bull_reasons.append(f"CE short covering {ce_sc/100000:.1f}L = resistance weakening")
