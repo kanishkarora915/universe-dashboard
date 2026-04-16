@@ -102,26 +102,50 @@ def kite_login():
 
     print(f"[AUTO-LOGIN] Step 2 OK — 2FA complete")
 
-    # Step 3: Hit Kite Connect login URL to get request_token
+    # Step 3: Hit Kite Connect login URL → authorize → get request_token
     print(f"[AUTO-LOGIN] Step 3: Getting request_token from Kite Connect...")
-    kite_login_url = f"https://kite.trade/connect/login?v=3&api_key={API_KEY}"
-    redirect_resp = session.get(kite_login_url, allow_redirects=False)
 
-    # Follow redirects manually to extract request_token
-    if redirect_resp.status_code in (301, 302, 303, 307):
-        redirect_url = redirect_resp.headers.get("Location", "")
-    else:
-        # Try following full redirect chain
-        redirect_resp = session.get(kite_login_url, allow_redirects=True)
-        redirect_url = redirect_resp.url
+    # First, load the Kite Connect login page (this sets up the session)
+    kite_login_url = f"https://kite.zerodha.com/connect/login?v=3&api_key={API_KEY}"
+    login_page = session.get(kite_login_url, allow_redirects=True)
 
+    redirect_url = login_page.url
+
+    # If we're on the authorize page, we need to POST to authorize
     if "request_token=" not in redirect_url:
-        # Try alternate approach
-        redirect_resp = session.get(
-            f"https://kite.zerodha.com/connect/login?v=3&api_key={API_KEY}",
-            allow_redirects=True
-        )
-        redirect_url = redirect_resp.url
+        # Try to find and submit the authorization form
+        # Kite Connect requires user to "authorize" the app
+        authorize_url = f"https://kite.zerodha.com/connect/login?v=3&api_key={API_KEY}"
+        auth_resp = session.post(authorize_url, data={
+            "api_key": API_KEY,
+            "action": "login",
+        }, allow_redirects=False)
+
+        if auth_resp.status_code in (301, 302, 303, 307):
+            redirect_url = auth_resp.headers.get("Location", "")
+        else:
+            redirect_url = auth_resp.url
+
+    # Still no request_token? Try the finish endpoint
+    if "request_token=" not in redirect_url:
+        finish_url = f"https://kite.zerodha.com/connect/finish?api_key={API_KEY}&v=3"
+        finish_resp = session.get(finish_url, allow_redirects=False)
+        if finish_resp.status_code in (301, 302, 303, 307):
+            redirect_url = finish_resp.headers.get("Location", "")
+        elif finish_resp.status_code == 200:
+            # Check response body for redirect
+            import re
+            match = re.search(r'request_token=([a-zA-Z0-9]+)', finish_resp.text)
+            if match:
+                redirect_url = f"?request_token={match.group(1)}"
+
+    # Try one more approach — direct authorize POST
+    if "request_token=" not in redirect_url:
+        auth2 = session.post("https://kite.zerodha.com/connect/authorize", data={
+            "api_key": API_KEY,
+        }, allow_redirects=False)
+        if auth2.status_code in (301, 302, 303, 307):
+            redirect_url = auth2.headers.get("Location", "")
 
     if "request_token=" not in redirect_url:
         raise Exception(f"Could not extract request_token. Redirect URL: {redirect_url[:200]}")
