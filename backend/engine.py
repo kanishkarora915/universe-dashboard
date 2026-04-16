@@ -243,7 +243,8 @@ class MarketEngine:
         self.ticker: Optional[KiteTicker] = None
         self.running = False
 
-        # ── Caches ──
+        # ── Caches (thread-safe via lock) ──
+        self._data_lock = threading.Lock()
         self.prices = {}
         self.chains = {"NIFTY": {}, "BANKNIFTY": {}}
         self.unusual_alerts = []
@@ -3179,46 +3180,44 @@ class MarketEngine:
     def _process_ticks(self, ticks):
         self._last_tick_time = time.time()
 
-        for tick in ticks:
-            token = tick.get("instrument_token")
-            if not token:
-                continue
+        with self._data_lock:
+            for tick in ticks:
+                token = tick.get("instrument_token")
+                if not token:
+                    continue
 
-            # Update price cache — handle both full and compact tick modes
-            ohlc = tick.get("ohlc", {})
-            self.prices[token] = {
-                "ltp": tick.get("last_price", 0),
-                "high": ohlc.get("high", tick.get("high", 0)),
-                "low": ohlc.get("low", tick.get("low", 0)),
-                "close": ohlc.get("close", tick.get("close", 0)),
-                "oi": tick.get("oi", 0),
-                "volume": tick.get("volume_traded", tick.get("volume", 0)),
-                "buy_qty": tick.get("total_buy_quantity", 0),
-                "sell_qty": tick.get("total_sell_quantity", 0),
-            }
+                ohlc = tick.get("ohlc", {})
+                self.prices[token] = {
+                    "ltp": tick.get("last_price", 0),
+                    "high": ohlc.get("high", tick.get("high", 0)),
+                    "low": ohlc.get("low", tick.get("low", 0)),
+                    "close": ohlc.get("close", tick.get("close", 0)),
+                    "oi": tick.get("oi", 0),
+                    "volume": tick.get("volume_traded", tick.get("volume", 0)),
+                    "buy_qty": tick.get("total_buy_quantity", 0),
+                    "sell_qty": tick.get("total_sell_quantity", 0),
+                }
 
-            # If option token, update chain
-            info = self.token_to_info.get(token)
-            if info:
-                index = info["index"]
-                strike = info["strike"]
-                opt_type = info["opt_type"].lower()
+                info = self.token_to_info.get(token)
+                if info:
+                    index = info["index"]
+                    strike = info["strike"]
+                    opt_type = info["opt_type"].lower()
 
-                if strike not in self.chains[index]:
-                    self.chains[index][strike] = {}
+                    if strike not in self.chains[index]:
+                        self.chains[index][strike] = {}
 
-                chain_entry = self.chains[index][strike]
-                chain_entry[f"{opt_type}_ltp"] = tick.get("last_price", 0)
-                chain_entry[f"{opt_type}_oi"] = tick.get("oi", 0)
-                chain_entry[f"{opt_type}_volume"] = tick.get("volume_traded", tick.get("volume", 0))
+                    chain_entry = self.chains[index][strike]
+                    chain_entry[f"{opt_type}_ltp"] = tick.get("last_price", 0)
+                    chain_entry[f"{opt_type}_oi"] = tick.get("oi", 0)
+                    chain_entry[f"{opt_type}_volume"] = tick.get("volume_traded", tick.get("volume", 0))
 
-                # Backfill initial_oi/initial_ltp from first tick if not set during initial fetch
-                if token not in self.initial_oi:
-                    self.initial_oi[token] = tick.get("oi", 0)
-                    self.initial_ltp[token] = tick.get("last_price", 0)
-                    self.prev_oi[token] = tick.get("oi", 0)
+                    if token not in self.initial_oi:
+                        self.initial_oi[token] = tick.get("oi", 0)
+                        self.initial_ltp[token] = tick.get("last_price", 0)
+                        self.prev_oi[token] = tick.get("oi", 0)
 
-                self._check_unusual(token, tick, info)
+                    self._check_unusual(token, tick, info)
 
         # Throttled push (every 1s)
         now = time.time()
@@ -3298,6 +3297,15 @@ class MarketEngine:
             self.trade_manager.update_verdict_cache(verdict)
             self.trade_manager.check_stop_hunts(self.chains)
             self.trade_manager.check_position_alerts(self.chains, verdict)
+
+            # Clear stale pending entries (>5 min old or market closed)
+            pending = self.trade_manager._pending_entry
+            if pending:
+                age = time.time() - self.trade_manager._pending_entry_time
+                if age > 300:  # 5 min max pending age
+                    print(f"[TRADE] Pending expired ({age:.0f}s old) — clearing")
+                    self.trade_manager._pending_entry = None
+
             for idx in ["NIFTY", "BANKNIFTY"]:
                 key = idx.lower()
                 v = verdict.get(key, {})

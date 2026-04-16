@@ -389,6 +389,13 @@ class TradeManager:
 
         for trade in open_trades:
             t = dict(trade)
+
+            # Idempotent: re-check status before processing (prevents double-close)
+            conn_check = _conn()
+            current_status = conn_check.execute("SELECT status FROM trades WHERE id=?", (t["id"],)).fetchone()
+            conn_check.close()
+            if not current_status or current_status[0] != "OPEN":
+                continue  # Already closed by another thread
             idx = t["idx"]
             strike = t["strike"]
             action = t["action"]
@@ -548,25 +555,37 @@ class TradeManager:
             alerts_str = " | ".join(alerts_list) if alerts_list else t.get("alerts", "")
 
             if new_status != "OPEN":
+                # Idempotent close: re-check status with lock
+                conn_recheck = _conn()
+                still_open = conn_recheck.execute("SELECT status, pnl_rupees, qty FROM trades WHERE id=?", (t["id"],)).fetchone()
+                conn_recheck.close()
+                if not still_open or still_open[0] != "OPEN":
+                    continue  # Already closed
+
+                # Use CURRENT qty from DB (may be reduced after partial T1 booking)
+                current_qty = still_open[2] or t["qty"]
+                already_booked_pnl = still_open[1] or 0  # P&L from partial booking
+
                 final_pnl_pts = round(exit_price - entry, 2)
-                final_pnl_rupees = round(final_pnl_pts * t["qty"], 2)
+                remaining_pnl = round(final_pnl_pts * current_qty, 2)
+                total_pnl = round(already_booked_pnl + remaining_pnl, 2)  # Partial + remaining
+
                 conn.execute("""
                     UPDATE trades SET current_ltp=?, peak_ltp=?, pnl_pts=?, pnl_rupees=?,
                         sl_price=?, breakeven_active=?, trailing_active=?, trail_level=?,
                         status=?, exit_price=?, exit_time=?, exit_reason=?, alerts=?
-                    WHERE id=?
-                """, (current_ltp, peak, final_pnl_pts, final_pnl_rupees,
+                    WHERE id=? AND status='OPEN'
+                """, (current_ltp, peak, final_pnl_pts, total_pnl,
                       new_sl, breakeven_active, trailing_active, trail_level,
                       new_status, exit_price, ist_now().isoformat(), exit_reason, alerts_str, t["id"]))
-                print(f"[TRADE] CLOSED: {action} {idx} {strike} — {new_status} — PnL: {final_pnl_pts} pts (₹{final_pnl_rupees:+,.0f})")
+                print(f"[TRADE] CLOSED: {action} {idx} {strike} — {new_status} — PnL: ₹{total_pnl:+,.0f} (partial: ₹{already_booked_pnl:+,.0f} + exit: ₹{remaining_pnl:+,.0f})")
 
-                # Exit alert
-                emoji = "✅" if final_pnl_rupees > 0 else "❌"
+                emoji = "✅" if total_pnl > 0 else "❌"
                 self._trade_alerts.append({
                     "type": "TRADE_EXIT",
                     "time": ist_now().strftime("%I:%M:%S %p"),
                     "message": f"{emoji} CLOSED: {action} {idx} {strike} — {new_status}",
-                    "details": f"Exit ₹{exit_price} | PnL: ₹{final_pnl_rupees:+,.0f} | {exit_reason[:100]}",
+                    "details": f"Exit ₹{exit_price} | PnL: ₹{total_pnl:+,.0f} | {exit_reason[:100]}",
                 })
                 self._trade_alerts = self._trade_alerts[-50:]
 

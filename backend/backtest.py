@@ -85,17 +85,17 @@ def _conn():
 
 class BacktestTracker:
     def __init__(self):
-        self._last_log = 0
+        self._last_log = {}  # Per-index: {"NIFTY": timestamp, "BANKNIFTY": timestamp}
 
     def log_verdict(self, idx, action, probability, spot_price, engine_scores=None):
         """Log a verdict signal with per-engine score breakdown for later verification."""
         if action == "NO TRADE" or probability < 60 or spot_price <= 0:
             return
-        # Don't log more than once per 2 minutes per index
+        # Don't log more than once per 2 minutes PER INDEX
         now = time.time()
-        if now - self._last_log < 120:
+        if now - self._last_log.get(idx, 0) < 120:
             return
-        self._last_log = now
+        self._last_log[idx] = now
 
         es = engine_scores or {}
         cols = "timestamp, idx, verdict_action, verdict_probability, spot_at_verdict"
