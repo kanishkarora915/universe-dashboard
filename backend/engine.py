@@ -3145,7 +3145,12 @@ class MarketEngine:
               f"(spots: {len(self.spot_tokens)}, options: {len(self.token_to_info)})")
 
     def _connect_ticker(self):
-        self.ticker = KiteTicker(self.api_key, self.access_token)
+        self.ticker = KiteTicker(
+            self.api_key, self.access_token,
+            reconnect=True,           # Auto-reconnect on disconnect
+            reconnect_max_tries=300,  # Keep trying for hours
+            reconnect_max_delay=5,    # Max 5s between retries
+        )
 
         def on_ticks(ws, ticks):
             self._process_ticks(ticks)
@@ -3156,7 +3161,7 @@ class MarketEngine:
             ws.set_mode(ws.MODE_FULL, self._subscribe_tokens)
 
         def on_close(ws, code, reason):
-            print(f"[TICKER] Closed: {code} — {reason}")
+            print(f"[TICKER] Closed: {code} — {reason}. Will auto-reconnect.")
 
         def on_error(ws, code, reason):
             print(f"[TICKER] Error: {code} — {reason}")
