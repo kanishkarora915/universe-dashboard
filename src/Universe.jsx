@@ -5,6 +5,9 @@ import PnLTracker from "./PnLTracker";
 import ReportsTab from "./ReportsTab";
 import TradingTimesTab from "./TradingTimesTab";
 import TradeAutopsyTab from "./TradeAutopsyTab";
+import LiveTicker from "./components/LiveTicker";
+import Notifications from "./components/Notifications";
+import SignalDashboard from "./components/SignalDashboard";
 import { exportSignalsToPDF, exportFullReport } from "./pdfExport";
 import { fetchTrapScan, fetchAIAnalysis, fetchTrapHistory, fetchTrapToday, fetchPriceAction, fetchTrapVerdict } from "./api";
 
@@ -19,6 +22,7 @@ const PURPLE = "#BF5AF2";
 const ORANGE = "#FF9F0A";
 
 const TABS = [
+  { id: "dashboard", icon: "\uD83D\uDCE1", label: "Dashboard" },
   { id: "live",    icon: "\u26A1", label: "Live Data" },
   { id: "signals", icon: "\uD83C\uDFAF", label: "Signals" },
   { id: "intraday",icon: "\uD83D\uDCCA", label: "Intraday" },
@@ -2618,7 +2622,7 @@ function PromptTab() {
 // \u2500\u2500 MAIN APP \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 export default function Universe({ onLogout }) {
-  const [activeTab, setActiveTab] = useState("live");
+  const [activeTab, setActiveTab] = useState("dashboard");
   const [time, setTime] = useState(new Date());
   const { live, unusual, intraday, nextday, weekly, signals, oiSummary, sellerData, tradeAnalysis, hiddenShift, connected } = useMarketData();
 
@@ -2636,6 +2640,7 @@ export default function Universe({ onLogout }) {
 
   const renderTab = () => {
     switch (activeTab) {
+      case "dashboard": return <SignalDashboard live={live} signals={signals} oiSummary={oiSummary} />;
       case "live":    return <LiveDataTab liveData={live} />;
       case "signals": return <SignalsTab realSignals={signals} />;
       case "intraday":return <IntradayTab realData={intraday} />;
@@ -2715,6 +2720,9 @@ export default function Universe({ onLogout }) {
         </div>
       </div>
 
+      {/* LIVE TICKER */}
+      <LiveTicker live={live} />
+
       {/* TABS */}
       <div style={{
         background: CARD, borderBottom: `1px solid ${BORDER}`,
@@ -2741,6 +2749,8 @@ export default function Universe({ onLogout }) {
         {renderTab()}
       </div>
 
+      {/* NOTIFICATIONS — always rendered */}
+      <Notifications />
     </div>
   );
 }
