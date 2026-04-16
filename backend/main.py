@@ -222,14 +222,15 @@ def _get_or_cache(key, fetcher, ttl=5):
             if key in _memory_cache:
                 return _memory_cache[key]
 
-    # Engine not running — serve cached data
+    # Engine not running — serve last saved data (file cache)
     if key in _memory_cache:
         return _memory_cache[key]
     cached = get_cached(key)
     if cached:
         _memory_cache[key] = cached
         return cached
-    return JSONResponse({"error": "No data available. Login to Kite."}, status_code=503)
+    # Return empty data structure instead of 503 — frontend handles gracefully
+    return {}
 
 
 @app.get("/api/live")

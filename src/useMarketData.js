@@ -34,7 +34,25 @@ function saveCache(data) {
 }
 
 function getCached(key) {
-  return loadCache()[key] || null;
+  // Try today's cache first
+  const today = loadCache()[key];
+  if (today) return today;
+
+  // Fallback: check last 3 days for cached data (market closed / holidays)
+  const now = new Date();
+  for (let i = 1; i <= 3; i++) {
+    const prev = new Date(now);
+    prev.setDate(prev.getDate() - i);
+    const prevKey = `universe_data_${prev.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })}`;
+    try {
+      const raw = localStorage.getItem(prevKey);
+      if (raw) {
+        const data = JSON.parse(raw);
+        if (data[key]) return data[key];
+      }
+    } catch {}
+  }
+  return null;
 }
 
 function setCached(key, value) {
