@@ -318,6 +318,7 @@ class MarketEngine:
             db_path = os.path.join(data_dir, "trades.db")
             init_trades_db(db_path)
             self.trade_manager = TradeManager()
+            self.trade_manager._engine_ref = self  # For autopsy snapshots
             print(f"[ENGINE] Trade manager started (DB: {db_path})")
         except Exception as e:
             print(f"[ENGINE] Trade manager init failed: {e}")
@@ -385,13 +386,20 @@ class MarketEngine:
             print(f"[TRADING-TIMES] Capture error: {e}")
 
     def _save_yesterday_oi(self):
-        """Background: save EOD OI snapshot for next-day comparison."""
+        """Background: save EOD OI snapshot for next-day comparison + gap prediction."""
         try:
             from trading_times import save_yesterday_oi, init_db
             init_db()
             save_yesterday_oi(self)
         except Exception as e:
             print(f"[TRADING-TIMES] Yesterday save error: {e}")
+        # Gap prediction EOD snapshot
+        try:
+            from trade_autopsy import save_eod_snapshot
+            for idx in ["NIFTY", "BANKNIFTY"]:
+                save_eod_snapshot(self, idx)
+        except Exception as e:
+            print(f"[GAP] EOD save error: {e}")
 
     def _start_trap_scanner(self):
         """Initialize and start the Trap Fingerprint Engine."""
@@ -3354,6 +3362,14 @@ class MarketEngine:
                                 )
                                 self.trade_manager._pending_entry = None
                                 print(f"[TRADE] CONFIRMED: {action} {idx} {atm} @ ₹{fresh_entry} — price held for {age:.0f}s")
+                                # Autopsy: capture entry snapshot
+                                try:
+                                    from trade_autopsy import capture_trade_snapshot
+                                    tid = self.trade_manager._trade_alerts[-1].get("tradeId") if self.trade_manager._trade_alerts else None
+                                    if tid:
+                                        capture_trade_snapshot(self, tid, idx, "ENTRY")
+                                except Exception:
+                                    pass
                             else:
                                 # LTP dropped — cancel pending
                                 self.trade_manager._pending_entry = None
@@ -3400,6 +3416,13 @@ class MarketEngine:
 
             if self.market_open_price:
                 self.market_open_recorded = True
+                # Gap prediction: check yesterday's prediction outcome
+                try:
+                    from trade_autopsy import check_gap_outcome
+                    for idx in ["NIFTY", "BANKNIFTY"]:
+                        check_gap_outcome(self, idx)
+                except Exception:
+                    pass
 
     def _update_day_range(self):
         """Track intraday high/low."""

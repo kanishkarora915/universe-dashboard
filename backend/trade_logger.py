@@ -275,11 +275,13 @@ class TradeManager:
     def __init__(self):
         self._last_verdict_check = 0
         self._last_sl_check = 0
-        self._cached_verdict = {}  # Cached verdict from last check
-        self._sl_override_count = {}  # {trade_id: count} — max 3 overrides per trade
-        self._trade_alerts = []  # Recent trade notifications (max 50)
-        self._pending_entry = None  # Price confirmation: wait for LTP to hold above entry
-        self._pending_entry_time = 0  # When pending was created
+        self._cached_verdict = {}
+        self._sl_override_count = {}
+        self._trade_alerts = []
+        self._pending_entry = None
+        self._pending_entry_time = 0
+        self._engine_ref = None  # Set by engine for autopsy snapshots
+        self._closed_trade_ids = set()  # Track recently closed to trigger exit snapshot
 
     def update_verdict_cache(self, verdict):
         """Called by engine every 30s with latest verdict data."""
@@ -579,6 +581,14 @@ class TradeManager:
                       new_sl, breakeven_active, trailing_active, trail_level,
                       new_status, exit_price, ist_now().isoformat(), exit_reason, alerts_str, t["id"]))
                 print(f"[TRADE] CLOSED: {action} {idx} {strike} — {new_status} — PnL: ₹{total_pnl:+,.0f} (partial: ₹{already_booked_pnl:+,.0f} + exit: ₹{remaining_pnl:+,.0f})")
+
+                # Autopsy: capture exit snapshot
+                if self._engine_ref:
+                    try:
+                        from trade_autopsy import capture_trade_snapshot
+                        capture_trade_snapshot(self._engine_ref, t["id"], idx, "EXIT")
+                    except Exception:
+                        pass
 
                 emoji = "✅" if total_pnl > 0 else "❌"
                 self._trade_alerts.append({

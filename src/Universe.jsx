@@ -4,6 +4,7 @@ import OIChangeTab from "./OIChangeTab";
 import PnLTracker from "./PnLTracker";
 import ReportsTab from "./ReportsTab";
 import TradingTimesTab from "./TradingTimesTab";
+import TradeAutopsyTab from "./TradeAutopsyTab";
 import { exportSignalsToPDF, exportFullReport } from "./pdfExport";
 import { fetchTrapScan, fetchAIAnalysis, fetchTrapHistory, fetchTrapToday, fetchPriceAction, fetchTrapVerdict } from "./api";
 
@@ -33,6 +34,7 @@ const TABS = [
   { id: "oichange",icon: "\uD83D\uDCC8", label: "OI Change" },
   { id: "pnl",     icon: "\uD83D\uDCB0", label: "PnL Tracker" },
   { id: "ttimes",  icon: "\u23F1\uFE0F", label: "Trading Times" },
+  { id: "autopsy", icon: "\uD83D\uDD2C", label: "Autopsy & Gap" },
   { id: "reports", icon: "\uD83D\uDCCA", label: "Reports & Data" },
   { id: "prompt",  icon: "\uD83E\uDD16", label: "Claude Prompt" },
 ];
@@ -2649,6 +2651,7 @@ export default function Universe({ onLogout }) {
       case "oichange":return <OIChangeTab oiData={oiSummary} />;
       case "pnl":     return <PnLTracker />;
       case "ttimes":  return <TradingTimesTab />;
+      case "autopsy": return <TradeAutopsyTab />;
       case "reports": return <ReportsTab />;
       case "prompt":  return <PromptTab />;
       default:        return null;

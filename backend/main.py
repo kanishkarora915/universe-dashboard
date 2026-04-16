@@ -20,6 +20,10 @@ from kiteconnect import KiteConnect
 
 from engine import MarketEngine
 from historical_validation import run_validation, get_real_trade_analysis
+from trade_autopsy import (
+    get_trade_autopsy, get_win_loss_patterns, get_gap_prediction,
+    get_gap_history, init_db as autopsy_init_db,
+)
 from trading_times import (
     get_live_dashboard as tt_live, get_today_timeline as tt_timeline,
     get_daily_report as tt_daily, get_weekly_report as tt_weekly,
@@ -551,6 +555,31 @@ async def report_backtest_sim(days: int = 30):
 @app.get("/api/reports/real-trade-analysis")
 async def report_real_trades():
     return get_real_trade_analysis()
+
+
+# ── Trade Autopsy & Gap Prediction Routes ────────────────────────────────
+
+@app.get("/api/autopsy/trade/{trade_id}")
+async def autopsy_trade(trade_id: int):
+    autopsy_init_db()
+    return get_trade_autopsy(trade_id)
+
+@app.get("/api/autopsy/patterns")
+async def autopsy_patterns():
+    autopsy_init_db()
+    return get_win_loss_patterns()
+
+@app.get("/api/autopsy/gap-prediction/{index}")
+async def autopsy_gap_pred(index: str):
+    autopsy_init_db()
+    if not engine:
+        return {"prediction": "NEED DATA", "confidence": 0, "message": "Engine not running"}
+    return get_gap_prediction(engine, index.upper())
+
+@app.get("/api/autopsy/gap-history/{index}")
+async def autopsy_gap_hist(index: str, limit: int = 30):
+    autopsy_init_db()
+    return get_gap_history(index.upper(), limit)
 
 
 # ── Trading Times Routes ─────────────────────────────────────────────────
