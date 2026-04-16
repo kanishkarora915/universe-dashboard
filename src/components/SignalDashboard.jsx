@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import OIHeatmap from "./OIHeatmap";
 import { PnLChart } from "./Charts";
+import { SkeletonCard, EmptyState } from "./Skeleton";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -13,6 +14,23 @@ const BORDER = "#1E1E2E";
 const BG = "#0A0A0F";
 
 const fmt = (n) => (n ? Math.round(n).toLocaleString("en-IN") : "0");
+
+function Collapsible({ title, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div>
+      <button onClick={() => setOpen(!open)} style={{
+        background: "none", border: "none", cursor: "pointer",
+        color: "#555", fontSize: 10, fontWeight: 700, textTransform: "uppercase",
+        letterSpacing: 1, padding: "8px 0", display: "flex", alignItems: "center", gap: 6, width: "100%",
+      }}>
+        <span style={{ color: "#333", fontSize: 12, transition: "transform 0.2s", transform: open ? "rotate(90deg)" : "rotate(0)" }}>▶</span>
+        {title}
+      </button>
+      {open && children}
+    </div>
+  );
+}
 
 const Stat = ({ label, value, color = "#fff", sub }) => (
   <div style={{ background: BG, borderRadius: 8, padding: "10px 14px", flex: 1, minWidth: 80 }}>
@@ -209,22 +227,26 @@ export default function SignalDashboard({ live, signals, oiSummary }) {
         </div>
       </div>
 
-      {/* OI Heatmap */}
-      {oiSummary && (
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ flex: 1, minWidth: 280, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "16px 20px" }}>
-            <OIHeatmap oiData={oiSummary} index="nifty" />
+      {/* OI Heatmap — collapsible */}
+      <Collapsible title="OI Heatmap — Institutional Positioning" defaultOpen={false}>
+        {oiSummary ? (
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 280, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "16px 20px" }}>
+              <OIHeatmap oiData={oiSummary} index="nifty" />
+            </div>
+            <div style={{ flex: 1, minWidth: 280, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "16px 20px" }}>
+              <OIHeatmap oiData={oiSummary} index="banknifty" />
+            </div>
           </div>
-          <div style={{ flex: 1, minWidth: 280, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "16px 20px" }}>
-            <OIHeatmap oiData={oiSummary} index="banknifty" />
-          </div>
-        </div>
-      )}
+        ) : <SkeletonCard />}
+      </Collapsible>
 
-      {/* P&L Chart */}
-      <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "16px 20px" }}>
-        <PnLChart />
-      </div>
+      {/* P&L Chart — collapsible */}
+      <Collapsible title="P&L Performance" defaultOpen={false}>
+        <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "16px 20px" }}>
+          <PnLChart />
+        </div>
+      </Collapsible>
     </div>
   );
 }

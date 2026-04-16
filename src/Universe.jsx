@@ -21,27 +21,41 @@ const YELLOW = "#FFD60A";
 const PURPLE = "#BF5AF2";
 const ORANGE = "#FF9F0A";
 
-const TABS = [
-  { id: "dashboard", icon: "\uD83D\uDCE1", label: "Dashboard" },
-  { id: "live",    icon: "\u26A1", label: "Live Data" },
-  { id: "signals", icon: "\uD83C\uDFAF", label: "Signals" },
-  { id: "intraday",icon: "\uD83D\uDCCA", label: "Intraday" },
-  { id: "nextday", icon: "\uD83D\uDD2D", label: "Next Day" },
-  { id: "weekly",  icon: "\uD83D\uDCC5", label: "Weekly" },
-  { id: "unusual", icon: "\uD83D\uDEA8", label: "Unusual Activity" },
-  { id: "sellers", icon: "\uD83E\uDD88", label: "Sellers" },
-  { id: "tradeai", icon: "\uD83E\uDDE0", label: "Trade AI" },
-  { id: "hidden",  icon: "\uD83D\uDD75\uFE0F", label: "Hidden Shift" },
-  { id: "trap",    icon: "\uD83E\uDDE8", label: "Trap Finder" },
-  { id: "priceact",icon: "\uD83D\uDCA5", label: "Price Action" },
-  { id: "aibrain", icon: "\uD83E\uDD16", label: "AI Brain" },
-  { id: "oichange",icon: "\uD83D\uDCC8", label: "OI Change" },
-  { id: "pnl",     icon: "\uD83D\uDCB0", label: "PnL Tracker" },
-  { id: "ttimes",  icon: "\u23F1\uFE0F", label: "Trading Times" },
-  { id: "autopsy", icon: "\uD83D\uDD2C", label: "Autopsy & Gap" },
-  { id: "reports", icon: "\uD83D\uDCCA", label: "Reports & Data" },
-  { id: "prompt",  icon: "\uD83E\uDD16", label: "Claude Prompt" },
+const TAB_GROUPS = [
+  { group: "Home", tabs: [
+    { id: "dashboard", icon: "\uD83D\uDCE1", label: "Dashboard" },
+  ]},
+  { group: "Market", tabs: [
+    { id: "live",    icon: "\u26A1", label: "Live" },
+    { id: "signals", icon: "\uD83C\uDFAF", label: "Signals" },
+    { id: "oichange",icon: "\uD83D\uDCC8", label: "OI Change" },
+    { id: "unusual", icon: "\uD83D\uDEA8", label: "Unusual" },
+  ]},
+  { group: "Analysis", tabs: [
+    { id: "sellers", icon: "\uD83E\uDD88", label: "Sellers" },
+    { id: "trap",    icon: "\uD83E\uDDE8", label: "Trap" },
+    { id: "hidden",  icon: "\uD83D\uDD75\uFE0F", label: "Hidden" },
+    { id: "priceact",icon: "\uD83D\uDCA5", label: "Price Act" },
+    { id: "tradeai", icon: "\uD83E\uDDE0", label: "Trade AI" },
+  ]},
+  { group: "Intelligence", tabs: [
+    { id: "aibrain", icon: "\uD83E\uDD16", label: "AI Brain" },
+    { id: "ttimes",  icon: "\u23F1\uFE0F", label: "Times" },
+    { id: "autopsy", icon: "\uD83D\uDD2C", label: "Autopsy" },
+  ]},
+  { group: "Trading", tabs: [
+    { id: "pnl",     icon: "\uD83D\uDCB0", label: "PnL" },
+    { id: "intraday",icon: "\uD83D\uDCCA", label: "Intraday" },
+    { id: "nextday", icon: "\uD83D\uDD2D", label: "Next Day" },
+    { id: "weekly",  icon: "\uD83D\uDCC5", label: "Weekly" },
+  ]},
+  { group: "System", tabs: [
+    { id: "reports", icon: "\uD83D\uDCCA", label: "Reports" },
+    { id: "prompt",  icon: "\uD83E\uDD16", label: "Prompt" },
+  ]},
 ];
+// Flat list for renderTab lookup
+const TABS = TAB_GROUPS.flatMap(g => g.tabs);
 
 const MASTER_PROMPT = `# UNIVERSE \u2014 MASTER CLAUDE PROMPT
 ## Nifty & BankNifty Options Intelligence Engine
@@ -2723,31 +2737,61 @@ export default function Universe({ onLogout }) {
       {/* LIVE TICKER */}
       <LiveTicker live={live} />
 
-      {/* TABS */}
+      {/* GROUPED TABS */}
       <div style={{
         background: CARD, borderBottom: `1px solid ${BORDER}`,
-        padding: "0 12px", display: "flex", gap: 0, overflowX: "auto",
+        padding: "0 8px", display: "flex", gap: 0, overflowX: "auto",
+        alignItems: "center",
       }}>
-        {TABS.map(tab => (
-          <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
-            background: "none", border: "none", cursor: "pointer",
-            padding: "12px 14px",
-            color: activeTab === tab.id ? ACCENT : "#555",
-            fontWeight: activeTab === tab.id ? 700 : 400,
-            fontSize: 12,
-            borderBottom: activeTab === tab.id ? `2px solid ${ACCENT}` : "2px solid transparent",
-            whiteSpace: "nowrap",
-            transition: "all 0.15s",
-          }}>
-            {tab.icon} {tab.label}
-          </button>
-        ))}
+        {TAB_GROUPS.map((group) => {
+          const isGroupActive = group.tabs.some(t => t.id === activeTab);
+          return (
+            <div key={group.group} style={{
+              display: "flex", alignItems: "center",
+              borderRight: `1px solid ${BORDER}`,
+            }}>
+              <span style={{
+                color: isGroupActive ? ACCENT : "#333",
+                fontSize: 9, fontWeight: 700, textTransform: "uppercase",
+                letterSpacing: 1, padding: "0 6px 0 10px",
+                userSelect: "none",
+              }}>
+                {group.group}
+              </span>
+              {group.tabs.map(tab => (
+                <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
+                  background: activeTab === tab.id ? ACCENT + "15" : "none",
+                  border: "none", cursor: "pointer",
+                  padding: "10px 10px",
+                  color: activeTab === tab.id ? ACCENT : "#555",
+                  fontWeight: activeTab === tab.id ? 700 : 400,
+                  fontSize: 11,
+                  borderBottom: activeTab === tab.id ? `2px solid ${ACCENT}` : "2px solid transparent",
+                  whiteSpace: "nowrap",
+                  transition: "all 0.15s",
+                }}>
+                  {tab.icon} {tab.label}
+                </button>
+              ))}
+            </div>
+          );
+        })}
       </div>
 
       {/* CONTENT */}
-      <div style={{ padding: "20px 16px", maxWidth: 900, margin: "0 auto" }}>
+      <div style={{ padding: "16px 12px", maxWidth: 960, margin: "0 auto" }}>
         {renderTab()}
       </div>
+
+      {/* GLOBAL RESPONSIVE STYLES */}
+      <style>{`
+        @media (max-width: 600px) {
+          [style*="maxWidth: 960"] { padding: 8px 6px !important; }
+          button { font-size: 10px !important; padding: 8px 8px !important; }
+          table { font-size: 10px !important; }
+          td, th { padding: 4px 3px !important; }
+        }
+      `}</style>
 
       {/* NOTIFICATIONS — always rendered */}
       <Notifications />
