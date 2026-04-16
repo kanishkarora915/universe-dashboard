@@ -136,6 +136,47 @@ async def login(body: dict):
     return {"login_url": login_url}
 
 
+@app.post("/api/auto-login")
+async def auto_login(request: Request):
+    """Auto-login using cached access_token from auto_login.py daemon."""
+    global engine
+    token_file = _data_dir / "access_token.json"
+    if not token_file.exists():
+        return JSONResponse({"error": "No cached token. Run auto_login.py first."}, status_code=400)
+
+    try:
+        token_data = json.loads(token_file.read_text())
+        api_key = token_data.get("api_key", "")
+        access_token = token_data.get("access_token", "")
+
+        if not api_key or not access_token:
+            return JSONResponse({"error": "Invalid token cache"}, status_code=400)
+
+        kite = KiteConnect(api_key=api_key)
+        kite.set_access_token(access_token)
+
+        session["api_key"] = api_key
+        session["api_secret"] = token_data.get("api_secret", "")
+        session["access_token"] = access_token
+        session["kite"] = kite
+
+        # Fetch holidays
+        try:
+            from trade_logger import save_nse_holidays_from_kite
+            save_nse_holidays_from_kite(kite)
+        except Exception:
+            pass
+
+        engine = MarketEngine(api_key=api_key, access_token=access_token, loop=event_loop)
+        engine.start()
+
+        print(f"[AUTO-LOGIN] Engine started with cached token from {token_data.get('login_time', 'unknown')}")
+        return {"status": "success", "message": "Auto-login successful, engine started"}
+    except Exception as e:
+        print(f"[AUTO-LOGIN] Failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/callback")
 async def callback(request: Request, request_token: str = Query(...), status: str = Query("success")):
     global engine
