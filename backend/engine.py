@@ -3318,7 +3318,12 @@ class MarketEngine:
                 key = idx.lower()
                 v = verdict.get(key, {})
                 if self.trade_manager.should_enter_trade(idx, v):
-                    # ALWAYS use FRESH spot + chain data, not cached verdict
+                    # STRICT: Only enter if ticks are FRESH (received within last 10s)
+                    tick_age = time.time() - self._last_tick_time if self._last_tick_time > 0 else 999
+                    if tick_age > 10:
+                        print(f"[TRADE] SKIP: {idx} — tick data stale ({tick_age:.0f}s old). No fake entries.")
+                        continue
+
                     chain = self.chains.get(idx, {})
                     cfg = INDEX_CONFIG[idx]
                     spot_ltp = self.prices.get(self.spot_tokens.get(idx), {}).get("ltp", 0)
@@ -3350,11 +3355,15 @@ class MarketEngine:
                     # If pending exists and LTP still holds → confirm entry.
                     pending = self.trade_manager._pending_entry
                     if pending and pending["idx"] == idx and pending["action"] == action and pending["strike"] == int(atm):
-                        # Pending exists — check if LTP still holds after wait
                         age = time.time() - self.trade_manager._pending_entry_time
-                        if age >= 60:  # Wait at least 60 seconds (half a verdict cycle)
-                            # LTP still above pending entry? Confirmed!
-                            if fresh_entry >= pending["entry_price"] * 0.97:  # Within 3% of pending price
+                        if age >= 60:
+                            # Double-check tick freshness at confirmation time too
+                            tick_age2 = time.time() - self._last_tick_time
+                            if tick_age2 > 10:
+                                print(f"[TRADE] CONFIRM SKIP: ticks stale at confirmation ({tick_age2:.0f}s)")
+                                self.trade_manager._pending_entry = None
+                                continue
+                            if fresh_entry >= pending["entry_price"] * 0.97:
                                 self.trade_manager.log_trade(
                                     idx=idx, action=action, strike=int(atm),
                                     entry_price=fresh_entry,
