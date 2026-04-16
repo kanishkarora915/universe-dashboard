@@ -2672,7 +2672,8 @@ export default function Universe({ onLogout }) {
           }} />
           <span style={{ color: "#fff", fontWeight: 900, fontSize: 20, letterSpacing: 3 }}>UNIVERSE</span>
           <span style={{ color: "#2a2a3a", fontSize: 11 }}>NSE Intelligence</span>
-          {connected && <span style={{ color: GREEN, fontSize: 9, fontWeight: 700, marginLeft: 8, padding: "2px 8px", background: GREEN + "15", borderRadius: 10 }}>LIVE</span>}
+          {connected && !live?._meta?.isStale && <span style={{ color: GREEN, fontSize: 9, fontWeight: 700, marginLeft: 8, padding: "2px 8px", background: GREEN + "15", borderRadius: 10 }}>LIVE</span>}
+          {live?._meta?.isStale && <span style={{ color: "#FF9F0A", fontSize: 9, fontWeight: 700, marginLeft: 8, padding: "2px 8px", background: "#FF9F0A15", borderRadius: 10 }}>STALE {live._meta.tickAge}s</span>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <div style={{ textAlign: "right" }}>

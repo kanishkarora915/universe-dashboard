@@ -292,6 +292,7 @@ class MarketEngine:
         self._ws_clients = []
         self._ws_lock = threading.Lock()
         self._last_push = 0
+        self._last_tick_time = 0  # Track when last tick arrived
 
     # ── Public API ───────────────────────────────────────────────────────
 
@@ -427,6 +428,19 @@ class MarketEngine:
 
     def get_live_data(self) -> dict:
         """Returns REAL data matching mockLive shape."""
+        # Check tick freshness — auto-reconnect if stale
+        now = time.time()
+        tick_age = now - self._last_tick_time if self._last_tick_time > 0 else 999
+        if tick_age > 60 and self._last_tick_time > 0:
+            # Ticks stopped for 60s+ during market hours — try reconnect
+            ist = ist_now()
+            if 9 <= ist.hour <= 15:
+                print(f"[ENGINE] Ticks stale for {tick_age:.0f}s — attempting reconnect...")
+                try:
+                    threading.Thread(target=self._connect_ticker, daemon=True).start()
+                except Exception as e:
+                    print(f"[ENGINE] Reconnect failed: {e}")
+
         result = {}
         for index in ["NIFTY", "BANKNIFTY"]:
             key = index.lower() if index == "NIFTY" else "banknifty"
@@ -501,6 +515,14 @@ class MarketEngine:
                 "trend": derive_trend(ltp, prev_close),
                 "regime": derive_regime(change_pct),
             }
+
+        # Add freshness info
+        tick_age = time.time() - self._last_tick_time if self._last_tick_time > 0 else 999
+        result["_meta"] = {
+            "tickAge": round(tick_age),
+            "isStale": tick_age > 30,
+            "lastTick": ist_now().strftime("%I:%M:%S %p") if self._last_tick_time > 0 else "Never",
+        }
 
         return result
 
@@ -3171,6 +3193,8 @@ class MarketEngine:
         self.ticker.connect(threaded=True)
 
     def _process_ticks(self, ticks):
+        self._last_tick_time = time.time()
+
         for tick in ticks:
             token = tick.get("instrument_token")
             if not token:
