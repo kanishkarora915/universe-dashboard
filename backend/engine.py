@@ -428,19 +428,6 @@ class MarketEngine:
 
     def get_live_data(self) -> dict:
         """Returns REAL data matching mockLive shape."""
-        # Check tick freshness — auto-reconnect if stale
-        now = time.time()
-        tick_age = now - self._last_tick_time if self._last_tick_time > 0 else 999
-        if tick_age > 60 and self._last_tick_time > 0:
-            # Ticks stopped for 60s+ during market hours — try reconnect
-            ist = ist_now()
-            if 9 <= ist.hour <= 15:
-                print(f"[ENGINE] Ticks stale for {tick_age:.0f}s — attempting reconnect...")
-                try:
-                    threading.Thread(target=self._connect_ticker, daemon=True).start()
-                except Exception as e:
-                    print(f"[ENGINE] Reconnect failed: {e}")
-
         result = {}
         for index in ["NIFTY", "BANKNIFTY"]:
             key = index.lower() if index == "NIFTY" else "banknifty"
@@ -515,14 +502,6 @@ class MarketEngine:
                 "trend": derive_trend(ltp, prev_close),
                 "regime": derive_regime(change_pct),
             }
-
-        # Add freshness info
-        tick_age = time.time() - self._last_tick_time if self._last_tick_time > 0 else 999
-        result["_meta"] = {
-            "tickAge": round(tick_age),
-            "isStale": tick_age > 30,
-            "lastTick": ist_now().strftime("%I:%M:%S %p") if self._last_tick_time > 0 else "Never",
-        }
 
         return result
 
@@ -3318,12 +3297,6 @@ class MarketEngine:
                 key = idx.lower()
                 v = verdict.get(key, {})
                 if self.trade_manager.should_enter_trade(idx, v):
-                    # STRICT: Only enter if ticks are FRESH (received within last 10s)
-                    tick_age = time.time() - self._last_tick_time if self._last_tick_time > 0 else 999
-                    if tick_age > 10:
-                        print(f"[TRADE] SKIP: {idx} — tick data stale ({tick_age:.0f}s old). No fake entries.")
-                        continue
-
                     chain = self.chains.get(idx, {})
                     cfg = INDEX_CONFIG[idx]
                     spot_ltp = self.prices.get(self.spot_tokens.get(idx), {}).get("ltp", 0)
@@ -3357,12 +3330,6 @@ class MarketEngine:
                     if pending and pending["idx"] == idx and pending["action"] == action and pending["strike"] == int(atm):
                         age = time.time() - self.trade_manager._pending_entry_time
                         if age >= 60:
-                            # Double-check tick freshness at confirmation time too
-                            tick_age2 = time.time() - self._last_tick_time
-                            if tick_age2 > 10:
-                                print(f"[TRADE] CONFIRM SKIP: ticks stale at confirmation ({tick_age2:.0f}s)")
-                                self.trade_manager._pending_entry = None
-                                continue
                             if fresh_entry >= pending["entry_price"] * 0.97:
                                 self.trade_manager.log_trade(
                                     idx=idx, action=action, strike=int(atm),
