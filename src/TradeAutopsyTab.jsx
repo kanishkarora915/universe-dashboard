@@ -43,17 +43,43 @@ const Badge = ({ text, color }) => (
 // ═════════════════════════════════════════════════
 
 function WinLossPatterns({ data }) {
-  if (!data || data.error) {
+  if (!data) {
     return (
       <Card>
         <Label>WIN vs LOSS PATTERNS</Label>
-        <div style={{ color: "#555", textAlign: "center", padding: 20 }}>{data?.error || "Loading..."}</div>
+        <div style={{ color: "#555", textAlign: "center", padding: 20 }}>Loading...</div>
+      </Card>
+    );
+  }
+  if (data.error) {
+    return (
+      <Card>
+        <Label>WIN vs LOSS PATTERNS</Label>
+        <div style={{ color: YELLOW, textAlign: "center", padding: 20, fontSize: 12 }}>{data.error}</div>
+        <div style={{ color: "#555", textAlign: "center", fontSize: 10, marginTop: 6 }}>
+          Patterns will appear after trades close with snapshots captured.
+        </div>
       </Card>
     );
   }
 
-  const wp = data.winPatterns || {};
-  const lp = data.lossPatterns || {};
+  // Backend returns arrays when empty, objects when populated — normalize
+  const wp = (data.winPatterns && !Array.isArray(data.winPatterns)) ? data.winPatterns : {};
+  const lp = (data.lossPatterns && !Array.isArray(data.lossPatterns)) ? data.lossPatterns : {};
+
+  if (!wp.count && !lp.count) {
+    return (
+      <Card>
+        <Label>WIN vs LOSS PATTERNS</Label>
+        <div style={{ color: "#555", textAlign: "center", padding: 20, fontSize: 12 }}>
+          No entry snapshots captured yet.
+        </div>
+        <div style={{ color: "#444", textAlign: "center", fontSize: 10, marginTop: 6 }}>
+          Wins: {data.totalWins || 0} closed · Losses: {data.totalLosses || 0} closed · Snapshots: {data.winEntries + data.lossEntries || 0}
+        </div>
+      </Card>
+    );
+  }
 
   return (
     <Card>

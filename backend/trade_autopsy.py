@@ -114,6 +114,7 @@ def capture_trade_snapshot(engine, trade_id, idx, snapshot_type="ENTRY"):
     spot_token = engine.spot_tokens.get(idx)
     spot = engine.prices.get(spot_token, {}).get("ltp", 0)
     if spot <= 0 or not chain:
+        print(f"[AUTOPSY] {snapshot_type} SKIP trade #{trade_id} {idx} — spot={spot}, chain_size={len(chain)}")
         return
 
     atm = round(spot / cfg["strike_gap"]) * cfg["strike_gap"]
@@ -296,33 +297,40 @@ def _find_insights(win_entries, loss_entries):
     if not win_entries or not loss_entries:
         return ["Need more trade data (both wins and losses) for insights"]
 
+    # Minimum sample size for statistical reliability
+    MIN_SAMPLE = 5
+    if len(win_entries) < MIN_SAMPLE or len(loss_entries) < MIN_SAMPLE:
+        return [f"Sample too small — {len(win_entries)} wins, {len(loss_entries)} losses. Need {MIN_SAMPLE}+ of each for reliable insights."]
+
     wp = _analyze_patterns(win_entries, "WIN")
     lp = _analyze_patterns(loss_entries, "LOSS")
 
-    # PCR comparison
-    if wp["avgPCR"] > lp["avgPCR"] + 0.1:
+    # PCR comparison (meaningful diff = 0.2+)
+    if wp["avgPCR"] > lp["avgPCR"] + 0.2:
         insights.append(f"Winning trades had higher PCR ({wp['avgPCR']}) vs losing ({lp['avgPCR']}). Higher PCR = more support = better CE trades.")
-    elif lp["avgPCR"] > wp["avgPCR"] + 0.1:
+    elif lp["avgPCR"] > wp["avgPCR"] + 0.2:
         insights.append(f"Losing trades had higher PCR ({lp['avgPCR']}). System may be entering CE when PE support is too strong (contrarian).")
 
-    # Volume ratio
-    if wp["volRatio"] > lp["volRatio"] + 0.3:
+    # Volume ratio (meaningful diff = 0.5+)
+    if wp["volRatio"] > lp["volRatio"] + 0.5:
         insights.append(f"Winning trades had CE/PE volume ratio {wp['volRatio']}x vs losing {lp['volRatio']}x. Higher CE volume = stronger conviction.")
+    elif lp["volRatio"] > wp["volRatio"] + 0.5:
+        insights.append(f"Losing trades had higher CE/PE volume {lp['volRatio']}x vs wins {wp['volRatio']}x. High CE volume alone not predictive — check direction.")
 
-    # CE OI direction
-    if wp["ceDecreasingPct"] > lp["ceDecreasingPct"] + 15:
+    # CE OI direction (meaningful diff = 20%+)
+    if wp["ceDecreasingPct"] > lp["ceDecreasingPct"] + 20:
         insights.append(f"In {wp['ceDecreasingPct']}% of wins, CE OI was DECREASING at entry (resistance weakening). Only {lp['ceDecreasingPct']}% in losses. Enter CE when CE OI is unwinding.")
 
-    # PE OI direction
-    if wp["peIncreasingPct"] > lp["peIncreasingPct"] + 15:
+    # PE OI direction (meaningful diff = 20%+)
+    if wp["peIncreasingPct"] > lp["peIncreasingPct"] + 20:
         insights.append(f"In {wp['peIncreasingPct']}% of wins, PE OI was INCREASING at entry (support building). Only {lp['peIncreasingPct']}% in losses. Enter CE when PE OI is building.")
 
-    # Premium ratio
-    if wp["avgPremiumRatio"] > lp["avgPremiumRatio"] + 0.1:
+    # Premium ratio (meaningful diff = 0.2+)
+    if wp["avgPremiumRatio"] > lp["avgPremiumRatio"] + 0.2:
         insights.append(f"Winning trades had premium ratio {wp['avgPremiumRatio']} vs losing {lp['avgPremiumRatio']}. Higher CE premium relative to PE = market already pricing upside.")
 
     if not insights:
-        insights.append("Not enough pattern divergence yet. Need 10+ wins and 10+ losses for reliable insights.")
+        insights.append(f"No strong divergence found across {len(win_entries)} wins and {len(loss_entries)} losses. Strategy patterns may be consistent — check individual trades for timing/entry issues.")
 
     return insights
 
@@ -340,7 +348,11 @@ def save_eod_snapshot(engine, index):
     chain = engine.chains.get(index, {})
     spot_token = engine.spot_tokens.get(index)
     spot = engine.prices.get(spot_token, {}).get("ltp", 0)
+    # Fallback: if LTP is 0 (market closed after 3:30), use last known close
+    if spot <= 0:
+        spot = getattr(engine, "prev_close", {}).get(index, 0) or engine.market_open_price.get(index, 0)
     if spot <= 0 or not chain:
+        print(f"[GAP] EOD SKIP {index} — spot={spot}, chain_size={len(chain)}")
         return
 
     atm = round(spot / cfg["strike_gap"]) * cfg["strike_gap"]

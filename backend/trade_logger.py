@@ -630,8 +630,8 @@ class TradeManager:
                     try:
                         from trade_autopsy import capture_trade_snapshot
                         capture_trade_snapshot(self._engine_ref, t["id"], idx, "EXIT")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[AUTOPSY] EXIT capture failed for trade #{t['id']}: {e}")
 
                 emoji = "✅" if total_pnl > 0 else "❌"
                 self._trade_alerts.append({

@@ -3352,7 +3352,7 @@ class MarketEngine:
                         age = time.time() - self.trade_manager._pending_entry_time
                         if age >= 60:
                             if fresh_entry >= pending["entry_price"] * 0.97:
-                                self.trade_manager.log_trade(
+                                tid = self.trade_manager.log_trade(
                                     idx=idx, action=action, strike=int(atm),
                                     entry_price=fresh_entry,
                                     probability=v.get("winProbability", 0),
@@ -3362,14 +3362,15 @@ class MarketEngine:
                                 )
                                 self.trade_manager._pending_entry = None
                                 print(f"[TRADE] CONFIRMED: {action} {idx} {atm} @ ₹{fresh_entry} — price held for {age:.0f}s")
-                                # Autopsy: capture entry snapshot
-                                try:
-                                    from trade_autopsy import capture_trade_snapshot
-                                    tid = self.trade_manager._trade_alerts[-1].get("tradeId") if self.trade_manager._trade_alerts else None
-                                    if tid:
+                                # Autopsy: capture entry snapshot using trade_id from log_trade return
+                                if tid:
+                                    try:
+                                        from trade_autopsy import capture_trade_snapshot
                                         capture_trade_snapshot(self, tid, idx, "ENTRY")
-                                except Exception:
-                                    pass
+                                    except Exception as e:
+                                        print(f"[AUTOPSY] ENTRY capture failed for trade #{tid}: {e}")
+                                else:
+                                    print(f"[AUTOPSY] ENTRY skipped — log_trade returned no trade_id")
                             else:
                                 # LTP dropped — cancel pending
                                 self.trade_manager._pending_entry = None
@@ -3421,8 +3422,8 @@ class MarketEngine:
                     from trade_autopsy import check_gap_outcome
                     for idx in ["NIFTY", "BANKNIFTY"]:
                         check_gap_outcome(self, idx)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[GAP] check_gap_outcome failed: {e}")
 
     def _update_day_range(self):
         """Track intraday high/low."""
