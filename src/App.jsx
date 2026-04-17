@@ -2,12 +2,16 @@ import { useState, useEffect } from "react";
 import Universe from "./Universe";
 import Login from "./Login";
 import { fetchStatus, logout } from "./api";
+import { ThemeProvider } from "./ThemeContext";
+import { registerSW } from "./registerSW";
 
 function App() {
   const [authenticated, setAuthenticated] = useState(false);
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
+    registerSW();
+
     const params = new URLSearchParams(window.location.search);
     const authParam = params.get("auth");
 
@@ -59,7 +63,11 @@ function App() {
     );
   }
 
-  return authenticated ? <Universe onLogout={handleLogout} /> : <Login />;
+  return (
+    <ThemeProvider>
+      {authenticated ? <Universe onLogout={handleLogout} /> : <Login />}
+    </ThemeProvider>
+  );
 }
 
 export default App;

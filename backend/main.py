@@ -36,6 +36,10 @@ from ml_feedback import (
     apply_recommended_weights, reset_weights, get_trading_windows,
     run_auto_train, get_training_history, get_auto_train_status,
 )
+from alerts import (
+    init_db as alerts_init_db, push_alert, list_alerts,
+    get_unread_counts, mark_read, dismiss as alerts_dismiss, pin as alerts_pin,
+)
 
 # ── Config ───────────────────────────────────────────────────────────────
 
@@ -666,6 +670,120 @@ async def autopsy_gap_pred(index: str):
 async def autopsy_gap_hist(index: str, limit: int = 30):
     autopsy_init_db()
     return get_gap_history(index.upper(), limit)
+
+
+# ── Alerts Routes ────────────────────────────────────────────────────────
+
+@app.get("/api/alerts")
+async def alerts_list(limit: int = 100, offset: int = 0, severity: Optional[str] = None,
+                      type: Optional[str] = None, unread: bool = False):
+    alerts_init_db()
+    rows = list_alerts(limit=limit, offset=offset, severity=severity,
+                       alert_type=type, unread_only=unread)
+    return {"alerts": rows}
+
+@app.get("/api/alerts/counts")
+async def alerts_counts():
+    alerts_init_db()
+    return get_unread_counts()
+
+@app.post("/api/alerts/mark-read")
+async def alerts_mark_read(payload: dict):
+    alerts_init_db()
+    mark_read(
+        alert_ids=payload.get("ids"),
+        tab=payload.get("tab"),
+        all_=bool(payload.get("all")),
+    )
+    return {"ok": True}
+
+@app.post("/api/alerts/{alert_id}/dismiss")
+async def alerts_dismiss_one(alert_id: int):
+    alerts_init_db()
+    alerts_dismiss(alert_id)
+    return {"ok": True}
+
+@app.post("/api/alerts/{alert_id}/pin")
+async def alerts_pin_one(alert_id: int, payload: dict):
+    alerts_init_db()
+    alerts_pin(alert_id, bool(payload.get("pinned", True)))
+    return {"ok": True}
+
+@app.post("/api/alerts/push")
+async def alerts_push(payload: dict):
+    """Internal endpoint — for testing + engine to push alerts."""
+    alerts_init_db()
+    alert = push_alert(
+        alert_type=payload.get("alert_type", "AI_INSIGHT"),
+        title=payload.get("title", ""),
+        message=payload.get("message", ""),
+        meta=payload.get("meta"),
+    )
+    return alert
+
+
+# ── Strike Detail Route ──────────────────────────────────────────────────
+
+@app.get("/api/strike-detail")
+async def strike_detail(index: str, strike: int):
+    """Aggregate all A-Z info for a single strike."""
+    idx = index.upper()
+    if not engine or idx not in ("NIFTY", "BANKNIFTY"):
+        return {"error": "Engine not ready or invalid index"}
+
+    chain = engine.chains.get(idx, {})
+    d = chain.get(int(strike), {})
+    if not d:
+        return {"error": f"Strike {strike} not in chain"}
+
+    spot_token = engine.spot_tokens.get(idx)
+    spot = engine.prices.get(spot_token, {}).get("ltp", 0)
+    cfg = {"NIFTY": {"strike_gap": 50}, "BANKNIFTY": {"strike_gap": 100}}.get(idx, {"strike_gap": 50})
+    atm = round(spot / cfg["strike_gap"]) * cfg["strike_gap"] if spot else 0
+
+    total_ce = sum(x.get("ce_oi", 0) for x in chain.values())
+    total_pe = sum(x.get("pe_oi", 0) for x in chain.values())
+    pcr = round(total_pe / max(total_ce, 1), 2) if total_ce else 0
+
+    # trades on this strike
+    trades = []
+    try:
+        trades_db = _data_dir / "trades.db"
+        if trades_db.exists():
+            tconn = sqlite3.connect(str(trades_db))
+            tconn.row_factory = sqlite3.Row
+            rows = tconn.execute(
+                "SELECT entry_time, action, entry_price, exit_price, pnl_rupees, exit_reason FROM trades WHERE idx=? AND strike=? ORDER BY entry_time DESC LIMIT 30",
+                (idx, int(strike))
+            ).fetchall()
+            tconn.close()
+            trades = [{
+                "date": r["entry_time"][:10] if r["entry_time"] else "",
+                "action": r["action"],
+                "entry": r["entry_price"],
+                "exit": r["exit_price"],
+                "pnl": r["pnl_rupees"],
+                "reason": r["exit_reason"] or "",
+            } for r in rows]
+    except Exception as e:
+        print(f"[STRIKE-DETAIL] trades query failed: {e}")
+
+    return {
+        "index": idx,
+        "strike": strike,
+        "spot": spot,
+        "atm": atm,
+        "atmDistance": int(strike) - atm,
+        "expiry": str(engine.nearest_expiry.get(idx, "")),
+        "ceLTP": d.get("ce_ltp", 0),
+        "peLTP": d.get("pe_ltp", 0),
+        "ceOI": d.get("ce_oi", 0),
+        "peOI": d.get("pe_oi", 0),
+        "ceVol": d.get("ce_volume", 0),
+        "peVol": d.get("pe_volume", 0),
+        "pcr": pcr,
+        "trades": trades,
+    }
 
 
 # ── Trading Times Routes ─────────────────────────────────────────────────
