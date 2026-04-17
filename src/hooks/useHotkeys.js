@@ -1,11 +1,24 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 
 /**
  * Global keyboard shortcuts.
  * @param {Object} handlers - { [combo]: fn }
  *   combo examples: "cmd+k", "ctrl+k", "escape", "1", "?", "cmd+shift+l", "f"
+ *
+ * All keys in handler map are normalized to lowercase on registration,
+ * so "Cmd+K" and "cmd+k" both work identically.
  */
 export function useHotkeys(handlers, { enabled = true } = {}) {
+  // Normalize all handler keys to lowercase ONCE — avoids case mismatch bugs
+  const normalizedHandlers = useMemo(() => {
+    if (!handlers) return {};
+    const out = {};
+    Object.entries(handlers).forEach(([k, v]) => {
+      out[k.toLowerCase()] = v;
+    });
+    return out;
+  }, [handlers]);
+
   useEffect(() => {
     if (!enabled) return;
 
@@ -29,12 +42,12 @@ export function useHotkeys(handlers, { enabled = true } = {}) {
       const combo = [...mods, key].join("+");
       const comboAlt = [...mods.map((m) => (m === "cmd" ? "ctrl" : m)), key].join("+"); // cmd+k also matches ctrl+k
 
-      // Find matching handler (exact match)
-      let handler = handlers[combo] || handlers[comboAlt];
+      // Find matching handler (case-insensitive via pre-normalized map)
+      const handler = normalizedHandlers[combo] || normalizedHandlers[comboAlt];
 
       // For plain keys (no modifiers), skip if typing in input
       if (handler && mods.length === 0 && typing) {
-        // allow escape always
+        // Allow escape to work always (to close modals/search even from inputs)
         if (key !== "escape") return;
       }
 
@@ -46,5 +59,5 @@ export function useHotkeys(handlers, { enabled = true } = {}) {
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handlers, enabled]);
+  }, [normalizedHandlers, enabled]);
 }

@@ -24,6 +24,7 @@ function SidebarButton({ tab, active, onClick, badge, flashing, theme }) {
       <button
         onClick={onClick}
         title={`${tab.label} (${tab.hotkey})`}
+        aria-label={`${tab.label}${tab.hotkey ? ` — shortcut ${tab.hotkey}` : ""}`}
         style={{
           width: 40,
           height: 40,

@@ -1,8 +1,13 @@
 import { Component } from "react";
+import { DARK } from "../theme";
 
 /**
  * Catches runtime errors inside tab content so a crashing tab doesn't blank
  * the whole dashboard. Shows error + reset button instead of white screen.
+ *
+ * Uses DARK theme constants directly since ErrorBoundary is a class component
+ * and can't use useTheme hook. Errors are rare and usually need to be visible,
+ * so dark theme as fallback is acceptable.
  */
 export default class ErrorBoundary extends Component {
   constructor(props) {
@@ -30,23 +35,25 @@ export default class ErrorBoundary extends Component {
     const err = this.state.error;
     const msg = (err && (err.message || String(err))) || "Unknown error";
     const stack = (err && err.stack) || "";
+    const t = DARK;
 
     return (
       <div
+        role="alert"
         style={{
           padding: "24px",
-          background: "#18181F",
-          border: "1px solid #FF453A44",
-          borderLeft: "3px solid #FF453A",
+          background: t.SURFACE_HI,
+          border: `1px solid ${t.RED}44`,
+          borderLeft: `3px solid ${t.RED}`,
           borderRadius: 8,
-          color: "#FFFFFF",
+          color: t.TEXT,
           fontFamily: "'Inter', -apple-system, sans-serif",
           margin: "24px 0",
         }}
       >
         <div
           style={{
-            color: "#FF453A",
+            color: t.RED,
             fontSize: 10,
             fontWeight: 700,
             letterSpacing: 1.5,
@@ -68,7 +75,7 @@ export default class ErrorBoundary extends Component {
         </div>
         <div
           style={{
-            color: "#888",
+            color: t.TEXT_MUTED,
             fontSize: 11,
             marginBottom: 16,
           }}
@@ -78,8 +85,9 @@ export default class ErrorBoundary extends Component {
         <div style={{ display: "flex", gap: 8 }}>
           <button
             onClick={this.reset}
+            aria-label="Reset this tab"
             style={{
-              background: "#0A84FF",
+              background: t.ACCENT,
               color: "#fff",
               border: "none",
               borderRadius: 6,
@@ -93,10 +101,11 @@ export default class ErrorBoundary extends Component {
           </button>
           <button
             onClick={() => window.location.reload()}
+            aria-label="Reload entire page"
             style={{
               background: "transparent",
-              color: "#888",
-              border: "1px solid #2A2A3A",
+              color: t.TEXT_MUTED,
+              border: `1px solid ${t.BORDER_HI}`,
               borderRadius: 6,
               padding: "6px 14px",
               fontSize: 12,
@@ -111,7 +120,7 @@ export default class ErrorBoundary extends Component {
           <details style={{ marginTop: 16 }}>
             <summary
               style={{
-                color: "#555",
+                color: t.TEXT_DIM,
                 fontSize: 10,
                 cursor: "pointer",
                 userSelect: "none",
@@ -121,11 +130,11 @@ export default class ErrorBoundary extends Component {
             </summary>
             <pre
               style={{
-                color: "#666",
+                color: t.TEXT_MUTED,
                 fontSize: 10,
                 marginTop: 8,
                 padding: 12,
-                background: "#0A0A0F",
+                background: t.BG,
                 borderRadius: 4,
                 overflow: "auto",
                 maxHeight: 240,

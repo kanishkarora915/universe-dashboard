@@ -151,7 +151,8 @@ def _build_data_prompt(data: dict) -> str:
 
     # 1. Live Market Data
     live = data.get("live")
-    if live and not isinstance(live, dict) or (isinstance(live, dict) and not live.get("error")):
+    # Only skip if it's a dict with an error key; otherwise include it
+    if live and (not isinstance(live, dict) or not live.get("error")):
         parts.append(f"=== LIVE MARKET DATA ===\n{json.dumps(live, default=str, indent=None)[:2000]}")
 
     # 2. Signals

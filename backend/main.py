@@ -541,14 +541,18 @@ async def manual_exit_trade(trade_id: int):
         pnl_rupees = round(existing_pnl + pnl_pts * current_qty, 2)
 
         now = ist_now()
-        conn.execute("""
+        cursor = conn.execute("""
             UPDATE trades SET status='MANUAL_EXIT', exit_price=?, exit_time=?,
                 pnl_pts=?, pnl_rupees=?, exit_reason=?
             WHERE id=? AND status='OPEN'
         """, (exit_price, now.isoformat(), pnl_pts, pnl_rupees,
               f"Manual exit by user at ₹{exit_price}. PnL: ₹{pnl_rupees:+,.0f}", trade_id))
+        rows_affected = cursor.rowcount
         conn.commit()
         conn.close()
+        if rows_affected == 0:
+            # TOCTOU: another process closed this trade between our SELECT and UPDATE
+            return {"error": "Trade was closed by another process before manual exit could complete"}
         print(f"[TRADE] MANUAL EXIT: {t['action']} {t['idx']} {t['strike']} — PnL: ₹{pnl_rupees:+,.0f}")
         return {"status": "closed", "pnl": pnl_rupees, "exitPrice": exit_price}
     except Exception as e:

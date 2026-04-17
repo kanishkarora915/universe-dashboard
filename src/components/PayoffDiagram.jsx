@@ -66,13 +66,17 @@ export default function PayoffDiagram({ strategies = [], spot = 0, lotSize = 75,
     return { strategy: st, pts, color: [theme.ACCENT, theme.PURPLE, theme.AMBER, theme.CYAN][i] };
   });
 
-  // Find global P&L range for y-axis
+  // Find global P&L range for y-axis — guard against zero range
   const allPnls = seriesData.flatMap((s) => s.pts.map((p) => p.pnl));
   const minPnl = Math.min(...allPnls, 0);
   const maxPnl = Math.max(...allPnls, 0);
-  const padPnl = Math.max(Math.abs(minPnl), Math.abs(maxPnl)) * 0.1;
-  const yMin = minPnl - padPnl;
-  const yMax = maxPnl + padPnl;
+  const padPnl = Math.max(Math.abs(minPnl), Math.abs(maxPnl), 1) * 0.1;
+  let yMin = minPnl - padPnl;
+  let yMax = maxPnl + padPnl;
+  // Division-by-zero guard: if range collapses to zero, force non-zero span
+  if (yMax === yMin) {
+    yMax = yMin + 1;
+  }
 
   // SVG dimensions
   const w = 600;

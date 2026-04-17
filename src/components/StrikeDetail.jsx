@@ -5,10 +5,12 @@ import { FONT, TEXT_SIZE, TEXT_WEIGHT, SPACE, RADIUS, TRANSITION } from "../them
 async function fetchJSON(url) {
   try {
     const res = await fetch(url);
-    if (!res.ok) return null;
+    if (!res.ok) {
+      return { _fetchError: `HTTP ${res.status}: ${res.statusText}` };
+    }
     return await res.json();
-  } catch {
-    return null;
+  } catch (e) {
+    return { _fetchError: e?.message || "Network error — is backend running?" };
   }
 }
 
@@ -488,11 +490,12 @@ export default function StrikeDetail({ strike, onClose, onPin, pinned, liveData 
 
   useEffect(() => {
     if (!strike) return;
-    const url = `/api/strike-detail?index=${strike.index}&strike=${strike.strike}`;
+    const exp = strike.expiry ? `&expiry=${encodeURIComponent(strike.expiry)}` : "";
+    const url = `/api/strike-detail?index=${strike.index}&strike=${strike.strike}${exp}`;
     fetchJSON(url).then(setData);
     const interval = setInterval(() => fetchJSON(url).then(setData), 5000);
     return () => clearInterval(interval);
-  }, [strike?.index, strike?.strike]);
+  }, [strike?.index, strike?.strike, strike?.expiry]);
 
   const merged = useMemo(() => ({ ...(data || {}), ...(liveData || {}) }), [data, liveData]);
 
@@ -584,6 +587,25 @@ export default function StrikeDetail({ strike, onClose, onPin, pinned, liveData 
           )}
         </div>
       </div>
+
+      {/* Fetch error banner */}
+      {data?._fetchError && (
+        <div
+          role="alert"
+          style={{
+            background: theme.RED_DIM,
+            border: `1px solid ${theme.RED}44`,
+            borderLeft: `3px solid ${theme.RED}`,
+            borderRadius: RADIUS.SM,
+            padding: `${SPACE.SM}px ${SPACE.MD}px`,
+            color: theme.RED,
+            fontSize: TEXT_SIZE.MICRO,
+            fontFamily: FONT.UI,
+          }}
+        >
+          <strong>Failed to load strike data:</strong> {data._fetchError}
+        </div>
+      )}
 
       {/* Sub-tabs */}
       <div

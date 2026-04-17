@@ -105,6 +105,7 @@ function IconButton({ icon, onClick, title, badge, color, theme }) {
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       title={title}
+      aria-label={title}
       style={{
         position: "relative",
         width: 32,

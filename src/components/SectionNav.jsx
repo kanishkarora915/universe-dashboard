@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useTheme } from "../ThemeContext";
 import { FONT, TEXT_SIZE, TEXT_WEIGHT, SPACE, RADIUS, TRANSITION, Z } from "../theme";
 
@@ -24,18 +24,24 @@ export default function SectionNav({ groups, activeTab, onTabChange, rightAction
   const { theme } = useTheme();
   const [hoveredGroup, setHoveredGroup] = useState(null);
 
-  // Detect which group currently holds activeTab
-  const activeGroup = groups.find((g) => g.tabs.some((t) => t.id === activeTab));
-  const [selectedGroup, setSelectedGroup] = useState(activeGroup?.group || groups[0]?.group);
+  // Detect which group currently holds activeTab (memoized — stable ref)
+  const activeGroup = useMemo(
+    () => groups.find((g) => g.tabs.some((t) => t.id === activeTab)),
+    [groups, activeTab]
+  );
+  const [selectedGroup, setSelectedGroup] = useState(() => activeGroup?.group || groups[0]?.group);
 
   // Sync selectedGroup with activeTab when tab changes from elsewhere (hotkey etc)
   useEffect(() => {
     if (activeGroup && activeGroup.group !== selectedGroup) {
       setSelectedGroup(activeGroup.group);
     }
-  }, [activeTab, activeGroup, selectedGroup]);
+  }, [activeGroup, selectedGroup]);
 
-  const currentGroup = groups.find((g) => g.group === selectedGroup) || groups[0];
+  const currentGroup = useMemo(
+    () => groups.find((g) => g.group === selectedGroup) || groups[0],
+    [groups, selectedGroup]
+  );
 
   return (
     <>
