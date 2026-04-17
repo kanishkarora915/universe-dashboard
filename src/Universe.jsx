@@ -2731,6 +2731,23 @@ export default function Universe({ onLogout }) {
     "ctrl+shift+l": () => toggleTheme(),
     "cmd+shift+a": () => setAlertsOpen((o) => !o),
     "ctrl+shift+a": () => setAlertsOpen((o) => !o),
+    "cmd+shift+m": () => {
+      const cur = localStorage.getItem("universe_sound_enabled");
+      const next = cur === "false" ? "true" : "false";
+      localStorage.setItem("universe_sound_enabled", next);
+    },
+    "ctrl+shift+m": () => {
+      const cur = localStorage.getItem("universe_sound_enabled");
+      const next = cur === "false" ? "true" : "false";
+      localStorage.setItem("universe_sound_enabled", next);
+    },
+    "cmd+w": () => {
+      if (activeStrikeTab) closeStrike(activeStrikeTab);
+    },
+    "ctrl+w": () => {
+      if (activeStrikeTab) closeStrike(activeStrikeTab);
+    },
+    "r": () => window.location.reload(),
     "1": () => setActiveTab("dashboard"),
     "2": () => setActiveTab("oichange"),
     "3": () => setActiveTab("pnl"),
@@ -2848,6 +2865,14 @@ export default function Universe({ onLogout }) {
           );
         })}
         <div style={{ flex: 1 }} />
+        <button onClick={() => setHelpOpen(true)} title="Keyboard Shortcuts (?)" style={{
+            background: theme.PURPLE_DIM, color: theme.PURPLE, border: `1px solid ${theme.PURPLE}33`,
+            borderRadius: RADIUS.SM, padding: "4px 10px", cursor: "pointer",
+            fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", marginRight: 4,
+            display: "flex", alignItems: "center", gap: 4,
+          }}>
+          <span style={{ fontSize: 12 }}>⌨</span> Shortcuts
+        </button>
         <button onClick={async () => {
             const [pnlStats, pnlTrades, hiddenShiftD, trapVerdictD, priceActionD, oiTimelineD, fiiDiiD, globalCuesD] = await Promise.all([
               fetch("/api/trades/stats").then(r => r.ok ? r.json() : null).catch(() => null),

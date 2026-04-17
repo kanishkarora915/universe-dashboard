@@ -4,23 +4,25 @@ import { FONT, TEXT_SIZE, TEXT_WEIGHT, SPACE, RADIUS, Z } from "../theme";
 const SHORTCUTS = [
   { section: "Navigation", items: [
     { keys: ["⌘K", "Ctrl+K"], desc: "Search strikes / command palette" },
-    { keys: ["1-6"], desc: "Switch tabs (Dashboard, OI, P&L, Reports, Autopsy, Times)" },
-    { keys: ["\\"], desc: "Toggle sidebar" },
+    { keys: ["1"], desc: "Dashboard tab" },
+    { keys: ["2"], desc: "OI Change tab" },
+    { keys: ["3"], desc: "P&L tab" },
+    { keys: ["4"], desc: "Reports tab" },
+    { keys: ["5"], desc: "Autopsy tab" },
+    { keys: ["6"], desc: "Trading Times tab" },
     { keys: ["Esc"], desc: "Close modal / clear search" },
   ]},
   { section: "View", items: [
-    { keys: ["⌘Shift+L"], desc: "Toggle dark / light theme" },
-    { keys: ["F"], desc: "Focus mode (hide chrome)" },
-    { keys: ["N"], desc: "Toggle NIFTY / BANKNIFTY" },
-    { keys: ["R"], desc: "Refresh data" },
+    { keys: ["⌘Shift+L", "Ctrl+Shift+L"], desc: "Toggle dark / light theme" },
+    { keys: ["R"], desc: "Refresh data (reloads page)" },
   ]},
   { section: "Strikes", items: [
-    { keys: ["☆"], desc: "Pin strike to watchlist" },
-    { keys: ["⌘W"], desc: "Close active strike tab" },
+    { keys: ["⌘W", "Ctrl+W"], desc: "Close active strike tab" },
+    { keys: ["☆"], desc: "Pin strike to watchlist (from search / detail view)" },
   ]},
   { section: "Alerts", items: [
-    { keys: ["⌘Shift+A"], desc: "Open alerts drawer" },
-    { keys: ["⌘Shift+M"], desc: "Mute all sounds" },
+    { keys: ["⌘Shift+A", "Ctrl+Shift+A"], desc: "Toggle alerts drawer" },
+    { keys: ["⌘Shift+M", "Ctrl+Shift+M"], desc: "Mute / unmute all sounds" },
   ]},
   { section: "Help", items: [
     { keys: ["?"], desc: "Show this shortcut guide" },
@@ -80,23 +82,49 @@ export default function HotkeyHelp({ isOpen, onClose }) {
           boxShadow: theme.SHADOW_HI,
         }}
       >
+        {/* Header with feature label */}
         <div
           style={{
             display: "flex",
             justifyContent: "space-between",
-            alignItems: "center",
+            alignItems: "flex-start",
             marginBottom: SPACE.LG,
           }}
         >
-          <div
-            style={{
-              color: theme.TEXT,
-              fontSize: TEXT_SIZE.H1,
-              fontWeight: TEXT_WEIGHT.BLACK,
-              letterSpacing: 1,
-            }}
-          >
-            Keyboard Shortcuts
+          <div>
+            <div
+              style={{
+                color: theme.ACCENT,
+                fontSize: TEXT_SIZE.MICRO,
+                fontWeight: TEXT_WEIGHT.BOLD,
+                letterSpacing: 2,
+                textTransform: "uppercase",
+                fontFamily: FONT.UI,
+                marginBottom: 2,
+              }}
+            >
+              ⌨ Shortcuts
+            </div>
+            <div
+              style={{
+                color: theme.TEXT,
+                fontSize: TEXT_SIZE.H1,
+                fontWeight: TEXT_WEIGHT.BLACK,
+                letterSpacing: 1,
+                fontFamily: FONT.UI,
+              }}
+            >
+              Keyboard Shortcuts
+            </div>
+            <div
+              style={{
+                color: theme.TEXT_DIM,
+                fontSize: TEXT_SIZE.MICRO,
+                marginTop: 4,
+              }}
+            >
+              All shortcuts below are wired and active across the dashboard
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -138,7 +166,7 @@ export default function HotkeyHelp({ isOpen, onClose }) {
                   borderBottom: `1px solid ${theme.BORDER}44`,
                 }}
               >
-                <div style={{ display: "flex", gap: SPACE.XS, minWidth: 140 }}>
+                <div style={{ display: "flex", gap: SPACE.XS, minWidth: 160, flexWrap: "wrap" }}>
                   {item.keys.map((k, j) => (
                     <span key={j} style={{ display: "flex", alignItems: "center", gap: 4 }}>
                       <Key label={k} theme={theme} />
