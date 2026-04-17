@@ -1,26 +1,22 @@
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
 
 /**
  * Global keyboard shortcuts.
  * @param {Object} handlers - { [combo]: fn }
  *   combo examples: "cmd+k", "ctrl+k", "escape", "1", "?", "cmd+shift+l", "f"
  *
- * All keys in handler map are normalized to lowercase on registration,
- * so "Cmd+K" and "cmd+k" both work identically.
+ * Handler keys are matched case-insensitively — "Cmd+K" and "cmd+k" both work.
+ * Uses only useEffect (no useMemo) to keep hook count stable across edits.
  */
 export function useHotkeys(handlers, { enabled = true } = {}) {
-  // Normalize all handler keys to lowercase ONCE — avoids case mismatch bugs
-  const normalizedHandlers = useMemo(() => {
-    if (!handlers) return {};
-    const out = {};
-    Object.entries(handlers).forEach(([k, v]) => {
-      out[k.toLowerCase()] = v;
-    });
-    return out;
-  }, [handlers]);
-
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || !handlers) return;
+
+    // Build lowercase lookup inside effect (avoids extra hook, keeps stable count)
+    const lookup = {};
+    Object.entries(handlers).forEach(([k, v]) => {
+      lookup[k.toLowerCase()] = v;
+    });
 
     const onKey = (e) => {
       const tag = (e.target.tagName || "").toLowerCase();
@@ -42,8 +38,7 @@ export function useHotkeys(handlers, { enabled = true } = {}) {
       const combo = [...mods, key].join("+");
       const comboAlt = [...mods.map((m) => (m === "cmd" ? "ctrl" : m)), key].join("+"); // cmd+k also matches ctrl+k
 
-      // Find matching handler (case-insensitive via pre-normalized map)
-      const handler = normalizedHandlers[combo] || normalizedHandlers[comboAlt];
+      const handler = lookup[combo] || lookup[comboAlt];
 
       // For plain keys (no modifiers), skip if typing in input
       if (handler && mods.length === 0 && typing) {
@@ -59,5 +54,5 @@ export function useHotkeys(handlers, { enabled = true } = {}) {
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [normalizedHandlers, enabled]);
+  }, [handlers, enabled]);
 }
