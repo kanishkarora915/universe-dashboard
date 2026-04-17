@@ -10,6 +10,7 @@ import Notifications from "./components/Notifications";
 import SignalDashboard from "./components/SignalDashboard";
 import TopBar from "./components/TopBar";
 import Sidebar from "./components/Sidebar";
+import SectionNav from "./components/SectionNav";
 import StrikeSearch from "./components/StrikeSearch";
 import StrikeDetail from "./components/StrikeDetail";
 import AlertToastStack from "./components/AlertToast";
@@ -2889,89 +2890,55 @@ export default function Universe({ onLogout }) {
           onReplayClick={() => setReplayOpen(true)}
         />
 
-        {/* MAIN AREA — ticker + tabs + content */}
+        {/* MAIN AREA — section nav + content */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
-      {/* LIVE TICKER (retained under TopBar for quick glance) */}
-      <LiveTicker live={live} />
-
-      {/* GROUPED TABS (retained — 19 tabs) */}
-      <div style={{
-        background: theme.SURFACE, borderBottom: `1px solid ${theme.BORDER}`,
-        padding: "0 8px", display: "flex", gap: 0, overflowX: "auto",
-        alignItems: "center",
-      }}>
-        {TAB_GROUPS.map((group) => {
-          const isGroupActive = group.tabs.some(t => t.id === activeTab);
-          return (
-            <div key={group.group} style={{
-              display: "flex", alignItems: "center",
-              borderRight: `1px solid ${theme.BORDER}`,
+      {/* COMMAND DECK — Section-based navigation (replaces cluttered 19-tab bar) */}
+      <SectionNav
+        groups={TAB_GROUPS}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        rightAction={
+          <div style={{ display: "flex", gap: 4 }}>
+            <button onClick={() => setHelpOpen(true)} title="Keyboard Shortcuts (?)" style={{
+              background: theme.PURPLE_DIM, color: theme.PURPLE, border: `1px solid ${theme.PURPLE}33`,
+              borderRadius: RADIUS.SM, padding: "4px 10px", cursor: "pointer",
+              fontSize: 10, fontWeight: 700, whiteSpace: "nowrap",
+              display: "flex", alignItems: "center", gap: 4,
             }}>
-              <span style={{
-                color: isGroupActive ? theme.ACCENT : theme.TEXT_DIM,
-                fontSize: 9, fontWeight: 700, textTransform: "uppercase",
-                letterSpacing: 1, padding: "0 6px 0 10px",
-                userSelect: "none",
+              <span style={{ fontSize: 12 }}>⌨</span> Shortcuts
+            </button>
+            <button onClick={async () => {
+              const [pnlStats, pnlTrades, hiddenShiftD, trapVerdictD, priceActionD, oiTimelineD, fiiDiiD, globalCuesD] = await Promise.all([
+                fetch("/api/trades/stats").then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch("/api/trades/closed").then(r => r.ok ? r.json() : []).catch(() => []),
+                fetch("/api/hidden-shift").then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch("/api/trap/verdict").then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch("/api/price-action").then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch("/api/oi-timeline").then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch("/api/fii-dii").then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch("/api/global-cues").then(r => r.ok ? r.json() : null).catch(() => null),
+              ]);
+              exportFullReport({ live, unusual, signals, oiSummary, sellerData, tradeAnalysis, intraday, nextday, weekly, pnlStats, pnlTrades, hiddenShift: hiddenShiftD, trapVerdict: trapVerdictD, priceAction: priceActionD, oiTimeline: oiTimelineD, fiiDii: fiiDiiD, globalCues: globalCuesD });
+            }} style={{
+              background: theme.ACCENT_DIM, color: theme.ACCENT, border: `1px solid ${theme.ACCENT}33`,
+              borderRadius: RADIUS.SM, padding: "4px 10px", cursor: "pointer",
+              fontSize: 10, fontWeight: 700, whiteSpace: "nowrap",
+            }}>
+              Export PDF
+            </button>
+            {onLogout && (
+              <button onClick={onLogout} style={{
+                background: theme.RED_DIM, color: theme.RED, border: `1px solid ${theme.RED}33`,
+                borderRadius: RADIUS.SM, padding: "4px 10px", cursor: "pointer",
+                fontSize: 10, fontWeight: 700, whiteSpace: "nowrap",
               }}>
-                {group.group}
-              </span>
-              {group.tabs.map(tab => (
-                <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
-                  background: activeTab === tab.id ? theme.ACCENT_DIM : "none",
-                  border: "none", cursor: "pointer",
-                  padding: "10px 10px",
-                  color: activeTab === tab.id ? theme.ACCENT : theme.TEXT_MUTED,
-                  fontWeight: activeTab === tab.id ? 700 : 400,
-                  fontSize: 11,
-                  borderBottom: activeTab === tab.id ? `2px solid ${theme.ACCENT}` : "2px solid transparent",
-                  whiteSpace: "nowrap",
-                  transition: "all 0.15s",
-                }}>
-                  {tab.icon} {tab.label}
-                </button>
-              ))}
-            </div>
-          );
-        })}
-        <div style={{ flex: 1 }} />
-        <button onClick={() => setHelpOpen(true)} title="Keyboard Shortcuts (?)" style={{
-            background: theme.PURPLE_DIM, color: theme.PURPLE, border: `1px solid ${theme.PURPLE}33`,
-            borderRadius: RADIUS.SM, padding: "4px 10px", cursor: "pointer",
-            fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", marginRight: 4,
-            display: "flex", alignItems: "center", gap: 4,
-          }}>
-          <span style={{ fontSize: 12 }}>⌨</span> Shortcuts
-        </button>
-        <button onClick={async () => {
-            const [pnlStats, pnlTrades, hiddenShiftD, trapVerdictD, priceActionD, oiTimelineD, fiiDiiD, globalCuesD] = await Promise.all([
-              fetch("/api/trades/stats").then(r => r.ok ? r.json() : null).catch(() => null),
-              fetch("/api/trades/closed").then(r => r.ok ? r.json() : []).catch(() => []),
-              fetch("/api/hidden-shift").then(r => r.ok ? r.json() : null).catch(() => null),
-              fetch("/api/trap/verdict").then(r => r.ok ? r.json() : null).catch(() => null),
-              fetch("/api/price-action").then(r => r.ok ? r.json() : null).catch(() => null),
-              fetch("/api/oi-timeline").then(r => r.ok ? r.json() : null).catch(() => null),
-              fetch("/api/fii-dii").then(r => r.ok ? r.json() : null).catch(() => null),
-              fetch("/api/global-cues").then(r => r.ok ? r.json() : null).catch(() => null),
-            ]);
-            exportFullReport({ live, unusual, signals, oiSummary, sellerData, tradeAnalysis, intraday, nextday, weekly, pnlStats, pnlTrades, hiddenShift: hiddenShiftD, trapVerdict: trapVerdictD, priceAction: priceActionD, oiTimeline: oiTimelineD, fiiDii: fiiDiiD, globalCues: globalCuesD });
-          }} style={{
-            background: theme.ACCENT_DIM, color: theme.ACCENT, border: `1px solid ${theme.ACCENT}33`,
-            borderRadius: RADIUS.SM, padding: "4px 10px", cursor: "pointer",
-            fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", marginRight: 4,
-          }}>
-          Export PDF
-        </button>
-        {onLogout && (
-          <button onClick={onLogout} style={{
-            background: theme.RED_DIM, color: theme.RED, border: `1px solid ${theme.RED}33`,
-            borderRadius: RADIUS.SM, padding: "4px 10px", cursor: "pointer",
-            fontSize: 10, fontWeight: 700, whiteSpace: "nowrap",
-          }}>
-            Logout
-          </button>
-        )}
-      </div>
+                Logout
+              </button>
+            )}
+          </div>
+        }
+      />
 
       {/* Open strike tabs strip */}
       {strikeTabs.length > 0 && (
@@ -3005,11 +2972,44 @@ export default function Universe({ onLogout }) {
         </div>
       )}
 
-      {/* CONTENT */}
-      <div style={{ padding: `${SPACE.LG}px ${SPACE.MD}px`, maxWidth: 1200, margin: "0 auto", flex: 1, overflow: "auto", width: "100%" }}>
-        <ErrorBoundary key={activeTab}>
-          {renderTab()}
-        </ErrorBoundary>
+      {/* CONTENT with futuristic background */}
+      <div style={{
+        flex: 1,
+        overflow: "auto",
+        width: "100%",
+        position: "relative",
+        backgroundImage: `
+          radial-gradient(circle at 50% -10%, ${theme.ACCENT}08, transparent 45%),
+          radial-gradient(circle at 100% 100%, ${theme.PURPLE}06, transparent 40%)
+        `,
+      }}>
+        {/* Hex grid pattern overlay */}
+        <div style={{
+          position: "absolute",
+          inset: 0,
+          backgroundImage: `
+            linear-gradient(${theme.BORDER}33 1px, transparent 1px),
+            linear-gradient(90deg, ${theme.BORDER}33 1px, transparent 1px)
+          `,
+          backgroundSize: "48px 48px",
+          opacity: 0.35,
+          pointerEvents: "none",
+          maskImage: "radial-gradient(ellipse at top, black 0%, transparent 70%)",
+          WebkitMaskImage: "radial-gradient(ellipse at top, black 0%, transparent 70%)",
+        }} />
+
+        {/* Actual content (above pattern) */}
+        <div style={{
+          position: "relative",
+          padding: `${SPACE.LG}px ${SPACE.MD}px`,
+          maxWidth: 1200,
+          margin: "0 auto",
+          zIndex: 1,
+        }}>
+          <ErrorBoundary key={activeTab}>
+            {renderTab()}
+          </ErrorBoundary>
+        </div>
       </div>
 
         </div>
