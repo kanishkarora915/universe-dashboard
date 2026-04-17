@@ -175,7 +175,47 @@ export default function StrikeSearch({ isOpen, onClose, onSelect, suggestions = 
 
   const matches = useMemo(() => fuzzyMatch(query, suggestions), [query, suggestions]);
 
-  const displayList = query ? matches : [];
+  // If query is a pure number, build "Open anyway" synthetic entries
+  // This lets user search for ANY strike, even if not in cached chain (backend will fetch)
+  const syntheticMatches = useMemo(() => {
+    const q = (query || "").trim();
+    const numMatch = q.match(/^(\d{3,6})$/) || q.match(/^(nifty|bn|banknifty)?\s*(\d{3,6})/i);
+    if (!numMatch) return [];
+    const strikeNum = parseInt(numMatch[numMatch.length - 1], 10);
+    if (isNaN(strikeNum) || strikeNum < 100) return [];
+
+    // Detect if user wrote NIFTY / BN
+    const lower = q.toLowerCase();
+    const explicitBN = lower.includes("bn") || lower.includes("banknifty");
+    const explicitNifty = lower.includes("nifty") && !explicitBN;
+
+    // Detect if user specified CE/PE
+    const isCE = lower.includes("ce") || lower.includes("call");
+    const isPE = lower.includes("pe") || lower.includes("put");
+
+    // If match already found in suggestions for this strike, skip synthetic
+    const alreadyFound = matches.some((m) => parseInt(m.strike, 10) === strikeNum);
+    if (alreadyFound) return [];
+
+    const out = [];
+    const indexes = explicitBN ? ["BANKNIFTY"] : explicitNifty ? ["NIFTY"] : ["NIFTY", "BANKNIFTY"];
+    const types = isCE ? ["CE"] : isPE ? ["PE"] : ["CE", "PE"];
+
+    indexes.forEach((idx) => {
+      types.forEach((type) => {
+        out.push({
+          index: idx,
+          strike: strikeNum,
+          type,
+          badge: "fetch",
+          synthetic: true,
+        });
+      });
+    });
+    return out;
+  }, [query, matches]);
+
+  const displayList = query ? [...matches, ...syntheticMatches] : [];
 
   const handleSelect = useCallback(
     (strike) => {
@@ -293,24 +333,55 @@ export default function StrikeSearch({ isOpen, onClose, onSelect, suggestions = 
                 fontSize: TEXT_SIZE.BODY,
               }}
             >
-              No matches for "{query}"
+              <div>No matches for "{query}"</div>
+              <div style={{ fontSize: TEXT_SIZE.MICRO, marginTop: 6 }}>
+                Try typing a number like "24400" or "nifty 24000 ce"
+              </div>
             </div>
           )}
 
           {query && displayList.length > 0 && (
-            <Section title={`Matches`} count={displayList.length} theme={theme}>
-              {displayList.slice(0, 20).map((s, i) => (
-                <Row
-                  key={`m-${i}`}
-                  strike={s}
-                  active={i === activeIdx}
-                  onClick={() => handleSelect(s)}
-                  onPin={togglePin}
-                  pinned={isPinned && isPinned(s)}
+            <>
+              {matches.length > 0 && (
+                <Section title="Cached strikes (live data)" count={matches.length} theme={theme}>
+                  {matches.slice(0, 15).map((s, i) => (
+                    <Row
+                      key={`m-${i}`}
+                      strike={s}
+                      active={i === activeIdx}
+                      onClick={() => handleSelect(s)}
+                      onPin={togglePin}
+                      pinned={isPinned && isPinned(s)}
+                      theme={theme}
+                    />
+                  ))}
+                </Section>
+              )}
+              {syntheticMatches.length > 0 && (
+                <Section
+                  title="Fetch any strike (from Kite)"
+                  count={syntheticMatches.length}
+                  action={
+                    <span style={{ color: theme.TEXT_DIM, fontSize: 9, fontWeight: TEXT_WEIGHT.BOLD, letterSpacing: 1 }}>
+                      NOT IN LOCAL CHAIN
+                    </span>
+                  }
                   theme={theme}
-                />
-              ))}
-            </Section>
+                >
+                  {syntheticMatches.map((s, i) => (
+                    <Row
+                      key={`syn-${i}`}
+                      strike={s}
+                      active={matches.length + i === activeIdx}
+                      onClick={() => handleSelect(s)}
+                      onPin={togglePin}
+                      pinned={isPinned && isPinned(s)}
+                      theme={theme}
+                    />
+                  ))}
+                </Section>
+              )}
+            </>
           )}
 
           {!query && pinned && pinned.length > 0 && (
