@@ -41,7 +41,7 @@ INDEX_CONFIG = {
         "exchange": "NFO",
         "spot_symbol": NIFTY_SPOT_SYMBOL,
         "strike_gap": 50,
-        "atm_range": 10,
+        "atm_range": 20,
         "oi_threshold": 100000,     # 1L min for seller signals
         "oi_unwind_threshold": 500000,  # 5L for unwinding
         "oi_change_filter": 100000,  # 1L for seller shift filter
@@ -51,7 +51,7 @@ INDEX_CONFIG = {
         "exchange": "NFO",
         "spot_symbol": BANKNIFTY_SPOT_SYMBOL,
         "strike_gap": 100,
-        "atm_range": 10,
+        "atm_range": 20,
         "oi_threshold": 100000,     # Same 1L — BN OI can be low too
         "oi_unwind_threshold": 500000,  # Same 5L
         "oi_change_filter": 100000,  # Same 1L
@@ -642,6 +642,53 @@ class MarketEngine:
             if exp == nearest:
                 label = f"{exp} (Current)"
             result.append({"date": exp, "label": label, "isCurrent": exp == nearest})
+        return result
+
+    def fetch_single_strike(self, index: str, strike: int, expiry_str: str = None) -> dict:
+        """On-demand fetch of a single strike's CE + PE quote via Kite REST API.
+        Used when user searches a strike outside the pre-subscribed ATM range.
+        Returns {ce_ltp, pe_ltp, ce_oi, pe_oi, ce_volume, pe_volume} or {'error': ...}."""
+        index = index.upper()
+        cfg = INDEX_CONFIG.get(index)
+        if not cfg:
+            return {"error": f"Unknown index: {index}"}
+
+        nearest = str(self.nearest_expiry.get(index, ""))
+        target_expiry = expiry_str or nearest
+        if not target_expiry:
+            return {"error": "No expiry available"}
+
+        try:
+            from datetime import date as date_type
+            target_date = date_type.fromisoformat(target_expiry)
+        except Exception:
+            return {"error": f"Invalid expiry date: {target_expiry}"}
+
+        # Find CE + PE instruments for this specific strike
+        opts = [i for i in self.nfo_instruments
+                if i["name"] == cfg["name"]
+                and i["instrument_type"] in ("CE", "PE")
+                and i["expiry"] == target_date
+                and int(i["strike"]) == int(strike)]
+
+        if not opts:
+            return {"error": f"Strike {strike} not listed for {index} expiry {target_expiry}"}
+
+        # Build quote request
+        symbols = [f"NFO:{i['tradingsymbol']}" for i in opts]
+        try:
+            quotes = self.kite.quote(symbols)
+        except Exception as e:
+            return {"error": f"Kite quote API failed: {e}"}
+
+        result = {"strike": strike, "expiry": target_expiry}
+        for i in opts:
+            sym = f"NFO:{i['tradingsymbol']}"
+            q = quotes.get(sym, {})
+            opt_type = i["instrument_type"].lower()  # ce or pe
+            result[f"{opt_type}_ltp"] = q.get("last_price", 0)
+            result[f"{opt_type}_oi"] = q.get("oi", 0)
+            result[f"{opt_type}_volume"] = q.get("volume", 0)
         return result
 
     def get_expiry_chain(self, index: str, expiry_str: str) -> dict:

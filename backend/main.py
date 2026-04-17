@@ -817,8 +817,31 @@ async def strike_detail(index: str, strike: int, expiry: Optional[str] = None):
             "ce_ltp": s.get("ceLTP", 0), "pe_ltp": s.get("peLTP", 0),
         } for s in strikes_list}
 
+    # If still no data, try on-demand Kite REST fetch (for far OTM strikes not in chain)
+    if not d or (not d.get("ce_ltp") and not d.get("pe_ltp")):
+        fetched = engine.fetch_single_strike(idx, int(strike), target_expiry)
+        if fetched and not fetched.get("error"):
+            d = {
+                "ce_ltp": fetched.get("ce_ltp", 0),
+                "pe_ltp": fetched.get("pe_ltp", 0),
+                "ce_oi": fetched.get("ce_oi", 0),
+                "pe_oi": fetched.get("pe_oi", 0),
+                "ce_volume": fetched.get("ce_volume", 0),
+                "pe_volume": fetched.get("pe_volume", 0),
+            }
+            print(f"[STRIKE-DETAIL] On-demand fetch {idx} {strike} {target_expiry}: CE={d['ce_ltp']}, PE={d['pe_ltp']}")
+        elif fetched and fetched.get("error"):
+            # Return the error to frontend
+            return {
+                "index": idx, "strike": strike, "spot": spot, "atm": atm,
+                "atmDistance": int(strike) - atm, "expiry": target_expiry,
+                "error": fetched["error"],
+                "ceLTP": 0, "peLTP": 0, "ceOI": 0, "peOI": 0, "ceVol": 0, "peVol": 0, "pcr": 0,
+                "trades": [],
+            }
+
     if not d:
-        # Graceful fallback: return strike info even if not in cached chain
+        # Graceful fallback: return strike info even if not available anywhere
         return {
             "index": idx, "strike": strike, "spot": spot, "atm": atm,
             "atmDistance": int(strike) - atm, "expiry": target_expiry,
