@@ -2,27 +2,17 @@ import { useState } from "react";
 import { useTheme } from "../ThemeContext";
 import { FONT, TEXT_SIZE, TEXT_WEIGHT, SPACE, RADIUS, TRANSITION, Z } from "../theme";
 
-const ICONS = {
-  dashboard: "◈", // ◈
-  oi: "⟐",       // ⟐
-  pnl: "◐",      // ◐
-  reports: "☰",  // ☰
-  autopsy: "◎",  // ◎
-  times: "⏱",    // ⏱
-  settings: "⚙", // ⚙
-};
-
+// Tab IDs aligned with Universe.jsx (oichange, ttimes — not oi, times)
 const TABS = [
-  { id: "dashboard", label: "Dashboard", icon: ICONS.dashboard, hotkey: "1" },
-  { id: "oi", label: "OI Chain", icon: ICONS.oi, hotkey: "2" },
-  { id: "pnl", label: "P&L", icon: ICONS.pnl, hotkey: "3" },
-  { id: "reports", label: "Reports", icon: ICONS.reports, hotkey: "4" },
-  { id: "autopsy", label: "Autopsy", icon: ICONS.autopsy, hotkey: "5" },
-  { id: "times", label: "Times", icon: ICONS.times, hotkey: "6" },
+  { id: "dashboard", label: "Dashboard", icon: "◈", hotkey: "1" },
+  { id: "oichange",  label: "OI Change", icon: "⟐", hotkey: "2" },
+  { id: "pnl",       label: "P&L",       icon: "◐", hotkey: "3" },
+  { id: "reports",   label: "Reports",   icon: "☰", hotkey: "4" },
+  { id: "autopsy",   label: "Autopsy",   icon: "◎", hotkey: "5" },
+  { id: "ttimes",    label: "Times",     icon: "⏱", hotkey: "6" },
 ];
 
-function SidebarButton({ tab, active, onClick, badge, flashing }) {
-  const { theme } = useTheme();
+function SidebarButton({ tab, active, onClick, badge, flashing, theme }) {
   const [hover, setHover] = useState(false);
 
   return (
@@ -91,7 +81,6 @@ function SidebarButton({ tab, active, onClick, badge, flashing }) {
         )}
       </button>
 
-      {/* Tooltip on hover */}
       {hover && (
         <div
           style={{
@@ -114,17 +103,26 @@ function SidebarButton({ tab, active, onClick, badge, flashing }) {
           }}
         >
           {tab.label}
-          <span style={{ color: theme.TEXT_DIM, marginLeft: 6 }}>{tab.hotkey}</span>
+          <span
+            style={{
+              color: theme.TEXT_DIM,
+              marginLeft: 6,
+              padding: "0 4px",
+              background: theme.BG,
+              borderRadius: 2,
+              fontFamily: FONT.MONO,
+            }}
+          >
+            {tab.hotkey}
+          </span>
         </div>
       )}
     </div>
   );
 }
 
-function WatchlistItem({ strike, onClick, onRemove }) {
-  const { theme } = useTheme();
+function WatchlistItem({ strike, onClick, theme }) {
   const [hover, setHover] = useState(false);
-
   return (
     <div
       onMouseEnter={() => setHover(true)}
@@ -133,26 +131,23 @@ function WatchlistItem({ strike, onClick, onRemove }) {
     >
       <button
         onClick={onClick}
-        title={`${strike.index} ${strike.strike} ${strike.type || ""}`}
         style={{
-          width: 40,
-          height: 28,
+          width: 36,
+          height: 24,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
           background: "transparent",
-          color: theme.TEXT_MUTED,
-          border: "none",
-          borderRadius: RADIUS.SM,
+          color: strike.type === "CE" ? theme.GREEN : strike.type === "PE" ? theme.RED : theme.TEXT_MUTED,
+          border: `1px solid ${theme.BORDER}`,
+          borderRadius: RADIUS.XS,
           cursor: "pointer",
-          fontSize: 10,
+          fontSize: 9,
           fontFamily: FONT.MONO,
           fontWeight: TEXT_WEIGHT.BOLD,
           transition: TRANSITION.FAST,
           margin: "0 auto",
         }}
-        onMouseOver={(e) => (e.currentTarget.style.color = theme.TEXT)}
-        onMouseOut={(e) => (e.currentTarget.style.color = theme.TEXT_MUTED)}
       >
         {String(strike.strike).slice(-3)}
       </button>
@@ -183,7 +178,15 @@ function WatchlistItem({ strike, onClick, onRemove }) {
   );
 }
 
-export default function Sidebar({ activeTab, onTabChange, tabBadges = {}, flashingTab, watchlist = [], onWatchlistClick }) {
+export default function Sidebar({
+  activeTab,
+  onTabChange,
+  tabBadges = {},
+  flashingTab,
+  watchlist = [],
+  onWatchlistClick,
+  onReplayClick,
+}) {
   const { theme } = useTheme();
 
   return (
@@ -205,7 +208,7 @@ export default function Sidebar({ activeTab, onTabChange, tabBadges = {}, flashi
           padding: `${SPACE.MD}px 0`,
           gap: SPACE.XS,
           flexShrink: 0,
-          zIndex: Z.STICKY,
+          overflowY: "auto",
         }}
       >
         {TABS.map((tab) => (
@@ -216,49 +219,64 @@ export default function Sidebar({ activeTab, onTabChange, tabBadges = {}, flashi
             onClick={() => onTabChange(tab.id)}
             badge={tabBadges[tab.id] || 0}
             flashing={flashingTab === tab.id}
+            theme={theme}
           />
         ))}
 
-        {watchlist.length > 0 && (
+        {/* Replay button — bottom quick-action */}
+        {onReplayClick && (
           <>
             <div
               style={{
-                width: 24,
+                width: 28,
                 height: 1,
                 background: theme.BORDER,
                 margin: `${SPACE.SM}px 0`,
               }}
             />
+            <SidebarButton
+              tab={{ id: "replay", label: "Replay Mode", icon: "🔮", hotkey: "" }}
+              active={false}
+              onClick={onReplayClick}
+              theme={theme}
+            />
+          </>
+        )}
+
+        {watchlist.length > 0 && (
+          <>
             <div
               style={{
-                color: theme.TEXT_DIM,
-                fontSize: 8,
-                fontWeight: TEXT_WEIGHT.BOLD,
-                letterSpacing: 1,
-                writingMode: "vertical-rl",
-                transform: "rotate(180deg)",
-                padding: `${SPACE.SM}px 0`,
+                width: 28,
+                height: 1,
+                background: theme.BORDER,
+                margin: `${SPACE.SM}px 0 ${SPACE.XS}px`,
               }}
+            />
+            <div
+              style={{
+                color: theme.AMBER,
+                fontSize: 12,
+                fontWeight: TEXT_WEIGHT.BOLD,
+                padding: `0 0 ${SPACE.XS}px`,
+                fontFamily: FONT.UI,
+              }}
+              title="Pinned strikes"
             >
-              WATCH
+              ★
             </div>
-            {watchlist.slice(0, 6).map((strike, i) => (
+            {watchlist.slice(0, 8).map((strike, i) => (
               <WatchlistItem
                 key={i}
                 strike={strike}
                 onClick={() => onWatchlistClick && onWatchlistClick(strike)}
+                theme={theme}
               />
             ))}
           </>
         )}
 
         <div style={{ flex: 1 }} />
-
-        <SidebarButton
-          tab={{ id: "settings", label: "Settings", icon: ICONS.settings, hotkey: "," }}
-          active={activeTab === "settings"}
-          onClick={() => onTabChange("settings")}
-        />
       </aside>
     </>
   );

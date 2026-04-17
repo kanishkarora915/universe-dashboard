@@ -724,6 +724,56 @@ async def alerts_push(payload: dict):
     return alert
 
 
+# ── Replay Mode Route ────────────────────────────────────────────────────
+
+@app.get("/api/replay/snapshots")
+async def replay_snapshots(index: str, date: str):
+    """Return time-ordered market snapshots for a given date + index.
+    Used by ReplayMode component to scrub through the trading day."""
+    idx = index.upper()
+    if idx not in ("NIFTY", "BANKNIFTY"):
+        return {"snapshots": []}
+    tt_init_db()
+    _data = Path("/data") if Path("/data").is_dir() else Path(__file__).parent
+    db = _data / "trading_times.db"
+    if not db.exists():
+        return {"snapshots": []}
+    try:
+        conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT timestamp, spot, pcr, max_pain, top_ce_wall, top_pe_wall, confidence, "
+            "blast_direction, conviction, hedge_trend, ce_volume_total, pe_volume_total, "
+            "ce_oi_net_change, pe_oi_net_change, vwap "
+            "FROM market_snapshots WHERE idx=? AND timestamp LIKE ? ORDER BY timestamp ASC",
+            (idx, f"{date}%")
+        ).fetchall()
+        conn.close()
+        out = []
+        for r in rows:
+            d = dict(r)
+            # Format time for display
+            try:
+                t_iso = d.get("timestamp", "")
+                d["time"] = t_iso[11:16] if len(t_iso) >= 16 else ""
+            except Exception:
+                d["time"] = ""
+            # Friendly keys for frontend
+            d["ceWall"] = d.pop("top_ce_wall", None)
+            d["peWall"] = d.pop("top_pe_wall", None)
+            d["maxPain"] = d.pop("max_pain", None)
+            d["signalScore"] = d.pop("confidence", 0)
+            # Verdict narrative
+            direction = d.get("blast_direction") or ""
+            conv = d.get("conviction") or ""
+            d["verdict"] = f"{direction} · {conv}" if direction or conv else ""
+            out.append(d)
+        return {"snapshots": out, "date": date, "index": idx, "count": len(out)}
+    except Exception as e:
+        print(f"[REPLAY] Error: {e}")
+        return {"snapshots": [], "error": str(e)}
+
+
 # ── Strike Detail Route ──────────────────────────────────────────────────
 
 @app.get("/api/strike-detail")

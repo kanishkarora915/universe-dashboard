@@ -9,6 +9,7 @@ import LiveTicker from "./components/LiveTicker";
 import Notifications from "./components/Notifications";
 import SignalDashboard from "./components/SignalDashboard";
 import TopBar from "./components/TopBar";
+import Sidebar from "./components/Sidebar";
 import StrikeSearch from "./components/StrikeSearch";
 import StrikeDetail from "./components/StrikeDetail";
 import AlertToastStack from "./components/AlertToast";
@@ -16,6 +17,7 @@ import AlertDrawer from "./components/AlertDrawer";
 import HotkeyHelp from "./components/HotkeyHelp";
 import SettingsPanel from "./components/SettingsPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
+import ReplayMode from "./components/ReplayMode";
 import { VerdictHero } from "./components/DashboardHero";
 import { useTheme } from "./ThemeContext";
 import { useHotkeys } from "./hooks/useHotkeys";
@@ -2656,7 +2658,9 @@ export default function Universe({ onLogout }) {
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [replayOpen, setReplayOpen] = useState(false);
   const [strikeTabs, setStrikeTabs] = useState([]);
+  const [trapVerdict, setTrapVerdict] = useState(null);
   const { live, unusual, intraday, nextday, weekly, signals, oiSummary, sellerData, tradeAnalysis, hiddenShift, connected } = useMarketData();
   const watchlist = useWatchlist();
   const { alerts, counts, toasts, flashingTab, dismissToast, markAllRead, dismissAlert, pinAlert } = useAlerts({ activeTab });
@@ -2748,6 +2752,8 @@ export default function Universe({ onLogout }) {
       if (activeStrikeTab) closeStrike(activeStrikeTab);
     },
     "r": () => window.location.reload(),
+    "cmd+shift+r": () => setReplayOpen(true),
+    "ctrl+shift+r": () => setReplayOpen(true),
     "1": () => setActiveTab("dashboard"),
     "2": () => setActiveTab("oichange"),
     "3": () => setActiveTab("pnl"),
@@ -2759,6 +2765,45 @@ export default function Universe({ onLogout }) {
   const activeStrikeTab = activeTab?.startsWith("strike:")
     ? strikeTabs.find((s) => `${s.index}-${s.strike}` === activeTab.slice(7))
     : null;
+
+  // Fetch trap verdict for DashboardHero — polls every 15s
+  useEffect(() => {
+    let mounted = true;
+    const fetchVerdict = () => {
+      fetch("/api/trap/verdict")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (mounted) setTrapVerdict(data);
+        })
+        .catch(() => {});
+    };
+    fetchVerdict();
+    const iv = setInterval(fetchVerdict, 15000);
+    return () => {
+      mounted = false;
+      clearInterval(iv);
+    };
+  }, []);
+
+  // Transform trap verdict shape into DashboardHero prop shape
+  const makeHeroVerdict = (v) => {
+    if (!v) return null;
+    return {
+      action: v.action || "NO TRADE",
+      confidence: v.winProbability || 0,
+      strike: v.atm,
+      entry: v.entry,
+      sl: v.sl,
+      target1: v.t1,
+      target2: v.t2,
+      riskReward: v.rr,
+      holdTime: v.holdTime,
+    };
+  };
+  const niftyHero = makeHeroVerdict(trapVerdict?.nifty);
+  const bnHero = makeHeroVerdict(trapVerdict?.banknifty);
+  const niftyReasons = trapVerdict?.nifty?.reasons || [];
+  const bnReasons = trapVerdict?.banknifty?.reasons || [];
 
   const renderTab = () => {
     if (activeStrikeTab) {
@@ -2774,10 +2819,17 @@ export default function Universe({ onLogout }) {
     }
     switch (activeTab) {
       case "dashboard":
-        // SignalDashboard renders verdict cards with correct data from /api/trap/verdict.
-        // Duplicate VerdictHero removed — it was showing "NO TRADE" because signals shape
-        // is an array, not { nifty, banknifty } object.
-        return <SignalDashboard live={live} signals={signals} oiSummary={oiSummary} />;
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: SPACE.MD }}>
+            {(niftyHero || bnHero) && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: SPACE.MD }}>
+                <VerdictHero index="NIFTY" verdict={niftyHero} reasons={niftyReasons} />
+                <VerdictHero index="BANKNIFTY" verdict={bnHero} reasons={bnReasons} />
+              </div>
+            )}
+            <SignalDashboard live={live} signals={signals} oiSummary={oiSummary} />
+          </div>
+        );
       case "live":    return <LiveDataTab liveData={live} />;
       case "signals": return <SignalsTab realSignals={signals} />;
       case "intraday":return <IntradayTab realData={intraday} />;
@@ -2803,9 +2855,12 @@ export default function Universe({ onLogout }) {
   return (
     <div style={{
       background: theme.BG,
-      minHeight: "100vh",
+      height: "100vh",
+      display: "flex",
+      flexDirection: "column",
       fontFamily: FONT.UI,
       color: theme.TEXT,
+      overflow: "hidden",
     }}>
       {/* NEW TOP BAR */}
       <TopBar
@@ -2821,6 +2876,21 @@ export default function Universe({ onLogout }) {
         onSettingsClick={() => setSettingsOpen(true)}
         onHelpClick={() => setHelpOpen(true)}
       />
+
+      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+        {/* LEFT SIDEBAR — primary 6 tabs + watchlist + replay */}
+        <Sidebar
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          tabBadges={counts?.byTab || {}}
+          flashingTab={flashingTab}
+          watchlist={watchlist.pinned}
+          onWatchlistClick={openStrike}
+          onReplayClick={() => setReplayOpen(true)}
+        />
+
+        {/* MAIN AREA — ticker + tabs + content */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
       {/* LIVE TICKER (retained under TopBar for quick glance) */}
       <LiveTicker live={live} />
@@ -2936,11 +3006,16 @@ export default function Universe({ onLogout }) {
       )}
 
       {/* CONTENT */}
-      <div style={{ padding: `${SPACE.LG}px ${SPACE.MD}px`, maxWidth: 1200, margin: "0 auto" }}>
+      <div style={{ padding: `${SPACE.LG}px ${SPACE.MD}px`, maxWidth: 1200, margin: "0 auto", flex: 1, overflow: "auto", width: "100%" }}>
         <ErrorBoundary key={activeTab}>
           {renderTab()}
         </ErrorBoundary>
       </div>
+
+        </div>
+        {/* END MAIN AREA */}
+      </div>
+      {/* END SIDEBAR WRAPPER */}
 
       {/* GLOBAL RESPONSIVE STYLES */}
       <style>{`
@@ -2975,6 +3050,22 @@ export default function Universe({ onLogout }) {
       />
       <HotkeyHelp isOpen={helpOpen} onClose={() => setHelpOpen(false)} />
       <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
+      {/* Replay modal */}
+      {replayOpen && (
+        <div
+          onClick={() => setReplayOpen(false)}
+          style={{
+            position: "fixed", inset: 0, background: theme.OVERLAY, zIndex: 1000,
+            display: "flex", alignItems: "flex-start", justifyContent: "center",
+            paddingTop: "6vh", backdropFilter: "blur(4px)", overflowY: "auto",
+          }}
+        >
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(900px, 92vw)" }}>
+            <ReplayMode index="NIFTY" isOpen={true} onClose={() => setReplayOpen(false)} />
+          </div>
+        </div>
+      )}
       <AlertToastStack
         toasts={toasts}
         onDismiss={dismissToast}
