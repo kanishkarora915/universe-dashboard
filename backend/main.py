@@ -466,16 +466,18 @@ async def trades_alerts():
     return engine.trade_manager.get_position_alerts()
 
 @app.get("/api/trades/closed")
-async def trades_closed():
+async def trades_closed(days: int = 365):
+    """Default 365 days so users see full history (was 7-day window)."""
     if not engine or not hasattr(engine, 'trade_manager') or not engine.trade_manager:
         return []
-    return engine.trade_manager.get_closed_trades()
+    return engine.trade_manager.get_closed_trades(days=days)
 
 @app.get("/api/trades/stats")
-async def trades_stats():
+async def trades_stats(days: int = 365):
+    """Default 365 days so stats reflect full history (was 30-day window)."""
     if not engine or not hasattr(engine, 'trade_manager') or not engine.trade_manager:
         return {"total": 0, "open": 0, "wins": 0, "losses": 0, "winRate": 0, "totalPnl": 0}
-    return engine.trade_manager.get_stats()
+    return engine.trade_manager.get_stats(days=days)
 
 @app.get("/api/trades/date/{date}")
 async def trades_by_date(date: str):

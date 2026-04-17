@@ -2753,23 +2753,10 @@ export default function Universe({ onLogout }) {
     }
     switch (activeTab) {
       case "dashboard":
-        return (
-          <div style={{ display: "flex", flexDirection: "column", gap: SPACE.MD }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: SPACE.MD }}>
-              <VerdictHero
-                index="NIFTY"
-                verdict={signals?.nifty || signals?.[0]}
-                reasons={signals?.nifty?.reasons || []}
-              />
-              <VerdictHero
-                index="BANKNIFTY"
-                verdict={signals?.banknifty || signals?.[1]}
-                reasons={signals?.banknifty?.reasons || []}
-              />
-            </div>
-            <SignalDashboard live={live} signals={signals} oiSummary={oiSummary} />
-          </div>
-        );
+        // SignalDashboard renders verdict cards with correct data from /api/trap/verdict.
+        // Duplicate VerdictHero removed — it was showing "NO TRADE" because signals shape
+        // is an array, not { nifty, banknifty } object.
+        return <SignalDashboard live={live} signals={signals} oiSummary={oiSummary} />;
       case "live":    return <LiveDataTab liveData={live} />;
       case "signals": return <SignalsTab realSignals={signals} />;
       case "intraday":return <IntradayTab realData={intraday} />;
