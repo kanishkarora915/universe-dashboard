@@ -24,3 +24,6 @@ dist-ssr
 *.sw?
 __pycache__/
 backend/data_cache.json
+
+# Runtime databases — use /data volume on Render
+backend/*.db
