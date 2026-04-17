@@ -14,6 +14,8 @@ import StrikeDetail from "./components/StrikeDetail";
 import AlertToastStack from "./components/AlertToast";
 import AlertDrawer from "./components/AlertDrawer";
 import HotkeyHelp from "./components/HotkeyHelp";
+import SettingsPanel from "./components/SettingsPanel";
+import ErrorBoundary from "./components/ErrorBoundary";
 import { VerdictHero } from "./components/DashboardHero";
 import { useTheme } from "./ThemeContext";
 import { useHotkeys } from "./hooks/useHotkeys";
@@ -2653,6 +2655,7 @@ export default function Universe({ onLogout }) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [strikeTabs, setStrikeTabs] = useState([]);
   const { live, unusual, intraday, nextday, weekly, signals, oiSummary, sellerData, tradeAnalysis, hiddenShift, connected } = useMarketData();
   const watchlist = useWatchlist();
@@ -2721,6 +2724,7 @@ export default function Universe({ onLogout }) {
       if (searchOpen) setSearchOpen(false);
       else if (alertsOpen) setAlertsOpen(false);
       else if (helpOpen) setHelpOpen(false);
+      else if (settingsOpen) setSettingsOpen(false);
     },
     "?": () => setHelpOpen(true),
     "cmd+shift+l": () => toggleTheme(),
@@ -2797,7 +2801,7 @@ export default function Universe({ onLogout }) {
         onAlertsClick={() => setAlertsOpen(true)}
         alertCount={counts?.total || 0}
         onThemeToggle={toggleTheme}
-        onSettingsClick={() => {}}
+        onSettingsClick={() => setSettingsOpen(true)}
         onHelpClick={() => setHelpOpen(true)}
       />
 
@@ -2908,7 +2912,9 @@ export default function Universe({ onLogout }) {
 
       {/* CONTENT */}
       <div style={{ padding: `${SPACE.LG}px ${SPACE.MD}px`, maxWidth: 1200, margin: "0 auto" }}>
-        {renderTab()}
+        <ErrorBoundary key={activeTab}>
+          {renderTab()}
+        </ErrorBoundary>
       </div>
 
       {/* GLOBAL RESPONSIVE STYLES */}
@@ -2943,6 +2949,7 @@ export default function Universe({ onLogout }) {
         }}
       />
       <HotkeyHelp isOpen={helpOpen} onClose={() => setHelpOpen(false)} />
+      <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <AlertToastStack
         toasts={toasts}
         onDismiss={dismissToast}
