@@ -7,6 +7,7 @@ Serves React frontend static build in production.
 import asyncio
 import json
 import os
+import sqlite3
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -502,6 +503,50 @@ async def trades_alert_feed():
     if not engine or not hasattr(engine, 'trade_manager') or not engine.trade_manager:
         return []
     return engine.trade_manager.get_trade_alerts()
+
+
+@app.post("/api/trades/exit/{trade_id}")
+async def manual_exit_trade(trade_id: int):
+    """Manual exit — user clicks EXIT button on a position."""
+    if not engine or not hasattr(engine, 'trade_manager') or not engine.trade_manager:
+        return JSONResponse({"error": "Engine not running"}, status_code=503)
+    try:
+        from trade_logger import _conn, ist_now
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        trade = conn.execute("SELECT * FROM trades WHERE id=? AND status='OPEN'", (trade_id,)).fetchone()
+        if not trade:
+            conn.close()
+            return {"error": "Trade not found or already closed"}
+
+        t = dict(trade)
+        # Get current LTP
+        chain = engine.chains.get(t["idx"], {})
+        strike_data = chain.get(t["strike"], {})
+        opt = "ce" if "CE" in t["action"] else "pe"
+        current_ltp = strike_data.get(f"{opt}_ltp", 0)
+        if current_ltp <= 0:
+            current_ltp = t.get("current_ltp", t["entry_price"])
+
+        exit_price = current_ltp
+        pnl_pts = round(exit_price - t["entry_price"], 2)
+        existing_pnl = t.get("pnl_rupees", 0) or 0
+        current_qty = t.get("qty", 0)
+        pnl_rupees = round(existing_pnl + pnl_pts * current_qty, 2)
+
+        now = ist_now()
+        conn.execute("""
+            UPDATE trades SET status='MANUAL_EXIT', exit_price=?, exit_time=?,
+                pnl_pts=?, pnl_rupees=?, exit_reason=?
+            WHERE id=? AND status='OPEN'
+        """, (exit_price, now.isoformat(), pnl_pts, pnl_rupees,
+              f"Manual exit by user at ₹{exit_price}. PnL: ₹{pnl_rupees:+,.0f}", trade_id))
+        conn.commit()
+        conn.close()
+        print(f"[TRADE] MANUAL EXIT: {t['action']} {t['idx']} {t['strike']} — PnL: ₹{pnl_rupees:+,.0f}")
+        return {"status": "closed", "pnl": pnl_rupees, "exitPrice": exit_price}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.get("/api/ai-analysis")

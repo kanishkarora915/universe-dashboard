@@ -310,7 +310,17 @@ export default function PnLTracker() {
               <div style={{ fontSize: 11, color: "#444", marginTop: 4 }}>NIFTY: 20L × 65 = 1,300 qty | BANKNIFTY: 20L × 30 = 600 qty | SL: 15% max</div>
             </div>
           )}
-          {openTrades.map((t, i) => <TradeCard key={i} t={t} />)}
+          {openTrades.map((t, i) => <TradeCard key={i} t={t} onExit={async (id) => {
+            if (!confirm(`Exit ${t.action} ${t.idx} ${t.strike} at current price?`)) return;
+            const r = await fetch(`/api/trades/exit/${id}`, { method: "POST" });
+            const res = await r.json();
+            if (res.status === "closed") {
+              alert(`Exited! PnL: ₹${res.pnl?.toLocaleString("en-IN")}`);
+              window.location.reload();
+            } else {
+              alert(res.error || "Exit failed");
+            }
+          }} />)}
         </>
       )}
 
@@ -438,7 +448,7 @@ export default function PnLTracker() {
   );
 }
 
-function TradeCard({ t }) {
+function TradeCard({ t, onExit }) {
   const sc = statusColor[t.status] || (t.status === "TRAIL_EXIT" ? GREEN : t.status === "BREAKEVEN_EXIT" ? ACCENT : "#555");
   const pc = (t.pnl_rupees || 0) > 0 ? GREEN : (t.pnl_rupees || 0) < 0 ? RED : "#888";
   const ac = t.action?.includes("CE") ? GREEN : RED;
@@ -547,6 +557,21 @@ function TradeCard({ t }) {
         <div style={{ marginTop: 6, padding: "6px 10px", background: PURPLE + "11", borderRadius: 6, color: PURPLE, fontSize: 11 }}>
           Reversal: price recovered to {"\u20B9"}{(t.reversal_price || 0).toFixed?.(1) || t.reversal_price} after institutional SL flush
         </div>
+      )}
+
+      {/* MANUAL EXIT BUTTON */}
+      {t.status === "OPEN" && onExit && (
+        <button onClick={() => onExit(t.id)} style={{
+          marginTop: 8, width: "100%", padding: "8px 0",
+          background: RED + "22", color: RED, border: `1px solid ${RED}44`,
+          borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
+          transition: "all 0.15s",
+        }}
+        onMouseOver={e => { e.target.style.background = RED; e.target.style.color = "#fff"; }}
+        onMouseOut={e => { e.target.style.background = RED + "22"; e.target.style.color = RED; }}
+        >
+          EXIT NOW
+        </button>
       )}
     </div>
   );
