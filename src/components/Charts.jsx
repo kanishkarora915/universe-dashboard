@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { createChart } from "lightweight-charts";
+import { createChart, AreaSeries, LineSeries } from "lightweight-charts";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -81,12 +81,14 @@ export function PnLChart() {
     });
 
     const lastVal = uniqueSeries[uniqueSeries.length - 1]?.value || 0;
-    chart.addAreaSeries({
+    // lightweight-charts v5 API: addSeries(SeriesType, options)
+    const areaSeries = chart.addSeries(AreaSeries, {
       lineColor: lastVal >= 0 ? GREEN : RED,
       topColor: lastVal >= 0 ? GREEN + "22" : RED + "22",
       bottomColor: "transparent",
       lineWidth: 2,
-    }).setData(uniqueSeries);
+    });
+    areaSeries.setData(uniqueSeries);
 
     chart.timeScale().fitContent();
     chartRef.current = chart;
