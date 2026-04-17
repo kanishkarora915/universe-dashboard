@@ -157,7 +157,7 @@ function Section({ title, count, children, action, theme }) {
   );
 }
 
-export default function StrikeSearch({ isOpen, onClose, onSelect, suggestions = [], quickJumps = [], watchlist }) {
+export default function StrikeSearch({ isOpen, onClose, onSelect, suggestions = [], quickJumps = [], watchlist, onCompare }) {
   const { theme } = useTheme();
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
@@ -394,6 +394,7 @@ export default function StrikeSearch({ isOpen, onClose, onSelect, suggestions = 
             color: theme.TEXT_DIM,
             fontSize: TEXT_SIZE.MICRO,
             fontFamily: FONT.UI,
+            alignItems: "center",
           }}
         >
           <span>
@@ -408,7 +409,32 @@ export default function StrikeSearch({ isOpen, onClose, onSelect, suggestions = 
             <kbd style={{ fontFamily: FONT.MONO, padding: "1px 4px", background: theme.BG, borderRadius: 2 }}>☆</kbd>{" "}
             pin
           </span>
-          <span style={{ marginLeft: "auto" }}>Universe Pro</span>
+          {pinned && pinned.length >= 2 && onCompare && (
+            <button
+              onClick={() => { onCompare(); onClose(); }}
+              style={{
+                marginLeft: "auto",
+                background: theme.PURPLE,
+                color: "#fff",
+                border: "none",
+                borderRadius: RADIUS.SM,
+                padding: "4px 12px",
+                cursor: "pointer",
+                fontSize: TEXT_SIZE.MICRO,
+                fontWeight: TEXT_WEIGHT.BOLD,
+                letterSpacing: 1,
+                textTransform: "uppercase",
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              ⚔ Battle {pinned.length} strikes
+            </button>
+          )}
+          {(!pinned || pinned.length < 2) && (
+            <span style={{ marginLeft: "auto" }}>Universe Pro</span>
+          )}
         </div>
       </div>
     </div>

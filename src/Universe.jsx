@@ -19,6 +19,7 @@ import HotkeyHelp from "./components/HotkeyHelp";
 import SettingsPanel from "./components/SettingsPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
 import ReplayMode from "./components/ReplayMode";
+import BattleStation from "./components/BattleStation";
 import { VerdictHero } from "./components/DashboardHero";
 import { useTheme } from "./ThemeContext";
 import { useHotkeys } from "./hooks/useHotkeys";
@@ -2660,6 +2661,7 @@ export default function Universe({ onLogout }) {
   const [helpOpen, setHelpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [replayOpen, setReplayOpen] = useState(false);
+  const [battleOpen, setBattleOpen] = useState(false);
   const [strikeTabs, setStrikeTabs] = useState([]);
   const [trapVerdict, setTrapVerdict] = useState(null);
   const { live, unusual, intraday, nextday, weekly, signals, oiSummary, sellerData, tradeAnalysis, hiddenShift, connected } = useMarketData();
@@ -2755,6 +2757,11 @@ export default function Universe({ onLogout }) {
     "r": () => window.location.reload(),
     "cmd+shift+r": () => setReplayOpen(true),
     "ctrl+shift+r": () => setReplayOpen(true),
+    "b": () => {
+      if (watchlist.pinned.length >= 2) setBattleOpen(true);
+    },
+    "cmd+shift+b": () => setBattleOpen(true),
+    "ctrl+shift+b": () => setBattleOpen(true),
     "1": () => setActiveTab("dashboard"),
     "2": () => setActiveTab("oichange"),
     "3": () => setActiveTab("pnl"),
@@ -2879,7 +2886,7 @@ export default function Universe({ onLogout }) {
       />
 
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        {/* LEFT SIDEBAR — primary 6 tabs + watchlist + replay */}
+        {/* LEFT SIDEBAR — primary 6 tabs + watchlist + replay + battle */}
         <Sidebar
           activeTab={activeTab}
           onTabChange={setActiveTab}
@@ -2888,6 +2895,8 @@ export default function Universe({ onLogout }) {
           watchlist={watchlist.pinned}
           onWatchlistClick={openStrike}
           onReplayClick={() => setReplayOpen(true)}
+          onBattleClick={() => setBattleOpen(true)}
+          battleEnabled={watchlist.pinned.length >= 2}
         />
 
         {/* MAIN AREA — section nav + content */}
@@ -3035,6 +3044,7 @@ export default function Universe({ onLogout }) {
         suggestions={strikeSuggestions}
         quickJumps={quickJumps}
         watchlist={watchlist}
+        onCompare={() => setBattleOpen(true)}
       />
       <AlertDrawer
         isOpen={alertsOpen}
@@ -3050,6 +3060,14 @@ export default function Universe({ onLogout }) {
       />
       <HotkeyHelp isOpen={helpOpen} onClose={() => setHelpOpen(false)} />
       <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
+      {/* Battle Station — god-mode strike comparison */}
+      <BattleStation
+        isOpen={battleOpen}
+        onClose={() => setBattleOpen(false)}
+        pinnedStrikes={watchlist.pinned}
+        onRemoveStrike={watchlist.togglePin}
+      />
 
       {/* Replay modal */}
       {replayOpen && (

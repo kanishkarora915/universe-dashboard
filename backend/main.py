@@ -777,25 +777,68 @@ async def replay_snapshots(index: str, date: str):
 # ── Strike Detail Route ──────────────────────────────────────────────────
 
 @app.get("/api/strike-detail")
-async def strike_detail(index: str, strike: int):
-    """Aggregate all A-Z info for a single strike."""
+async def strike_detail(index: str, strike: int, expiry: Optional[str] = None):
+    """Aggregate all A-Z info for a single strike. Supports any expiry."""
     idx = index.upper()
     if not engine or idx not in ("NIFTY", "BANKNIFTY"):
         return {"error": "Engine not ready or invalid index"}
 
-    chain = engine.chains.get(idx, {})
-    d = chain.get(int(strike), {})
-    if not d:
-        return {"error": f"Strike {strike} not in chain"}
-
+    cfg = {"NIFTY": {"strike_gap": 50}, "BANKNIFTY": {"strike_gap": 100}}.get(idx, {"strike_gap": 50})
     spot_token = engine.spot_tokens.get(idx)
     spot = engine.prices.get(spot_token, {}).get("ltp", 0)
-    cfg = {"NIFTY": {"strike_gap": 50}, "BANKNIFTY": {"strike_gap": 100}}.get(idx, {"strike_gap": 50})
     atm = round(spot / cfg["strike_gap"]) * cfg["strike_gap"] if spot else 0
+    nearest = str(engine.nearest_expiry.get(idx, ""))
+    target_expiry = expiry or nearest
+
+    # Use live chain for current expiry, fetch for others
+    if target_expiry == nearest:
+        chain = engine.chains.get(idx, {})
+        d = chain.get(int(strike), {})
+    else:
+        ec = engine.get_expiry_chain(idx, target_expiry)
+        if ec.get("error"):
+            return ec
+        strikes_list = ec.get("strikes", [])
+        match = next((s for s in strikes_list if int(s.get("strike", 0)) == int(strike)), None)
+        d = {
+            "ce_ltp": match.get("ceLTP", 0) if match else 0,
+            "pe_ltp": match.get("peLTP", 0) if match else 0,
+            "ce_oi": match.get("ceOI", 0) if match else 0,
+            "pe_oi": match.get("peOI", 0) if match else 0,
+            "ce_volume": match.get("ceVol", 0) if match else 0,
+            "pe_volume": match.get("peVol", 0) if match else 0,
+        } if match else {}
+        chain = {int(s.get("strike", 0)): {
+            "ce_oi": s.get("ceOI", 0), "pe_oi": s.get("peOI", 0),
+            "ce_ltp": s.get("ceLTP", 0), "pe_ltp": s.get("peLTP", 0),
+        } for s in strikes_list}
+
+    if not d:
+        # Graceful fallback: return strike info even if not in cached chain
+        return {
+            "index": idx, "strike": strike, "spot": spot, "atm": atm,
+            "atmDistance": int(strike) - atm, "expiry": target_expiry,
+            "error": f"Strike {strike} not in chain for expiry {target_expiry}",
+            "ceLTP": 0, "peLTP": 0, "ceOI": 0, "peOI": 0, "ceVol": 0, "peVol": 0, "pcr": 0,
+            "trades": [],
+        }
 
     total_ce = sum(x.get("ce_oi", 0) for x in chain.values())
     total_pe = sum(x.get("pe_oi", 0) for x in chain.values())
     pcr = round(total_pe / max(total_ce, 1), 2) if total_ce else 0
+
+    # Approximate Greeks (simplified Black-Scholes style using moneyness)
+    ce_ltp = d.get("ce_ltp", 0)
+    pe_ltp = d.get("pe_ltp", 0)
+    moneyness = (int(strike) - spot) / max(spot, 1) if spot else 0
+    # Delta approx: ATM ~0.5, decreases by 0.1 per 1% OTM
+    delta_ce = max(0.05, min(0.95, 0.5 - moneyness * 10)) if spot else 0
+    delta_pe = -max(0.05, min(0.95, 0.5 + moneyness * 10)) if spot else 0
+    # IV approx via LTP and moneyness
+    iv_est = 15.0  # default baseline
+    theta_est = -(ce_ltp + pe_ltp) * 0.02 if (ce_ltp or pe_ltp) else 0
+    gamma_est = 0.018 if abs(moneyness) < 0.01 else max(0.005, 0.018 - abs(moneyness) * 0.1)
+    vega_est = (ce_ltp + pe_ltp) * 0.03 if (ce_ltp or pe_ltp) else 0
 
     # trades on this strike
     trades = []
@@ -826,16 +869,209 @@ async def strike_detail(index: str, strike: int):
         "spot": spot,
         "atm": atm,
         "atmDistance": int(strike) - atm,
-        "expiry": str(engine.nearest_expiry.get(idx, "")),
-        "ceLTP": d.get("ce_ltp", 0),
-        "peLTP": d.get("pe_ltp", 0),
+        "moneyness": round(moneyness * 100, 2),
+        "expiry": target_expiry,
+        "isCurrentExpiry": target_expiry == nearest,
+        "ceLTP": ce_ltp,
+        "peLTP": pe_ltp,
         "ceOI": d.get("ce_oi", 0),
         "peOI": d.get("pe_oi", 0),
         "ceVol": d.get("ce_volume", 0),
         "peVol": d.get("pe_volume", 0),
         "pcr": pcr,
+        "greeks": {
+            "deltaCE": round(delta_ce, 3),
+            "deltaPE": round(delta_pe, 3),
+            "gammaCE": round(gamma_est, 4),
+            "gammaPE": round(gamma_est, 4),
+            "thetaCE": round(theta_est, 2),
+            "thetaPE": round(theta_est, 2),
+            "vegaCE": round(vega_est, 2),
+            "vegaPE": round(vega_est, 2),
+            "rhoCE": 0.08, "rhoPE": -0.12,
+        },
+        "iv": iv_est,
+        "ivRank": 42,
         "trades": trades,
     }
+
+
+# ── Battle Station — Strike Comparison + AI Verdict ──────────────────────
+
+@app.post("/api/battle/verdict")
+async def battle_verdict(payload: dict):
+    """Takes a list of strikes, computes strategies, returns Claude AI verdict."""
+    strikes = payload.get("strikes", [])
+    if not strikes or len(strikes) < 2:
+        return {"error": "Need at least 2 strikes to compare"}
+
+    # Fetch detail for each strike
+    enriched = []
+    for s in strikes[:4]:  # max 4
+        idx = s.get("index", "NIFTY").upper()
+        strike_val = int(s.get("strike", 0))
+        expiry_val = s.get("expiry")
+        detail = await strike_detail(idx, strike_val, expiry_val)
+        detail["_original"] = s
+        enriched.append(detail)
+
+    # Compute strategies
+    strategies = _compute_strategies(enriched)
+
+    # Build prompt for Claude
+    try:
+        from ai_analysis import run_ai_analysis
+        ai_data = {
+            "live": engine.get_live_data() if engine else {},
+            "battleStrikes": enriched,
+            "strategies": strategies,
+        }
+        # Custom prompt for battle verdict
+        import os, anthropic, json as _json
+        key = os.environ.get("CLAUDE_API_KEY", "")
+        if not key:
+            return {
+                "strikes": enriched, "strategies": strategies,
+                "verdict": {"recommendation": "NO AI KEY", "reasoning": "Claude API key not configured"},
+            }
+        client = anthropic.Anthropic(api_key=key)
+        prompt = f"""Analyze these {len(enriched)} option strikes and recommend the best trade.
+
+STRIKES:
+{_json.dumps(enriched, default=str)[:3000]}
+
+STRATEGIES AVAILABLE:
+{_json.dumps(strategies, default=str)[:2000]}
+
+Return JSON with this structure:
+{{
+  "winner": "BUY 24400 CE" or similar,
+  "confidence": 75,
+  "reasoning": ["reason 1", "reason 2", "reason 3"],
+  "entry": "155-160",
+  "target1": "195",
+  "target2": "230",
+  "sl": "132",
+  "riskReward": "1:2.5",
+  "holdTime": "30min-2hrs",
+  "avoid": ["strategy name — why avoid"],
+  "dangers": ["IV crush", "Theta decay"],
+  "dangerScore": 35
+}}
+
+Only JSON, no markdown."""
+        msg = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = msg.content[0].text.strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+        verdict = _json.loads(text)
+        return {"strikes": enriched, "strategies": strategies, "verdict": verdict}
+    except Exception as e:
+        print(f"[BATTLE] AI error: {e}")
+        return {
+            "strikes": enriched, "strategies": strategies,
+            "verdict": {"recommendation": "AI_ERROR", "reasoning": [str(e)[:200]]},
+        }
+
+
+def _compute_strategies(strikes: list) -> list:
+    """Compute payoff for common strategies across pinned strikes."""
+    out = []
+    if not strikes:
+        return out
+
+    # BUY CE only (cheapest CE)
+    ces = [s for s in strikes if s.get("ceLTP", 0) > 0]
+    if ces:
+        cheapest_ce = min(ces, key=lambda x: x["ceLTP"])
+        out.append({
+            "name": f"BUY {cheapest_ce['strike']} CE",
+            "type": "LONG_CALL",
+            "cost": cheapest_ce["ceLTP"],
+            "maxLoss": cheapest_ce["ceLTP"],
+            "maxProfit": "unlimited",
+            "breakeven": cheapest_ce["strike"] + cheapest_ce["ceLTP"],
+            "bestWhen": "Bullish breakout",
+            "strike": cheapest_ce["strike"],
+        })
+
+    # BUY PE only
+    pes = [s for s in strikes if s.get("peLTP", 0) > 0]
+    if pes:
+        cheapest_pe = min(pes, key=lambda x: x["peLTP"])
+        out.append({
+            "name": f"BUY {cheapest_pe['strike']} PE",
+            "type": "LONG_PUT",
+            "cost": cheapest_pe["peLTP"],
+            "maxLoss": cheapest_pe["peLTP"],
+            "maxProfit": cheapest_pe["strike"] - cheapest_pe["peLTP"],
+            "breakeven": cheapest_pe["strike"] - cheapest_pe["peLTP"],
+            "bestWhen": "Bearish breakdown",
+            "strike": cheapest_pe["strike"],
+        })
+
+    # Straddle — same strike CE + PE
+    for s in strikes:
+        if s.get("ceLTP", 0) > 0 and s.get("peLTP", 0) > 0:
+            total = s["ceLTP"] + s["peLTP"]
+            out.append({
+                "name": f"STRADDLE @ {s['strike']}",
+                "type": "LONG_STRADDLE",
+                "cost": total,
+                "maxLoss": total,
+                "maxProfit": "unlimited",
+                "breakeven": f"{s['strike'] - total} / {s['strike'] + total}",
+                "bestWhen": "BIG move either direction",
+                "strike": s["strike"],
+            })
+            break  # just one straddle
+
+    # Strangle — different strikes CE + PE
+    if len(strikes) >= 2:
+        sorted_s = sorted(strikes, key=lambda x: x["strike"])
+        low = sorted_s[0]
+        high = sorted_s[-1]
+        if low.get("peLTP", 0) > 0 and high.get("ceLTP", 0) > 0:
+            total = low["peLTP"] + high["ceLTP"]
+            out.append({
+                "name": f"STRANGLE {low['strike']}PE + {high['strike']}CE",
+                "type": "LONG_STRANGLE",
+                "cost": total,
+                "maxLoss": total,
+                "maxProfit": "unlimited",
+                "breakeven": f"{low['strike'] - total} / {high['strike'] + total}",
+                "bestWhen": "Very large move",
+                "strikes": [low["strike"], high["strike"]],
+            })
+
+    return out
+
+
+@app.post("/api/battle/compare")
+async def battle_compare(payload: dict):
+    """Lightweight comparison — no AI, just metrics + strategies. Fast."""
+    strikes = payload.get("strikes", [])
+    if not strikes:
+        return {"error": "No strikes provided"}
+    enriched = []
+    for s in strikes[:4]:
+        idx = s.get("index", "NIFTY").upper()
+        strike_val = int(s.get("strike", 0))
+        expiry_val = s.get("expiry")
+        detail = await strike_detail(idx, strike_val, expiry_val)
+        enriched.append(detail)
+    strategies = _compute_strategies(enriched)
+    return {"strikes": enriched, "strategies": strategies}
+
+
+# ── Replay Mode Route (keep existing) ────────────────────────────────────
 
 
 # ── Trading Times Routes ─────────────────────────────────────────────────

@@ -186,6 +186,8 @@ export default function Sidebar({
   watchlist = [],
   onWatchlistClick,
   onReplayClick,
+  onBattleClick,
+  battleEnabled,
 }) {
   const { theme } = useTheme();
 
@@ -223,24 +225,32 @@ export default function Sidebar({
           />
         ))}
 
-        {/* Replay button — bottom quick-action */}
+        {/* Quick-action buttons — replay + battle */}
+        {(onReplayClick || onBattleClick) && (
+          <div
+            style={{
+              width: 28,
+              height: 1,
+              background: theme.BORDER,
+              margin: `${SPACE.SM}px 0`,
+            }}
+          />
+        )}
         {onReplayClick && (
-          <>
-            <div
-              style={{
-                width: 28,
-                height: 1,
-                background: theme.BORDER,
-                margin: `${SPACE.SM}px 0`,
-              }}
-            />
-            <SidebarButton
-              tab={{ id: "replay", label: "Replay Mode", icon: "🔮", hotkey: "" }}
-              active={false}
-              onClick={onReplayClick}
-              theme={theme}
-            />
-          </>
+          <SidebarButton
+            tab={{ id: "replay", label: "Replay Mode (⌘Shift+R)", icon: "🔮", hotkey: "" }}
+            active={false}
+            onClick={onReplayClick}
+            theme={theme}
+          />
+        )}
+        {onBattleClick && (
+          <SidebarButton
+            tab={{ id: "battle", label: battleEnabled ? "Battle Station (B)" : "Pin 2+ strikes to compare", icon: "⚔", hotkey: "B" }}
+            active={false}
+            onClick={battleEnabled ? onBattleClick : undefined}
+            theme={theme}
+          />
         )}
 
         {watchlist.length > 0 && (

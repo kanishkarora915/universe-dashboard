@@ -19,6 +19,9 @@ const SHORTCUTS = [
   { section: "Strikes", items: [
     { keys: ["⌘W", "Ctrl+W"], desc: "Close active strike tab" },
     { keys: ["☆"], desc: "Pin strike to watchlist (from search / detail view)" },
+    { keys: ["B"], desc: "⚔ Battle Station — compare pinned strikes" },
+    { keys: ["⌘Shift+B", "Ctrl+Shift+B"], desc: "Force open Battle Station" },
+    { keys: ["⌘Shift+R", "Ctrl+Shift+R"], desc: "🔮 Replay Mode" },
   ]},
   { section: "Alerts", items: [
     { keys: ["⌘Shift+A", "Ctrl+Shift+A"], desc: "Toggle alerts drawer" },
