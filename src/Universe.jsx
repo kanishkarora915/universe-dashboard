@@ -52,7 +52,7 @@ const TAB_GROUPS = [
   ]},
   { group: "Intelligence", tabs: [
     { id: "aibrain", icon: "\uD83E\uDD16", label: "AI Brain" },
-    { id: "ttimes",  icon: "\u23F1\uFE0F", label: "Times" },
+    { id: "ttimes",  icon: "⏱\uFE0F", label: "Times" },
     { id: "autopsy", icon: "\uD83D\uDD2C", label: "Autopsy" },
   ]},
   { group: "Trading", tabs: [
@@ -93,7 +93,7 @@ You are UNIVERSE, an elite options trading intelligence engine specialized exclu
 - Strike-wise CE/PE: OI, OI Change, Volume, LTP, IV
 - PCR overall and strike-wise
 - Max Pain Strike
-- IVR = (current IV \u2212 52w low IV) / (52w high IV \u2212 52w low IV) \u00D7 100
+- IVR = (current IV \u2212 52w low IV) / (52w high IV \u2212 52w low IV) × 100
 
 ### 3. GREEKS (Per Strike)
 - Delta, Gamma, Theta, Vega
@@ -135,21 +135,21 @@ You are UNIVERSE, an elite options trading intelligence engine specialized exclu
 9. FII/institutional flow confirming direction \u2014 1 pt
 
 ### THRESHOLDS
-Score 5\u20136 \u2192 MODERATE CONFIDENCE (watchlist only)
-Score 7\u20138 \u2192 HIGH CONFIDENCE (execute with discipline)
-Score 9   \u2192 MAX CONFIDENCE (prime setup, full size)
-Score <5  \u2192 NO TRADE \u2014 wait
+Score 5\u20136 → MODERATE CONFIDENCE (watchlist only)
+Score 7\u20138 → HIGH CONFIDENCE (execute with discipline)
+Score 9   → MAX CONFIDENCE (prime setup, full size)
+Score <5  → NO TRADE \u2014 wait
 
 ### STRIKE SELECTION RULES
 - ATM or 1-strike OTM only
-- Premium range \u20B980\u2013\u20B9400
-- Avoid below \u20B950 (lottery) and above \u20B9500 (slow mover)
+- Premium range ₹80\u2013₹400
+- Avoid below ₹50 (lottery) and above ₹500 (slow mover)
 - Avoid last 2 days before expiry unless IVR > 60
 
 ### STOP LOSS RULES
 - Hard stop: 40% of premium paid
-- Example: Buy PE at \u20B9200 \u2192 SL at \u20B9120
-- Trail stop: After T1 hit \u2192 move SL to entry price
+- Example: Buy PE at ₹200 → SL at ₹120
+- Trail stop: After T1 hit → move SL to entry price
 
 ---
 
@@ -161,17 +161,17 @@ Score <5  \u2192 NO TRADE \u2014 wait
 Time           : [HH:MM AM/PM IST]
 Signal         : BUY CALL / BUY PUT
 Strike         : [Strike] [CE/PE] [Expiry]
-Entry Zone     : \u20B9[X] \u2013 \u20B9[Y]
-Target 1       : \u20B9[T1]  (+X%)
-Target 2       : \u20B9[T2]  (+X%)
-Stop Loss      : \u20B9[SL]  (\u221240% hard stop)
+Entry Zone     : ₹[X] \u2013 ₹[Y]
+Target 1       : ₹[T1]  (+X%)
+Target 2       : ₹[T2]  (+X%)
+Stop Loss      : ₹[SL]  (\u221240% hard stop)
 Risk:Reward    : 1:[X.X]
 CONFLUENCE     : [X]/9
 
 REASONING:
 [\u2705] [Condition with exact values \u2014 not vague]
 [\u2705] [Condition with exact values]
-[\u26A0\uFE0F] [Borderline condition + what to watch]
+[⚠\uFE0F] [Borderline condition + what to watch]
 [\u274C] [Failed condition \u2014 reason]
 ... all 9 conditions shown always
 
@@ -255,7 +255,7 @@ WEEKLY TRADING PLAN:
   Monday    : [Strategy]
   Tuesday   : [Strategy]
   Wednesday : [Strategy]
-  Thursday  : \u26A0\uFE0F THETA WARNING \u2014 No option buying after 2 PM
+  Thursday  : ⚠\uFE0F THETA WARNING \u2014 No option buying after 2 PM
   Friday    : \uD83D\uDEAB No new positions \u2014 [specific risk reason]
 
 KEY MAKE-OR-BREAK LEVELS:
@@ -299,19 +299,19 @@ Level     : CRITICAL / HIGH / MEDIUM
 
 ## BEST TRADE WINDOWS
 
-- 9:30\u201310:30 AM  \u2192 Trend establishment, highest quality setups
-- 11:00\u201312:30 PM \u2192 Momentum continuation
-- 2:00\u20132:30 PM   \u2192 EOD institutional positioning window
+- 9:30\u201310:30 AM  → Trend establishment, highest quality setups
+- 11:00\u201312:30 PM → Momentum continuation
+- 2:00\u20132:30 PM   → EOD institutional positioning window
 
 ---
 
 ## SELF-AUDIT BEFORE EVERY SIGNAL
 
-\u25A1 Am I chasing a move already completed? \u2192 DO NOT signal
-\u25A1 Is IVR above 80? \u2192 Premium too expensive, abort
-\u25A1 Is expiry < 2 days and strike OTM? \u2192 Avoid
-\u25A1 Is this against the weekly bias? \u2192 Reduce score by 2, reconsider
-\u25A1 Did I check both Nifty AND BankNifty? \u2192 Always verify both
+\u25A1 Am I chasing a move already completed? → DO NOT signal
+\u25A1 Is IVR above 80? → Premium too expensive, abort
+\u25A1 Is expiry < 2 days and strike OTM? → Avoid
+\u25A1 Is this against the weekly bias? → Reduce score by 2, reconsider
+\u25A1 Did I check both Nifty AND BankNifty? → Always verify both
 
 ---
 
@@ -319,7 +319,7 @@ Level     : CRITICAL / HIGH / MEDIUM
 
 Every signal MUST show:
 1. Exact numbers \u2014 not vague statements
-2. All 9 conditions: \u2705 passed / \u26A0\uFE0F borderline / \u274C failed
+2. All 9 conditions: \u2705 passed / ⚠\uFE0F borderline / \u274C failed
 3. Why THIS specific strike vs adjacent strikes
 4. Exact invalidation condition
 5. Time sensitivity (scalp / intraday / swing)
@@ -330,7 +330,7 @@ UNIVERSE \u2014 Built for Kanishk
 Nifty & BankNifty Option Buying Engine
 Broker: Zerodha Kite Connect | NSE India`;
 
-// \u2500\u2500 SHARED COMPONENTS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── SHARED COMPONENTS ──────────────────────────────────────────────
 
 const Badge = ({ text, color }) => (
   <span style={{
@@ -366,7 +366,7 @@ const Stat = ({ label, value, color = "#fff", sub }) => (
   </div>
 );
 
-// \u2500\u2500 TAB: LIVE DATA \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── TAB: LIVE DATA ─────────────────────────────────────────────
 
 function LiveDataTab({ liveData }) {
   const [fii, setFii] = useState(null);
@@ -521,7 +521,7 @@ function LiveDataTab({ liveData }) {
   );
 }
 
-// \u2500\u2500 TAB: SIGNALS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── TAB: SIGNALS ───────────────────────────────────────────────
 
 function SignalsTab({ realSignals }) {
   if (!realSignals || realSignals.length === 0) {
@@ -548,7 +548,7 @@ function SignalsTab({ realSignals }) {
                 <Badge text={s.type}   color={s.type.includes("PUT") ? RED : GREEN} />
                 <Badge text={s.status} color={s.status === "ACTIVE" ? YELLOW : GREEN} />
               </div>
-              <div style={{ color: "#666", fontSize: 12 }}>{s.strike} \u00B7 {s.expiry} \u00B7 {s.time}</div>
+              <div style={{ color: "#666", fontSize: 12 }}>{s.strike} · {s.expiry} · {s.time}</div>
             </div>
             <div style={{ textAlign: "right" }}>
               <div style={{ color: PURPLE, fontWeight: 900, fontSize: 22 }}>{s.score}/{s.maxScore}</div>
@@ -556,10 +556,10 @@ function SignalsTab({ realSignals }) {
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 14 }}>
-            <Stat label="Entry"    value={`\u20B9${s.entry}`} />
-            <Stat label="Target 1" value={`\u20B9${s.t1}`}    color={GREEN} />
-            <Stat label="Target 2" value={`\u20B9${s.t2}`}    color={GREEN} />
-            <Stat label="Stop Loss" value={`\u20B9${s.sl}`}   color={RED} sub="\u221240% hard stop" />
+            <Stat label="Entry"    value={`₹${s.entry}`} />
+            <Stat label="Target 1" value={`₹${s.t1}`}    color={GREEN} />
+            <Stat label="Target 2" value={`₹${s.t2}`}    color={GREEN} />
+            <Stat label="Stop Loss" value={`₹${s.sl}`}   color={RED} sub="\u221240% hard stop" />
           </div>
           <div style={{ background: "#0D0D15", borderRadius: 8, padding: "12px 14px", marginBottom: 10 }}>
             <Label>Reasoning \u2014 All 9 Conditions</Label>
@@ -570,7 +570,7 @@ function SignalsTab({ realSignals }) {
                 fontSize: 12, lineHeight: 1.6,
               }}>
                 <span style={{ flexShrink: 0 }}>
-                  {r.pass === true ? "\u2705" : r.pass === "warn" ? "\u26A0\uFE0F" : "\u274C"}
+                  {r.pass === true ? "\u2705" : r.pass === "warn" ? "⚠\uFE0F" : "\u274C"}
                 </span>
                 <span>{r.text}</span>
               </div>
@@ -585,7 +585,7 @@ function SignalsTab({ realSignals }) {
   );
 }
 
-// \u2500\u2500 TAB: INTRADAY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── TAB: INTRADAY ──────────────────────────────────────────────
 
 function IntradayTab({ realData }) {
   const sessions = [
@@ -599,13 +599,13 @@ function IntradayTab({ realData }) {
       desc: "Low liquidity, choppy price action. Maximum premium decay. No new positions unless strong breakout with score 8+." },
   ];
   const rules = [
-    { icon: "\uD83D\uDEAB", col: RED,   text: "VIX > 20 and score < 8 \u2192 Skip the trade entirely" },
-    { icon: "\uD83D\uDEAB", col: RED,   text: "Within 15 min of RBI / Fed / NFP event \u2192 No new trades" },
-    { icon: "\uD83D\uDEAB", col: RED,   text: "PCR between 0.85\u20131.10 \u2192 No directional edge, stay out" },
-    { icon: "\uD83D\uDEAB", col: RED,   text: "Expiry day last 30 min \u2192 Do NOT buy options, theta crush" },
-    { icon: "\u2705", col: GREEN, text: "VWAP rejection confirmed on 5min \u2192 Valid entry setup" },
-    { icon: "\u2705", col: GREEN, text: "EMA 9 crosses 20 with volume surge \u2192 Strong directional signal" },
-    { icon: "\u2705", col: GREEN, text: "Score \u2265 7 in morning session 9:30\u201310:30 AM \u2192 Prime setup, full conviction" },
+    { icon: "\uD83D\uDEAB", col: RED,   text: "VIX > 20 and score < 8 → Skip the trade entirely" },
+    { icon: "\uD83D\uDEAB", col: RED,   text: "Within 15 min of RBI / Fed / NFP event → No new trades" },
+    { icon: "\uD83D\uDEAB", col: RED,   text: "PCR between 0.85\u20131.10 → No directional edge, stay out" },
+    { icon: "\uD83D\uDEAB", col: RED,   text: "Expiry day last 30 min → Do NOT buy options, theta crush" },
+    { icon: "\u2705", col: GREEN, text: "VWAP rejection confirmed on 5min → Valid entry setup" },
+    { icon: "\u2705", col: GREEN, text: "EMA 9 crosses 20 with volume surge → Strong directional signal" },
+    { icon: "\u2705", col: GREEN, text: "Score \u2265 7 in morning session 9:30\u201310:30 AM → Prime setup, full conviction" },
   ];
 
   // Build REAL tech levels from API data
@@ -694,7 +694,7 @@ function IntradayTab({ realData }) {
   );
 }
 
-// \u2500\u2500 TAB: NEXT DAY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── TAB: NEXT DAY ──────────────────────────────────────────────
 
 function NextDayTab({ realData }) {
   if (!realData || !realData.nifty) {
@@ -761,7 +761,7 @@ function NextDayTab({ realData }) {
             <Label>Key OI Strikes Tomorrow</Label>
             <div style={{ color: RED,    fontSize: 12, marginBottom: 6 }}>\uD83D\uDD34 {data.bigCEWall}</div>
             <div style={{ color: GREEN,  fontSize: 12, marginBottom: 6 }}>\uD83D\uDFE2 {data.bigPEWall}</div>
-            <div style={{ color: YELLOW, fontSize: 12 }}>\u26A0\uFE0F {data.unusual}</div>
+            <div style={{ color: YELLOW, fontSize: 12 }}>⚠\uFE0F {data.unusual}</div>
           </div>
           <div style={{ background: ACCENT + "11", border: `1px solid ${ACCENT}33`, borderRadius: 8, padding: "12px 14px", marginBottom: 12 }}>
             <Label>Trading Strategy</Label>
@@ -782,7 +782,7 @@ function NextDayTab({ realData }) {
   );
 }
 
-// \u2500\u2500 TAB: WEEKLY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── TAB: WEEKLY ────────────────────────────────────────────────
 
 function WeeklyTab({ realData }) {
   if (!realData || !realData.niftyBias) {
@@ -824,7 +824,7 @@ function WeeklyTab({ realData }) {
           <Label>FII / DII Flow</Label>
           <div style={{ color: RED,    fontSize: 12, marginBottom: 6 }}>FII: {w.fii}</div>
           <div style={{ color: GREEN,  fontSize: 12, marginBottom: 6 }}>DII: {w.dii}</div>
-          <div style={{ color: YELLOW, fontSize: 12, fontWeight: 600 }}>\u2192 {w.verdict}</div>
+          <div style={{ color: YELLOW, fontSize: 12, fontWeight: 600 }}>→ {w.verdict}</div>
         </div>
         <div style={{ background: "#0D0D15", borderRadius: 8, padding: "12px 14px", marginBottom: 12 }}>
           <Label>Macro Events This Week</Label>
@@ -855,7 +855,7 @@ function WeeklyTab({ realData }) {
   );
 }
 
-// \u2500\u2500 TAB: UNUSUAL ACTIVITY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── TAB: UNUSUAL ACTIVITY ────────────────────────────────────────
 
 function UnusualTab({ unusualData, oiData }) {
   const alerts = unusualData && unusualData.length > 0 ? unusualData : [];
@@ -976,7 +976,7 @@ function UnusualTab({ unusualData, oiData }) {
                   </div>
                 </div>
                 <div style={{ padding: "8px 12px", background: alertColor[u.alert] + "11", borderRadius: 8, color: alertColor[u.alert], fontSize: 12, fontWeight: 600 }}>
-                  {"\u2192"} {u.signal}
+                  {"→"} {u.signal}
                 </div>
               </Card>
             ))}
@@ -1368,7 +1368,7 @@ function TradeAITab({ data }) {
   );
 }
 
-// \u2500\u2500 TAB: CLAUDE PROMPT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── TAB: CLAUDE PROMPT ───────────────────────────────────────────
 
 // ── TAB: HIDDEN SHIFT — Institutional OI Cooking Detection ──────────────
 
@@ -1866,7 +1866,7 @@ function PriceActionTab() {
 
               {/* Reasons */}
               {trade.reasons?.map((r, i) => (
-                <div key={i} style={{ color: "#999", fontSize: 11, marginBottom: 3, paddingLeft: 12 }}>{"\u2022"} {r}</div>
+                <div key={i} style={{ color: "#999", fontSize: 11, marginBottom: 3, paddingLeft: 12 }}>{"•"} {r}</div>
               ))}
             </Card>
 
@@ -2111,9 +2111,9 @@ function TrapFinderTab() {
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 8 }}>
                   {[
                     { label: "STRIKE", value: t.strike, color: "#fff" },
-                    { label: "ENTRY", value: `\u20B9${t.entry}`, color: "#fff" },
-                    { label: "TARGET", value: `\u20B9${t.t1} / \u20B9${t.t2}`, color: GREEN },
-                    { label: "STOPLOSS", value: `\u20B9${t.sl}`, color: RED },
+                    { label: "ENTRY", value: `₹${t.entry}`, color: "#fff" },
+                    { label: "TARGET", value: `₹${t.t1} / ₹${t.t2}`, color: GREEN },
+                    { label: "STOPLOSS", value: `₹${t.sl}`, color: RED },
                     { label: "R:R", value: t.rr, color: PURPLE },
                   ].map((item, i) => (
                     <div key={i} style={{ textAlign: "center" }}>
@@ -2164,7 +2164,7 @@ function TrapFinderTab() {
             {/* Risks */}
             {v.risks?.length > 0 && (
               <div style={{ background: RED + "06", borderRadius: 6, padding: "6px 10px" }}>
-                {v.risks.map((r, i) => <div key={i} style={{ color: "#888", fontSize: 10, marginBottom: 2 }}>{"\u26A0"} {r}</div>)}
+                {v.risks.map((r, i) => <div key={i} style={{ color: "#888", fontSize: 10, marginBottom: 2 }}>{"⚠"} {r}</div>)}
               </div>
             )}
           </Card>
@@ -2284,7 +2284,7 @@ function TrapFinderTab() {
                   { label: "Volume Ratio", value: `${s.volumeRatio}x`, color: s.volumeRatio > 2 ? ORANGE : "#ccc" },
                   { label: "IV", value: `${s.iv}%`, color: "#ccc" },
                   { label: "IV Change", value: `${s.ivChange}%`, color: s.ivChange < 5 ? GREEN : "#ccc" },
-                  { label: "LTP", value: `${"\u20B9"}${s.ltp?.toFixed(1)}`, color: "#fff" },
+                  { label: "LTP", value: `${"₹"}${s.ltp?.toFixed(1)}`, color: "#fff" },
                   { label: "Expiry", value: s.expiryLabel, color: s.expiryLabel === "NEXT" ? ORANGE : "#ccc" },
                 ].map((item, i) => (
                   <div key={i} style={{ background: "#0A0A12", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
@@ -2305,7 +2305,7 @@ function TrapFinderTab() {
                 ].map((item, i) => (
                   <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
                     <span style={{ color: item.check ? GREEN : item.partial ? YELLOW : RED, fontSize: 12, width: 16 }}>
-                      {item.check ? "\u2713" : item.partial ? "~" : "\u2717"}
+                      {item.check ? "✓" : item.partial ? "~" : "\u2717"}
                     </span>
                     <span style={{ color: item.check ? GREEN : item.partial ? YELLOW : "#555", fontSize: 11, fontWeight: item.check ? 700 : 400 }}>
                       {item.text}
@@ -2322,7 +2322,7 @@ function TrapFinderTab() {
                 <div style={{ background: "#0A0A12", borderRadius: 10, padding: "12px 16px", marginBottom: 14 }}>
                   <div style={{ color: ACCENT, fontSize: 11, fontWeight: 700, marginBottom: 8 }}>DETECTION REASONS</div>
                   {s.reasons.map((r, i) => (
-                    <div key={i} style={{ color: "#ccc", fontSize: 11, marginBottom: 4, paddingLeft: 12 }}>{"\u2022"} {r}</div>
+                    <div key={i} style={{ color: "#ccc", fontSize: 11, marginBottom: 4, paddingLeft: 12 }}>{"•"} {r}</div>
                   ))}
                 </div>
               )}
@@ -2645,7 +2645,7 @@ function PromptTab() {
   );
 }
 
-// \u2500\u2500 MAIN APP \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── MAIN APP ─────────────────────────────────────────────────
 
 export default function Universe({ onLogout }) {
   const { theme, toggle: toggleTheme } = useTheme();
@@ -2912,7 +2912,7 @@ export default function Universe({ onLogout }) {
                   background: "transparent", border: "none",
                   color: theme.TEXT_DIM, cursor: "pointer",
                   padding: 0, fontSize: 12, lineHeight: 1,
-                }}>{"\u00D7"}</button>
+                }}>{"×"}</button>
               </div>
             );
           })}

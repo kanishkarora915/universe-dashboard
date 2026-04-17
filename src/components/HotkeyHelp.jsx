@@ -3,24 +3,24 @@ import { FONT, TEXT_SIZE, TEXT_WEIGHT, SPACE, RADIUS, Z } from "../theme";
 
 const SHORTCUTS = [
   { section: "Navigation", items: [
-    { keys: ["\u2318K", "Ctrl+K"], desc: "Search strikes / command palette" },
+    { keys: ["⌘K", "Ctrl+K"], desc: "Search strikes / command palette" },
     { keys: ["1-6"], desc: "Switch tabs (Dashboard, OI, P&L, Reports, Autopsy, Times)" },
     { keys: ["\\"], desc: "Toggle sidebar" },
     { keys: ["Esc"], desc: "Close modal / clear search" },
   ]},
   { section: "View", items: [
-    { keys: ["\u2318Shift+L"], desc: "Toggle dark / light theme" },
+    { keys: ["⌘Shift+L"], desc: "Toggle dark / light theme" },
     { keys: ["F"], desc: "Focus mode (hide chrome)" },
     { keys: ["N"], desc: "Toggle NIFTY / BANKNIFTY" },
     { keys: ["R"], desc: "Refresh data" },
   ]},
   { section: "Strikes", items: [
-    { keys: ["\u2606"], desc: "Pin strike to watchlist" },
-    { keys: ["\u2318W"], desc: "Close active strike tab" },
+    { keys: ["☆"], desc: "Pin strike to watchlist" },
+    { keys: ["⌘W"], desc: "Close active strike tab" },
   ]},
   { section: "Alerts", items: [
-    { keys: ["\u2318Shift+A"], desc: "Open alerts drawer" },
-    { keys: ["\u2318Shift+M"], desc: "Mute all sounds" },
+    { keys: ["⌘Shift+A"], desc: "Open alerts drawer" },
+    { keys: ["⌘Shift+M"], desc: "Mute all sounds" },
   ]},
   { section: "Help", items: [
     { keys: ["?"], desc: "Show this shortcut guide" },
@@ -110,7 +110,7 @@ export default function HotkeyHelp({ isOpen, onClose }) {
               fontSize: 14,
             }}
           >
-            \u00D7
+            ×
           </button>
         </div>
 

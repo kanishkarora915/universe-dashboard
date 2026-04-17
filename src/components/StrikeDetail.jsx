@@ -155,7 +155,7 @@ function OverviewView({ data, theme }) {
 
       <Card title="CE Option" theme={theme} style={{ gridColumn: "span 1" }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: SPACE.MD }}>
-          <Stat label="LTP" value={ceLTP != null ? `\u20B9${ceLTP}` : "—"} color={theme.GREEN} theme={theme} />
+          <Stat label="LTP" value={ceLTP != null ? `₹${ceLTP}` : "—"} color={theme.GREEN} theme={theme} />
           <Stat label="OI" value={ceOI != null ? `${(ceOI / 100000).toFixed(1)}L` : "—"} theme={theme} />
           <Stat label="Volume" value={ceVol != null ? `${(ceVol / 100000).toFixed(1)}L` : "—"} theme={theme} />
           <Stat label="Distance" value={atmDistance != null ? `${atmDistance > 0 ? "+" : ""}${atmDistance}` : "—"} theme={theme} />
@@ -164,7 +164,7 @@ function OverviewView({ data, theme }) {
 
       <Card title="PE Option" theme={theme} style={{ gridColumn: "span 1" }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: SPACE.MD }}>
-          <Stat label="LTP" value={peLTP != null ? `\u20B9${peLTP}` : "—"} color={theme.RED} theme={theme} />
+          <Stat label="LTP" value={peLTP != null ? `₹${peLTP}` : "—"} color={theme.RED} theme={theme} />
           <Stat label="OI" value={peOI != null ? `${(peOI / 100000).toFixed(1)}L` : "—"} theme={theme} />
           <Stat label="Volume" value={peVol != null ? `${(peVol / 100000).toFixed(1)}L` : "—"} theme={theme} />
           <Stat label="Distance" value={atmDistance != null ? `${atmDistance > 0 ? "+" : ""}${-atmDistance}` : "—"} theme={theme} />
@@ -290,7 +290,7 @@ function FlowView({ data, theme }) {
                 OI {e.oiChange > 0 ? "+" : ""}
                 {(e.oiChange / 1000).toFixed(0)}K
               </span>
-              <span style={{ color: theme.TEXT_MUTED, minWidth: 50 }}>\u20B9{e.ltp}</span>
+              <span style={{ color: theme.TEXT_MUTED, minWidth: 50 }}>₹{e.ltp}</span>
               <span style={{ color, fontWeight: TEXT_WEIGHT.BOLD, fontSize: TEXT_SIZE.MICRO }}>
                 {e.classification}
               </span>
@@ -345,8 +345,8 @@ function OIHistoryView({ data, theme }) {
         </text>
       </svg>
       <div style={{ display: "flex", gap: SPACE.LG, justifyContent: "center", marginTop: SPACE.SM }}>
-        <span style={{ color: theme.GREEN, fontSize: TEXT_SIZE.MICRO, fontWeight: TEXT_WEIGHT.BOLD }}>\u2500 CE OI</span>
-        <span style={{ color: theme.RED, fontSize: TEXT_SIZE.MICRO, fontWeight: TEXT_WEIGHT.BOLD }}>\u2500 PE OI</span>
+        <span style={{ color: theme.GREEN, fontSize: TEXT_SIZE.MICRO, fontWeight: TEXT_WEIGHT.BOLD }}>─ CE OI</span>
+        <span style={{ color: theme.RED, fontSize: TEXT_SIZE.MICRO, fontWeight: TEXT_WEIGHT.BOLD }}>─ PE OI</span>
       </div>
     </Card>
   );
@@ -389,7 +389,7 @@ function TradesView({ data, theme }) {
         <Stat label="Losses" value={losses} color={theme.RED} theme={theme} />
         <Stat
           label="Net P&L"
-          value={`\u20B9${netPnl > 0 ? "+" : ""}${netPnl.toLocaleString("en-IN")}`}
+          value={`₹${netPnl > 0 ? "+" : ""}${netPnl.toLocaleString("en-IN")}`}
           color={netPnl >= 0 ? theme.GREEN : theme.RED}
           theme={theme}
         />
@@ -414,8 +414,8 @@ function TradesView({ data, theme }) {
             <span style={{ color: theme.TEXT, minWidth: 40, fontWeight: TEXT_WEIGHT.BOLD }}>
               {t.action}
             </span>
-            <span style={{ color: theme.TEXT_MUTED, minWidth: 60 }}>@\u20B9{t.entry}</span>
-            <span style={{ color: theme.TEXT_DIM, minWidth: 80 }}>\u2192 \u20B9{t.exit || "open"}</span>
+            <span style={{ color: theme.TEXT_MUTED, minWidth: 60 }}>@₹{t.entry}</span>
+            <span style={{ color: theme.TEXT_DIM, minWidth: 80 }}>→ ₹{t.exit || "open"}</span>
             <span
               style={{
                 color: (t.pnl || 0) >= 0 ? theme.GREEN : theme.RED,
@@ -423,7 +423,7 @@ function TradesView({ data, theme }) {
                 marginLeft: "auto",
               }}
             >
-              {t.pnl != null ? `\u20B9${t.pnl > 0 ? "+" : ""}${t.pnl.toLocaleString("en-IN")}` : "—"}
+              {t.pnl != null ? `₹${t.pnl > 0 ? "+" : ""}${t.pnl.toLocaleString("en-IN")}` : "—"}
             </span>
             <span style={{ color: theme.TEXT_DIM, fontSize: TEXT_SIZE.MICRO, fontFamily: FONT.UI }}>
               {t.reason}
@@ -522,7 +522,7 @@ export default function StrikeDetail({ strike, onClose, onPin, pinned, liveData 
               textTransform: "uppercase",
             }}
           >
-            {strike.index} \u203A Strike Detail
+            {strike.index} › Strike Detail
           </div>
           <div
             style={{
@@ -564,7 +564,7 @@ export default function StrikeDetail({ strike, onClose, onPin, pinned, liveData 
               fontWeight: TEXT_WEIGHT.BOLD,
             }}
           >
-            {pinned ? "\u2605 Pinned" : "\u2606 Pin"}
+            {pinned ? "★ Pinned" : "☆ Pin"}
           </button>
           {onClose && (
             <button
@@ -579,7 +579,7 @@ export default function StrikeDetail({ strike, onClose, onPin, pinned, liveData 
                 fontSize: 14,
               }}
             >
-              \u00D7
+              ×
             </button>
           )}
         </div>

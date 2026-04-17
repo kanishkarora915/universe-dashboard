@@ -89,7 +89,7 @@ function AlertRow({ alert, onPin, onDismiss, onClick, theme }) {
           }}
           title={alert.pinned ? "Unpin" : "Pin"}
         >
-          {alert.pinned ? "\u2605" : "\u2606"}
+          {alert.pinned ? "★" : "☆"}
         </button>
         <button
           onClick={(e) => {
@@ -106,7 +106,7 @@ function AlertRow({ alert, onPin, onDismiss, onClick, theme }) {
           }}
           title="Dismiss"
         >
-          \u00D7
+          ×
         </button>
       </div>
     </div>
@@ -218,7 +218,7 @@ export default function AlertDrawer({
                 fontSize: 14,
               }}
             >
-              \u00D7
+              ×
             </button>
           </div>
         </div>
@@ -270,7 +270,7 @@ export default function AlertDrawer({
                 background: theme.AMBER + "10",
               }}
             >
-              \u2605 Pinned ({pinned.length})
+              ★ Pinned ({pinned.length})
             </div>
             {pinned.map((a) => (
               <AlertRow

@@ -53,7 +53,7 @@ function HelpModal({ isOpen, onClose }) {
               fontSize: 14,
             }}
           >
-            {"\u00D7"}
+            {"×"}
           </button>
         </div>
 
@@ -282,7 +282,7 @@ function Field({
               textTransform: "uppercase",
             }}
           >
-            {"\u2713"} saved {savedAgo}
+            {"✓"} saved {savedAgo}
           </span>
         )}
       </div>
@@ -377,7 +377,7 @@ function Field({
               transition: TRANSITION.FAST,
             }}
           >
-            {"\u00D7"}
+            {"×"}
           </button>
         )}
       </div>
@@ -494,7 +494,7 @@ export default function Login() {
                 marginBottom: SPACE.MD,
               }}
             >
-              {"\u25B8"}
+              {"▸"}
             </div>
             <div
               style={{
@@ -675,8 +675,8 @@ export default function Login() {
             {loading
               ? "Redirecting to Kite..."
               : hasSavedBoth
-              ? "Connect with saved \u2192"
-              : "Connect \u2192"}
+              ? "Connect with saved →"
+              : "Connect →"}
           </button>
 
           {/* Footer */}
@@ -696,7 +696,7 @@ export default function Login() {
                 marginBottom: SPACE.XS,
               }}
             >
-              {"\uD83D\uDD12"} Secure OAuth via Kite Connect
+              {"🔒"} Secure OAuth via Kite Connect
             </div>
             <div
               style={{

@@ -87,7 +87,7 @@ function Row({ strike, active, onClick, onPin, pinned, theme }) {
             marginLeft: "auto",
           }}
         >
-          \u20B9{strike.ltp}
+          ₹{strike.ltp}
         </span>
       )}
       {strike.badge && (
@@ -121,7 +121,7 @@ function Row({ strike, active, onClick, onPin, pinned, theme }) {
             padding: 4,
           }}
         >
-          {pinned ? "\u2605" : "\u2606"}
+          {pinned ? "★" : "☆"}
         </button>
       )}
     </div>
@@ -247,7 +247,7 @@ export default function StrikeSearch({ isOpen, onClose, onSelect, suggestions = 
             borderBottom: `1px solid ${theme.BORDER}`,
           }}
         >
-          <span style={{ color: theme.TEXT_DIM, fontSize: 16 }}>\u2315</span>
+          <span style={{ color: theme.TEXT_DIM, fontSize: 16 }}>⌕</span>
           <input
             ref={inputRef}
             type="text"
@@ -397,15 +397,15 @@ export default function StrikeSearch({ isOpen, onClose, onSelect, suggestions = 
           }}
         >
           <span>
-            <kbd style={{ fontFamily: FONT.MONO, padding: "1px 4px", background: theme.BG, borderRadius: 2 }}>\u2191\u2193</kbd>{" "}
+            <kbd style={{ fontFamily: FONT.MONO, padding: "1px 4px", background: theme.BG, borderRadius: 2 }}>↑↓</kbd>{" "}
             navigate
           </span>
           <span>
-            <kbd style={{ fontFamily: FONT.MONO, padding: "1px 4px", background: theme.BG, borderRadius: 2 }}>\u21B5</kbd>{" "}
+            <kbd style={{ fontFamily: FONT.MONO, padding: "1px 4px", background: theme.BG, borderRadius: 2 }}>↵</kbd>{" "}
             open
           </span>
           <span>
-            <kbd style={{ fontFamily: FONT.MONO, padding: "1px 4px", background: theme.BG, borderRadius: 2 }}>\u2606</kbd>{" "}
+            <kbd style={{ fontFamily: FONT.MONO, padding: "1px 4px", background: theme.BG, borderRadius: 2 }}>☆</kbd>{" "}
             pin
           </span>
           <span style={{ marginLeft: "auto" }}>Universe Pro</span>

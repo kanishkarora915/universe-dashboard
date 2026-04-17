@@ -255,7 +255,7 @@ export default function OIChangeTab({ oiData }) {
               <div style={{ background: ORANGE + "08", borderRadius: 10, padding: "10px 12px", border: `1px solid ${ORANGE}33` }}>
                 <div style={{ color: ORANGE, fontWeight: 700, fontSize: 12, marginBottom: 6 }}>OI BEHAVIORS DETECTED</div>
                 {t.behaviors.map((b, i) => (
-                  <div key={i} style={{ color: "#ccc", fontSize: 11, marginBottom: 3 }}>{"\u26A0"} {b}</div>
+                  <div key={i} style={{ color: "#ccc", fontSize: 11, marginBottom: 3 }}>{"⚠"} {b}</div>
                 ))}
               </div>
             )}

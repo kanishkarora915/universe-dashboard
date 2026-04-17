@@ -165,7 +165,7 @@ export default function PnLTracker() {
     }
   }, [selectedMonth, tab]);
 
-  const fmt = (n) => `${"\u20B9"}${Math.round(n || 0).toLocaleString("en-IN")}`;
+  const fmt = (n) => `${"₹"}${Math.round(n || 0).toLocaleString("en-IN")}`;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -291,7 +291,7 @@ export default function PnLTracker() {
           animation: "blink 1s infinite",
         }}>
           <style>{`@keyframes blink { 0%,100% { opacity:1 } 50% { opacity:0.5 } }`}</style>
-          <div style={{ color: RED, fontWeight: 900, fontSize: 13, marginBottom: 6 }}>{"\u26A0"} POSITION ALERT — ACTION NEEDED</div>
+          <div style={{ color: RED, fontWeight: 900, fontSize: 13, marginBottom: 6 }}>{"⚠"} POSITION ALERT — ACTION NEEDED</div>
           {posAlerts.map((a, i) => (
             <div key={i} style={{ color: "#ccc", fontSize: 11, marginBottom: 4, padding: "4px 0", borderBottom: i < posAlerts.length - 1 ? `1px solid ${RED}33` : "none" }}>
               <span style={{ color: RED, fontWeight: 700 }}>{a.idx} {a.action} {a.strike}</span>
@@ -457,7 +457,7 @@ function TradeCard({ t, onExit }) {
   const profitPct = t.entry_price > 0 ? Math.round(((t.current_ltp || t.exit_price || t.entry_price) - t.entry_price) / t.entry_price * 100) : 0;
   const slLabel = t.breakeven_active ? (t.trailing_active ? `TRAIL SL` : "BREAKEVEN") : "SL";
   const slColor = t.breakeven_active ? (t.sl_price > t.entry_price ? GREEN : ACCENT) : RED;
-  const statusLbl = { ...statusLabel, TRAIL_EXIT: "TRAIL EXIT \u2713", BREAKEVEN_EXIT: "BE EXIT \u2248" };
+  const statusLbl = { ...statusLabel, TRAIL_EXIT: "TRAIL EXIT ✓", BREAKEVEN_EXIT: "BE EXIT \u2248" };
 
   return (
     <div style={{ background: "#111118", borderRadius: 10, padding: "12px 14px", border: `1px solid ${sc}33` }}>
@@ -475,7 +475,7 @@ function TradeCard({ t, onExit }) {
           ) : null}
         </div>
         <div style={{ textAlign: "right" }}>
-          <div style={{ color: pc, fontWeight: 900, fontSize: 18 }}>{"\u20B9"}{Math.round(t.pnl_rupees || 0).toLocaleString("en-IN")}</div>
+          <div style={{ color: pc, fontWeight: 900, fontSize: 18 }}>{"₹"}{Math.round(t.pnl_rupees || 0).toLocaleString("en-IN")}</div>
           <div style={{ color: pc, fontSize: 10 }}>{(t.pnl_pts || 0) > 0 ? "+" : ""}{(t.pnl_pts || 0).toFixed(1)} pts ({profitPct > 0 ? "+" : ""}{profitPct}%)</div>
         </div>
       </div>
@@ -483,12 +483,12 @@ function TradeCard({ t, onExit }) {
       {/* Row 2: Price Levels */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 5, marginBottom: 6 }}>
         {[
-          { l: "ENTRY", v: `\u20B9${t.entry_price}`, c: "#ccc" },
-          { l: t.status === "OPEN" ? "CURRENT" : "EXIT", v: `\u20B9${((t.status === "OPEN" ? t.current_ltp : t.exit_price) || 0).toFixed?.(1) || 0}`, c: t.status === "OPEN" ? ACCENT : sc },
-          { l: slLabel, v: `\u20B9${t.sl_price}`, c: slColor },
-          { l: "T1", v: `\u20B9${t.t1_price}`, c: GREEN },
-          { l: "T2", v: `\u20B9${t.t2_price}`, c: GREEN },
-          { l: "PEAK", v: `\u20B9${(t.peak_ltp || t.current_ltp || t.entry_price).toFixed?.(1) || 0}`, c: YELLOW },
+          { l: "ENTRY", v: `₹${t.entry_price}`, c: "#ccc" },
+          { l: t.status === "OPEN" ? "CURRENT" : "EXIT", v: `₹${((t.status === "OPEN" ? t.current_ltp : t.exit_price) || 0).toFixed?.(1) || 0}`, c: t.status === "OPEN" ? ACCENT : sc },
+          { l: slLabel, v: `₹${t.sl_price}`, c: slColor },
+          { l: "T1", v: `₹${t.t1_price}`, c: GREEN },
+          { l: "T2", v: `₹${t.t2_price}`, c: GREEN },
+          { l: "PEAK", v: `₹${(t.peak_ltp || t.current_ltp || t.entry_price).toFixed?.(1) || 0}`, c: YELLOW },
         ].map((s, i) => (
           <div key={i} style={{ textAlign: "center" }}>
             <div style={{ color: "#555", fontSize: 8, fontWeight: 700 }}>{s.l}</div>
@@ -501,10 +501,10 @@ function TradeCard({ t, onExit }) {
       {t.status === "OPEN" && t.entry_price > 0 && (
         <div style={{ marginBottom: 6 }}>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, color: "#555", marginBottom: 2 }}>
-            <span>SL {"\u20B9"}{t.sl_price}</span>
-            <span>Entry {"\u20B9"}{t.entry_price}</span>
-            <span>T1 {"\u20B9"}{t.t1_price}</span>
-            <span>T2 {"\u20B9"}{t.t2_price}</span>
+            <span>SL {"₹"}{t.sl_price}</span>
+            <span>Entry {"₹"}{t.entry_price}</span>
+            <span>T1 {"₹"}{t.t1_price}</span>
+            <span>T2 {"₹"}{t.t2_price}</span>
           </div>
           <div style={{ display: "flex", height: 6, borderRadius: 3, overflow: "hidden", background: "#1a1a25", position: "relative" }}>
             {(() => {
@@ -526,7 +526,7 @@ function TradeCard({ t, onExit }) {
       {/* Row 4: Info */}
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#666" }}>
         <span>{t.lots}L × {t.lot_size} = {t.qty} qty</span>
-        <span>{et}{xt ? ` \u2192 ${xt}` : ""}</span>
+        <span>{et}{xt ? ` → ${xt}` : ""}</span>
         <span style={{ color: t.probability >= 70 ? GREEN : YELLOW }}>Prob: {t.probability}%</span>
       </div>
 
@@ -534,8 +534,8 @@ function TradeCard({ t, onExit }) {
       {t.status === "OPEN" && t.breakeven_active ? (
         <div style={{ marginTop: 6, padding: "4px 10px", background: ACCENT + "11", borderRadius: 6, color: ACCENT, fontSize: 10 }}>
           {t.trailing_active
-            ? `Trailing SL active at \u20B9${t.sl_price} (locking ${t.sl_price > t.entry_price ? Math.round((t.sl_price - t.entry_price) * t.qty) : 0} profit). Peak: \u20B9${(t.peak_ltp || 0).toFixed?.(1)}`
-            : `Breakeven active \u2014 SL moved to entry \u20B9${t.entry_price}. Zero loss guaranteed.`
+            ? `Trailing SL active at ₹${t.sl_price} (locking ${t.sl_price > t.entry_price ? Math.round((t.sl_price - t.entry_price) * t.qty) : 0} profit). Peak: ₹${(t.peak_ltp || 0).toFixed?.(1)}`
+            : `Breakeven active \u2014 SL moved to entry ₹${t.entry_price}. Zero loss guaranteed.`
           }
         </div>
       ) : null}
@@ -548,14 +548,14 @@ function TradeCard({ t, onExit }) {
       {/* Alert */}
       {t.alerts && t.status === "OPEN" && (
         <div style={{ marginTop: 6, padding: "6px 10px", background: RED + "15", borderRadius: 6, color: RED, fontSize: 11, animation: "blink 1s infinite" }}>
-          {"\u26A0"} {t.alerts}
+          {"⚠"} {t.alerts}
         </div>
       )}
 
       {/* Stop Hunt */}
       {t.status === "STOP_HUNTED" && t.reversal_price > 0 && (
         <div style={{ marginTop: 6, padding: "6px 10px", background: PURPLE + "11", borderRadius: 6, color: PURPLE, fontSize: 11 }}>
-          Reversal: price recovered to {"\u20B9"}{(t.reversal_price || 0).toFixed?.(1) || t.reversal_price} after institutional SL flush
+          Reversal: price recovered to {"₹"}{(t.reversal_price || 0).toFixed?.(1) || t.reversal_price} after institutional SL flush
         </div>
       )}
 

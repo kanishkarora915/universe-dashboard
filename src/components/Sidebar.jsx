@@ -3,13 +3,13 @@ import { useTheme } from "../ThemeContext";
 import { FONT, TEXT_SIZE, TEXT_WEIGHT, SPACE, RADIUS, TRANSITION, Z } from "../theme";
 
 const ICONS = {
-  dashboard: "\u25C8", // ◈
-  oi: "\u27D0",       // ⟐
-  pnl: "\u25D0",      // ◐
-  reports: "\u2630",  // ☰
-  autopsy: "\u25CE",  // ◎
-  times: "\u23F1",    // ⏱
-  settings: "\u2699", // ⚙
+  dashboard: "◈", // ◈
+  oi: "⟐",       // ⟐
+  pnl: "◐",      // ◐
+  reports: "☰",  // ☰
+  autopsy: "◎",  // ◎
+  times: "⏱",    // ⏱
+  settings: "⚙", // ⚙
 };
 
 const TABS = [

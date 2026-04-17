@@ -96,12 +96,12 @@ export function useKiteCredentials() {
 
   // Mask helpers for preview
   const maskKey = (k) => {
-    if (!k || k.length < 6) return "\u2022".repeat(6);
-    return `${k.slice(0, 3)}${"\u2022".repeat(Math.max(3, k.length - 6))}${k.slice(-3)}`;
+    if (!k || k.length < 6) return "•".repeat(6);
+    return `${k.slice(0, 3)}${"•".repeat(Math.max(3, k.length - 6))}${k.slice(-3)}`;
   };
   const maskSecret = (s) => {
     if (!s) return "";
-    return "\u2022".repeat(Math.min(s.length, 16));
+    return "•".repeat(Math.min(s.length, 16));
   };
 
   return {

@@ -5,7 +5,7 @@ import { FONT, TEXT_SIZE, TEXT_WEIGHT, SPACE, RADIUS, TRANSITION, Z } from "../t
 function MiniTicker({ label, price, change, pct, theme }) {
   const isUp = change >= 0;
   const color = change === 0 ? theme.TEXT_MUTED : isUp ? theme.GREEN : theme.RED;
-  const arrow = isUp ? "\u2191" : "\u2193";
+  const arrow = isUp ? "↑" : "↓";
   return (
     <div style={{ display: "flex", alignItems: "baseline", gap: SPACE.XS }}>
       <span
@@ -207,7 +207,7 @@ export default function TopBar({
               fontFamily: FONT.MONO,
             }}
           >
-            \u25B8
+            ▸
           </span>
           <div>
             <div
@@ -333,7 +333,7 @@ export default function TopBar({
             e.currentTarget.style.color = theme.TEXT_MUTED;
           }}
         >
-          <span style={{ fontSize: 14 }}>\u2315</span>
+          <span style={{ fontSize: 14 }}>⌕</span>
           <span style={{ flex: 1 }}>Search strike, action...</span>
           <span
             style={{
@@ -345,7 +345,7 @@ export default function TopBar({
               color: theme.TEXT_DIM,
             }}
           >
-            \u2318K
+            ⌘K
           </span>
         </button>
 
@@ -370,14 +370,14 @@ export default function TopBar({
           />
 
           <IconButton
-            icon={isDark ? "\u2600" : "\u263D"}
+            icon={isDark ? "☀" : "☾"}
             onClick={onThemeToggle}
             title={isDark ? "Switch to light" : "Switch to dark"}
             theme={theme}
           />
 
           <IconButton
-            icon="\u25CB"
+            icon="○"
             onClick={onAlertsClick}
             title="Alerts"
             badge={alertCount}
@@ -385,7 +385,7 @@ export default function TopBar({
           />
 
           <IconButton
-            icon="\u2699"
+            icon="⚙"
             onClick={onSettingsClick}
             title="Settings"
             theme={theme}

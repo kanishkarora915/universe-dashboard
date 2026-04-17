@@ -2,10 +2,10 @@ import { useTheme } from "../ThemeContext";
 import { FONT, TEXT_SIZE, TEXT_WEIGHT, SPACE, RADIUS, TRANSITION, Z } from "../theme";
 
 const ICONS = {
-  CRITICAL: "\u26A0",
-  WARNING: "\u26A0",
-  INFO: "\u2139",
-  AMBIENT: "\u2218",
+  CRITICAL: "⚠",
+  WARNING: "⚠",
+  INFO: "ℹ",
+  AMBIENT: "∘",
 };
 
 const SEVERITY_COLOR_KEYS = {
@@ -42,7 +42,7 @@ function Toast({ alert, onDismiss, onClick, theme }) {
       }}
     >
       <div style={{ display: "flex", alignItems: "flex-start", gap: SPACE.SM }}>
-        <span style={{ color, fontSize: 14 }}>{ICONS[alert.severity] || "\u2022"}</span>
+        <span style={{ color, fontSize: 14 }}>{ICONS[alert.severity] || "•"}</span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div
             style={{
@@ -87,7 +87,7 @@ function Toast({ alert, onDismiss, onClick, theme }) {
             lineHeight: 1,
           }}
         >
-          \u00D7
+          ×
         </button>
       </div>
     </div>

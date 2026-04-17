@@ -134,7 +134,7 @@ export function VerdictHero({ index = "NIFTY", verdict, reasons = [] }) {
               textTransform: "uppercase",
             }}
           >
-            {index} \u00B7 AI Verdict
+            {index} · AI Verdict
           </div>
           <div
             style={{
@@ -177,7 +177,7 @@ export function VerdictHero({ index = "NIFTY", verdict, reasons = [] }) {
                 position: "relative",
               }}
             >
-              <span style={{ position: "absolute", left: 0, color: accentColor }}>\u203A</span>
+              <span style={{ position: "absolute", left: 0, color: accentColor }}>›</span>
               {r}
             </div>
           ))}

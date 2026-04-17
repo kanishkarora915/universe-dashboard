@@ -96,7 +96,7 @@ export default function ReplayMode({ index = "NIFTY", isOpen, onClose }) {
                 marginTop: 2,
               }}
             >
-              {index} \u00B7 {date}
+              {index} · {date}
             </div>
           </div>
           <div style={{ display: "flex", gap: SPACE.SM, alignItems: "center" }}>
@@ -127,7 +127,7 @@ export default function ReplayMode({ index = "NIFTY", isOpen, onClose }) {
                   cursor: "pointer",
                 }}
               >
-                \u00D7
+                ×
               </button>
             )}
           </div>
@@ -194,7 +194,7 @@ export default function ReplayMode({ index = "NIFTY", isOpen, onClose }) {
                   fontSize: 14,
                 }}
               >
-                \u23EE
+                ⏮
               </button>
               <button
                 onClick={() => setCursor((c) => Math.max(0, c - 1))}
@@ -208,7 +208,7 @@ export default function ReplayMode({ index = "NIFTY", isOpen, onClose }) {
                   fontSize: 14,
                 }}
               >
-                \u23EA
+                ⏪
               </button>
               <button
                 onClick={() => setPlaying((p) => !p)}
@@ -224,7 +224,7 @@ export default function ReplayMode({ index = "NIFTY", isOpen, onClose }) {
                   minWidth: 80,
                 }}
               >
-                {playing ? "\u23F8 Pause" : "\u25B6 Play"}
+                {playing ? "⏸ Pause" : "▶ Play"}
               </button>
               <button
                 onClick={() => setCursor((c) => Math.min(snapshots.length - 1, c + 1))}
@@ -238,7 +238,7 @@ export default function ReplayMode({ index = "NIFTY", isOpen, onClose }) {
                   fontSize: 14,
                 }}
               >
-                \u23E9
+                ⏩
               </button>
               <div style={{ marginLeft: SPACE.LG, display: "flex", gap: 4 }}>
                 {[1, 4, 16].map((s) => (
@@ -308,7 +308,7 @@ export default function ReplayMode({ index = "NIFTY", isOpen, onClose }) {
                 fontStyle: "italic",
               }}
             >
-              \u201C{current.verdict}\u201D
+              "{current.verdict}"
             </div>
           )}
         </div>

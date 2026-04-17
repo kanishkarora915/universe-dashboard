@@ -227,7 +227,7 @@ export default function UniverseShell({
                       lineHeight: 1,
                     }}
                   >
-                    \u00D7
+                    ×
                   </button>
                 </div>
               );
