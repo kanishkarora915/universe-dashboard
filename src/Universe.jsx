@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useMarketData } from "./useMarketData";
 import OIChangeTab from "./OIChangeTab";
 import PnLTracker from "./PnLTracker";
@@ -8,6 +8,18 @@ import TradeAutopsyTab from "./TradeAutopsyTab";
 import LiveTicker from "./components/LiveTicker";
 import Notifications from "./components/Notifications";
 import SignalDashboard from "./components/SignalDashboard";
+import TopBar from "./components/TopBar";
+import StrikeSearch from "./components/StrikeSearch";
+import StrikeDetail from "./components/StrikeDetail";
+import AlertToastStack from "./components/AlertToast";
+import AlertDrawer from "./components/AlertDrawer";
+import HotkeyHelp from "./components/HotkeyHelp";
+import { VerdictHero } from "./components/DashboardHero";
+import { useTheme } from "./ThemeContext";
+import { useHotkeys } from "./hooks/useHotkeys";
+import { useAlerts } from "./hooks/useAlerts";
+import { useWatchlist } from "./hooks/useWatchlist";
+import { FONT, RADIUS, SPACE, TEXT_SIZE, TEXT_WEIGHT } from "./theme";
 import { exportSignalsToPDF, exportFullReport } from "./pdfExport";
 import { fetchTrapScan, fetchAIAnalysis, fetchTrapHistory, fetchTrapToday, fetchPriceAction, fetchTrapVerdict } from "./api";
 
@@ -2636,25 +2648,128 @@ function PromptTab() {
 // \u2500\u2500 MAIN APP \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 export default function Universe({ onLogout }) {
+  const { theme, toggle: toggleTheme } = useTheme();
   const [activeTab, setActiveTab] = useState("dashboard");
-  const [time, setTime] = useState(new Date());
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [strikeTabs, setStrikeTabs] = useState([]);
   const { live, unusual, intraday, nextday, weekly, signals, oiSummary, sellerData, tradeAnalysis, hiddenShift, connected } = useMarketData();
+  const watchlist = useWatchlist();
+  const { alerts, counts, toasts, flashingTab, dismissToast, markAllRead, dismissAlert, pinAlert } = useAlerts({ activeTab });
 
-  useEffect(() => {
-    const t = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(t);
-  }, []);
+  // Extract ticker data for TopBar
+  const niftyTick = useMemo(() => {
+    const n = live?.nifty || {};
+    return { ltp: n.ltp || n.price, change: n.change, changePct: n.changePct || n.change_pct };
+  }, [live]);
+  const bnTick = useMemo(() => {
+    const b = live?.banknifty || {};
+    return { ltp: b.ltp || b.price, change: b.change, changePct: b.changePct || b.change_pct };
+  }, [live]);
+  const vixVal = live?.vix || live?.indiaVix;
+  const pcrVal = oiSummary?.pcr || oiSummary?.nifty?.pcr;
 
-  const istTime = time.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: true });
-  const isMarketOpen = (() => {
-    const ist = new Date(time.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
-    const mins = ist.getHours() * 60 + ist.getMinutes();
-    return mins >= 9 * 60 + 15 && mins <= 15 * 60 + 30;
-  })();
+  const liveStatus = !connected ? "disconnected" : live?.stale ? "stale" : "live";
+
+  // Strike suggestions from chain data
+  const strikeSuggestions = useMemo(() => {
+    const out = [];
+    ["nifty", "banknifty"].forEach((k) => {
+      const strikes = oiSummary?.[k]?.strikes || [];
+      const idx = k === "nifty" ? "NIFTY" : "BANKNIFTY";
+      strikes.forEach((s) => {
+        out.push({ index: idx, strike: s.strike, type: "CE", ltp: s.ceLTP || s.ce_ltp, isATM: s.isATM });
+        out.push({ index: idx, strike: s.strike, type: "PE", ltp: s.peLTP || s.pe_ltp, isATM: s.isATM });
+      });
+    });
+    return out;
+  }, [oiSummary]);
+
+  const quickJumps = useMemo(() => {
+    const qj = [];
+    const nAtm = oiSummary?.nifty?.atm || live?.nifty?.atm;
+    const bAtm = oiSummary?.banknifty?.atm || live?.banknifty?.atm;
+    if (nAtm) qj.push({ index: "NIFTY", strike: nAtm, label: "ATM Nifty", badge: "ATM" });
+    if (bAtm) qj.push({ index: "BANKNIFTY", strike: bAtm, label: "ATM BN", badge: "ATM" });
+    const nMp = oiSummary?.nifty?.maxPain;
+    const bMp = oiSummary?.banknifty?.maxPain;
+    if (nMp) qj.push({ index: "NIFTY", strike: nMp, label: "Max Pain Nifty", badge: "MaxPain" });
+    if (bMp) qj.push({ index: "BANKNIFTY", strike: bMp, label: "Max Pain BN", badge: "MaxPain" });
+    return qj;
+  }, [oiSummary, live]);
+
+  const openStrike = useCallback((strike) => {
+    const key = `${strike.index}-${strike.strike}`;
+    if (!strikeTabs.find((s) => `${s.index}-${s.strike}` === key)) {
+      setStrikeTabs((tabs) => [...tabs.slice(-4), strike]);
+    }
+    setActiveTab(`strike:${key}`);
+  }, [strikeTabs]);
+
+  const closeStrike = useCallback((strike) => {
+    const key = `${strike.index}-${strike.strike}`;
+    setStrikeTabs((tabs) => tabs.filter((s) => `${s.index}-${s.strike}` !== key));
+    if (activeTab === `strike:${key}`) setActiveTab("dashboard");
+  }, [activeTab]);
+
+  // Hotkeys
+  useHotkeys({
+    "cmd+k": () => setSearchOpen(true),
+    "ctrl+k": () => setSearchOpen(true),
+    "escape": () => {
+      if (searchOpen) setSearchOpen(false);
+      else if (alertsOpen) setAlertsOpen(false);
+      else if (helpOpen) setHelpOpen(false);
+    },
+    "?": () => setHelpOpen(true),
+    "cmd+shift+l": () => toggleTheme(),
+    "ctrl+shift+l": () => toggleTheme(),
+    "cmd+shift+a": () => setAlertsOpen((o) => !o),
+    "ctrl+shift+a": () => setAlertsOpen((o) => !o),
+    "1": () => setActiveTab("dashboard"),
+    "2": () => setActiveTab("oichange"),
+    "3": () => setActiveTab("pnl"),
+    "4": () => setActiveTab("reports"),
+    "5": () => setActiveTab("autopsy"),
+    "6": () => setActiveTab("ttimes"),
+  });
+
+  const activeStrikeTab = activeTab?.startsWith("strike:")
+    ? strikeTabs.find((s) => `${s.index}-${s.strike}` === activeTab.slice(7))
+    : null;
 
   const renderTab = () => {
+    if (activeStrikeTab) {
+      return (
+        <StrikeDetail
+          strike={activeStrikeTab}
+          onClose={() => closeStrike(activeStrikeTab)}
+          onPin={watchlist.togglePin}
+          pinned={watchlist.isPinned(activeStrikeTab)}
+          liveData={live}
+        />
+      );
+    }
     switch (activeTab) {
-      case "dashboard": return <SignalDashboard live={live} signals={signals} oiSummary={oiSummary} />;
+      case "dashboard":
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: SPACE.MD }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: SPACE.MD }}>
+              <VerdictHero
+                index="NIFTY"
+                verdict={signals?.nifty || signals?.[0]}
+                reasons={signals?.nifty?.reasons || []}
+              />
+              <VerdictHero
+                index="BANKNIFTY"
+                verdict={signals?.banknifty || signals?.[1]}
+                reasons={signals?.banknifty?.reasons || []}
+              />
+            </div>
+            <SignalDashboard live={live} signals={signals} oiSummary={oiSummary} />
+          </div>
+        );
       case "live":    return <LiveDataTab liveData={live} />;
       case "signals": return <SignalsTab realSignals={signals} />;
       case "intraday":return <IntradayTab realData={intraday} />;
@@ -2678,68 +2793,33 @@ export default function Universe({ onLogout }) {
   };
 
   return (
-    <div style={{ background: BG, minHeight: "100vh", fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif", color: "#fff" }}>
+    <div style={{
+      background: theme.BG,
+      minHeight: "100vh",
+      fontFamily: FONT.UI,
+      color: theme.TEXT,
+    }}>
+      {/* NEW TOP BAR */}
+      <TopBar
+        nifty={niftyTick}
+        banknifty={bnTick}
+        vix={vixVal}
+        pcr={pcrVal}
+        liveStatus={liveStatus}
+        onSearchClick={() => setSearchOpen(true)}
+        onAlertsClick={() => setAlertsOpen(true)}
+        alertCount={counts?.total || 0}
+        onThemeToggle={toggleTheme}
+        onSettingsClick={() => {}}
+        onHelpClick={() => setHelpOpen(true)}
+      />
 
-      {/* HEADER */}
-      <div style={{
-        background: CARD, borderBottom: `1px solid ${BORDER}`,
-        padding: "14px 24px", display: "flex", justifyContent: "space-between", alignItems: "center",
-        position: "sticky", top: 0, zIndex: 100,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{
-            width: 8, height: 8, borderRadius: "50%",
-            background: isMarketOpen ? GREEN : RED,
-            boxShadow: `0 0 8px ${isMarketOpen ? GREEN : RED}`,
-          }} />
-          <span style={{ color: "#fff", fontWeight: 900, fontSize: 20, letterSpacing: 3 }}>UNIVERSE</span>
-          <span style={{ color: "#2a2a3a", fontSize: 11 }}>NSE Intelligence</span>
-          {connected && <span style={{ color: GREEN, fontSize: 9, fontWeight: 700, marginLeft: 8, padding: "2px 8px", background: GREEN + "15", borderRadius: 10 }}>LIVE</span>}
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ color: ACCENT, fontWeight: 700, fontSize: 14 }}>{istTime}</div>
-            <div style={{ color: isMarketOpen ? GREEN : "#444", fontSize: 10, fontWeight: 700 }}>
-              {isMarketOpen ? "\u25CF MARKET OPEN" : "\u25CF MARKET CLOSED"}
-            </div>
-          </div>
-          <button onClick={async () => {
-              const [pnlStats, pnlTrades, hiddenShiftD, trapVerdictD, priceActionD, oiTimelineD, fiiDiiD, globalCuesD] = await Promise.all([
-                fetch("/api/trades/stats").then(r => r.ok ? r.json() : null).catch(() => null),
-                fetch("/api/trades/closed").then(r => r.ok ? r.json() : []).catch(() => []),
-                fetch("/api/hidden-shift").then(r => r.ok ? r.json() : null).catch(() => null),
-                fetch("/api/trap/verdict").then(r => r.ok ? r.json() : null).catch(() => null),
-                fetch("/api/price-action").then(r => r.ok ? r.json() : null).catch(() => null),
-                fetch("/api/oi-timeline").then(r => r.ok ? r.json() : null).catch(() => null),
-                fetch("/api/fii-dii").then(r => r.ok ? r.json() : null).catch(() => null),
-                fetch("/api/global-cues").then(r => r.ok ? r.json() : null).catch(() => null),
-              ]);
-              exportFullReport({ live, unusual, signals, oiSummary, sellerData, tradeAnalysis, intraday, nextday, weekly, pnlStats, pnlTrades, hiddenShift: hiddenShiftD, trapVerdict: trapVerdictD, priceAction: priceActionD, oiTimeline: oiTimelineD, fiiDii: fiiDiiD, globalCues: globalCuesD });
-          }} style={{
-              background: ACCENT + "18", color: ACCENT, border: `1px solid ${ACCENT}33`,
-              borderRadius: 8, padding: "6px 14px", cursor: "pointer",
-              fontSize: 11, fontWeight: 700, whiteSpace: "nowrap",
-            }}>
-              Export PDF
-          </button>
-          {onLogout && (
-            <button onClick={onLogout} style={{
-              background: RED + "18", color: RED, border: `1px solid ${RED}33`,
-              borderRadius: 8, padding: "6px 14px", cursor: "pointer",
-              fontSize: 11, fontWeight: 700, whiteSpace: "nowrap",
-            }}>
-              Logout
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* LIVE TICKER */}
+      {/* LIVE TICKER (retained under TopBar for quick glance) */}
       <LiveTicker live={live} />
 
-      {/* GROUPED TABS */}
+      {/* GROUPED TABS (retained — 19 tabs) */}
       <div style={{
-        background: CARD, borderBottom: `1px solid ${BORDER}`,
+        background: theme.SURFACE, borderBottom: `1px solid ${theme.BORDER}`,
         padding: "0 8px", display: "flex", gap: 0, overflowX: "auto",
         alignItems: "center",
       }}>
@@ -2748,10 +2828,10 @@ export default function Universe({ onLogout }) {
           return (
             <div key={group.group} style={{
               display: "flex", alignItems: "center",
-              borderRight: `1px solid ${BORDER}`,
+              borderRight: `1px solid ${theme.BORDER}`,
             }}>
               <span style={{
-                color: isGroupActive ? ACCENT : "#333",
+                color: isGroupActive ? theme.ACCENT : theme.TEXT_DIM,
                 fontSize: 9, fontWeight: 700, textTransform: "uppercase",
                 letterSpacing: 1, padding: "0 6px 0 10px",
                 userSelect: "none",
@@ -2760,13 +2840,13 @@ export default function Universe({ onLogout }) {
               </span>
               {group.tabs.map(tab => (
                 <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
-                  background: activeTab === tab.id ? ACCENT + "15" : "none",
+                  background: activeTab === tab.id ? theme.ACCENT_DIM : "none",
                   border: "none", cursor: "pointer",
                   padding: "10px 10px",
-                  color: activeTab === tab.id ? ACCENT : "#555",
+                  color: activeTab === tab.id ? theme.ACCENT : theme.TEXT_MUTED,
                   fontWeight: activeTab === tab.id ? 700 : 400,
                   fontSize: 11,
-                  borderBottom: activeTab === tab.id ? `2px solid ${ACCENT}` : "2px solid transparent",
+                  borderBottom: activeTab === tab.id ? `2px solid ${theme.ACCENT}` : "2px solid transparent",
                   whiteSpace: "nowrap",
                   transition: "all 0.15s",
                 }}>
@@ -2776,24 +2856,116 @@ export default function Universe({ onLogout }) {
             </div>
           );
         })}
+        <div style={{ flex: 1 }} />
+        <button onClick={async () => {
+            const [pnlStats, pnlTrades, hiddenShiftD, trapVerdictD, priceActionD, oiTimelineD, fiiDiiD, globalCuesD] = await Promise.all([
+              fetch("/api/trades/stats").then(r => r.ok ? r.json() : null).catch(() => null),
+              fetch("/api/trades/closed").then(r => r.ok ? r.json() : []).catch(() => []),
+              fetch("/api/hidden-shift").then(r => r.ok ? r.json() : null).catch(() => null),
+              fetch("/api/trap/verdict").then(r => r.ok ? r.json() : null).catch(() => null),
+              fetch("/api/price-action").then(r => r.ok ? r.json() : null).catch(() => null),
+              fetch("/api/oi-timeline").then(r => r.ok ? r.json() : null).catch(() => null),
+              fetch("/api/fii-dii").then(r => r.ok ? r.json() : null).catch(() => null),
+              fetch("/api/global-cues").then(r => r.ok ? r.json() : null).catch(() => null),
+            ]);
+            exportFullReport({ live, unusual, signals, oiSummary, sellerData, tradeAnalysis, intraday, nextday, weekly, pnlStats, pnlTrades, hiddenShift: hiddenShiftD, trapVerdict: trapVerdictD, priceAction: priceActionD, oiTimeline: oiTimelineD, fiiDii: fiiDiiD, globalCues: globalCuesD });
+          }} style={{
+            background: theme.ACCENT_DIM, color: theme.ACCENT, border: `1px solid ${theme.ACCENT}33`,
+            borderRadius: RADIUS.SM, padding: "4px 10px", cursor: "pointer",
+            fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", marginRight: 4,
+          }}>
+          Export PDF
+        </button>
+        {onLogout && (
+          <button onClick={onLogout} style={{
+            background: theme.RED_DIM, color: theme.RED, border: `1px solid ${theme.RED}33`,
+            borderRadius: RADIUS.SM, padding: "4px 10px", cursor: "pointer",
+            fontSize: 10, fontWeight: 700, whiteSpace: "nowrap",
+          }}>
+            Logout
+          </button>
+        )}
       </div>
 
+      {/* Open strike tabs strip */}
+      {strikeTabs.length > 0 && (
+        <div style={{
+          background: theme.SURFACE, borderBottom: `1px solid ${theme.BORDER}`,
+          padding: `4px ${SPACE.SM}px`, display: "flex", gap: 0, overflowX: "auto",
+        }}>
+          {strikeTabs.map((s) => {
+            const key = `${s.index}-${s.strike}`;
+            const isActive = activeTab === `strike:${key}`;
+            return (
+              <div key={key} style={{
+                display: "flex", alignItems: "center", gap: SPACE.XS,
+                padding: `4px ${SPACE.SM}px`,
+                background: isActive ? theme.SURFACE_ACTIVE : "transparent",
+                borderBottom: isActive ? `2px solid ${theme.ACCENT}` : "2px solid transparent",
+                cursor: "pointer",
+                fontFamily: FONT.MONO, fontSize: TEXT_SIZE.MICRO,
+                color: isActive ? theme.TEXT : theme.TEXT_MUTED,
+                fontWeight: TEXT_WEIGHT.BOLD,
+              }} onClick={() => setActiveTab(`strike:${key}`)}>
+                <span>{s.index} {s.strike}{s.type ? ` ${s.type}` : ""}</span>
+                <button onClick={(e) => { e.stopPropagation(); closeStrike(s); }} style={{
+                  background: "transparent", border: "none",
+                  color: theme.TEXT_DIM, cursor: "pointer",
+                  padding: 0, fontSize: 12, lineHeight: 1,
+                }}>{"\u00D7"}</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* CONTENT */}
-      <div style={{ padding: "16px 12px", maxWidth: 960, margin: "0 auto" }}>
+      <div style={{ padding: `${SPACE.LG}px ${SPACE.MD}px`, maxWidth: 1200, margin: "0 auto" }}>
         {renderTab()}
       </div>
 
       {/* GLOBAL RESPONSIVE STYLES */}
       <style>{`
         @media (max-width: 600px) {
-          [style*="maxWidth: 960"] { padding: 8px 6px !important; }
+          [style*="maxWidth: 1200"] { padding: 8px 6px !important; }
           button { font-size: 10px !important; padding: 8px 8px !important; }
           table { font-size: 10px !important; }
           td, th { padding: 4px 3px !important; }
         }
       `}</style>
 
-      {/* NOTIFICATIONS — always rendered */}
+      {/* GLOBAL OVERLAYS */}
+      <StrikeSearch
+        isOpen={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onSelect={openStrike}
+        suggestions={strikeSuggestions}
+        quickJumps={quickJumps}
+        watchlist={watchlist}
+      />
+      <AlertDrawer
+        isOpen={alertsOpen}
+        onClose={() => setAlertsOpen(false)}
+        alerts={alerts}
+        onPin={pinAlert}
+        onDismiss={dismissAlert}
+        onMarkAllRead={markAllRead}
+        onAlertClick={(a) => {
+          if (a.tab) setActiveTab(a.tab);
+          setAlertsOpen(false);
+        }}
+      />
+      <HotkeyHelp isOpen={helpOpen} onClose={() => setHelpOpen(false)} />
+      <AlertToastStack
+        toasts={toasts}
+        onDismiss={dismissToast}
+        onClickAlert={(a) => {
+          if (a.tab) setActiveTab(a.tab);
+          dismissToast(a.toastId);
+        }}
+      />
+
+      {/* NOTIFICATIONS — legacy, still rendered */}
       <Notifications />
     </div>
   );
