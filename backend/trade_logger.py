@@ -384,6 +384,49 @@ class TradeManager:
 
     def check_and_update(self, chains, prices, spot_tokens, token_to_info):
         """Smart trade management: breakeven, trailing SL, alerts, early exit."""
+        now = ist_now()
+
+        # ── EOD AUTO-CLOSE: Close ALL open trades at 3:25 PM ──
+        if now.hour == 15 and now.minute >= 25:
+            self._close_all_open("EOD_CLOSE", "Market closing — auto-closed at 3:25 PM. Options are intraday only.")
+            return
+
+        # ── STALE TRADE CLEANUP: Close trades from previous days ──
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        open_trades = conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
+        conn.close()
+
+        today = now.strftime("%Y-%m-%d")
+        for trade in open_trades:
+            t = dict(trade)
+            entry_date = t["entry_time"][:10] if t.get("entry_time") else ""
+            if entry_date and entry_date != today:
+                # Trade from previous day — should not be open
+                conn2 = _conn()
+                current_ltp = 0
+                chain = chains.get(t["idx"], {})
+                strike_data = chain.get(t["strike"], {})
+                opt = "ce" if "CE" in t["action"] else "pe"
+                current_ltp = strike_data.get(f"{opt}_ltp", 0)
+
+                exit_price = current_ltp if current_ltp > 0 else t["entry_price"]
+                pnl_pts = round(exit_price - t["entry_price"], 2)
+                pnl_rupees = round(pnl_pts * t["qty"], 2) + (t.get("pnl_rupees", 0) or 0)
+
+                conn2.execute("""
+                    UPDATE trades SET status='STALE_CLOSE', exit_price=?, exit_time=?,
+                        pnl_pts=?, pnl_rupees=?, exit_reason=?
+                    WHERE id=? AND status='OPEN'
+                """, (exit_price, now.isoformat(), pnl_pts, pnl_rupees,
+                      f"Stale trade from {entry_date} — auto-closed. Options must close same day.",
+                      t["id"]))
+                conn2.commit()
+                conn2.close()
+                print(f"[TRADE] STALE CLOSE: {t['action']} {t['idx']} {t['strike']} from {entry_date} — PnL: ₹{pnl_rupees:+,.0f}")
+                continue
+
+        # Reload after cleanup
         conn = _conn()
         conn.row_factory = sqlite3.Row
         open_trades = conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
@@ -392,7 +435,7 @@ class TradeManager:
         for trade in open_trades:
             t = dict(trade)
 
-            # Idempotent: re-check status before processing (prevents double-close)
+            # Idempotent: re-check status before processing
             conn_check = _conn()
             current_status = conn_check.execute("SELECT status FROM trades WHERE id=?", (t["id"],)).fetchone()
             conn_check.close()
@@ -612,6 +655,35 @@ class TradeManager:
                       new_sl, breakeven_active, trailing_active, trail_level, alerts_str, t["id"]))
             conn.commit()
             conn.close()
+
+    def _close_all_open(self, status, reason):
+        """Force-close all open trades (EOD or emergency)."""
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        open_trades = conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
+        now = ist_now()
+        for t in open_trades:
+            t = dict(t)
+            # Use current pnl (already tracked) or calculate from entry
+            pnl = t.get("pnl_rupees", 0) or 0
+            exit_price = t.get("current_ltp", t["entry_price"])
+            conn.execute("""
+                UPDATE trades SET status=?, exit_price=?, exit_time=?, exit_reason=?,
+                    pnl_pts=?, pnl_rupees=?
+                WHERE id=? AND status='OPEN'
+            """, (status, exit_price, now.isoformat(), reason,
+                  round(exit_price - t["entry_price"], 2), pnl, t["id"]))
+            print(f"[TRADE] {status}: {t['action']} {t['idx']} {t['strike']} — PnL: ₹{pnl:+,.0f}")
+
+            self._trade_alerts.append({
+                "type": "TRADE_EXIT",
+                "time": now.strftime("%I:%M:%S %p"),
+                "message": f"{'⏰' if status == 'EOD_CLOSE' else '🔒'} {status}: {t['action']} {t['idx']} {t['strike']}",
+                "details": f"PnL: ₹{pnl:+,.0f} | {reason}",
+            })
+            self._trade_alerts = self._trade_alerts[-50:]
+        conn.commit()
+        conn.close()
 
     def check_position_alerts(self, chains, verdict_data):
         """Check if running positions need alerts based on new market data."""
