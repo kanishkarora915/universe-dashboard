@@ -22,6 +22,7 @@ import ReplayMode from "./components/ReplayMode";
 import BattleStation from "./components/BattleStation";
 import EngineControl from "./components/EngineControl";
 import TrainingDashboard from "./components/TrainingDashboard";
+import AIAssistant from "./components/AIAssistant";
 import { VerdictHero } from "./components/DashboardHero";
 import { useTheme } from "./ThemeContext";
 import { useHotkeys } from "./hooks/useHotkeys";
@@ -56,10 +57,8 @@ const TAB_GROUPS = [
     { id: "trap",    icon: "\uD83E\uDDE8", label: "Trap" },
     { id: "hidden",  icon: "\uD83D\uDD75\uFE0F", label: "Hidden" },
     { id: "priceact",icon: "\uD83D\uDCA5", label: "Price Act" },
-    { id: "tradeai", icon: "\uD83E\uDDE0", label: "Trade AI" },
   ]},
   { group: "Intelligence", tabs: [
-    { id: "aibrain", icon: "\uD83E\uDD16", label: "AI Brain" },
     { id: "ttimes",  icon: "⏱\uFE0F", label: "Times" },
     { id: "autopsy", icon: "\uD83D\uDD2C", label: "Autopsy" },
   ]},
@@ -71,7 +70,6 @@ const TAB_GROUPS = [
   ]},
   { group: "System", tabs: [
     { id: "reports", icon: "\uD83D\uDCCA", label: "Reports" },
-    { id: "prompt",  icon: "\uD83E\uDD16", label: "Prompt" },
   ]},
 ];
 // Flat list for renderTab lookup
@@ -2853,17 +2851,14 @@ export default function Universe({ onLogout }) {
       case "weekly":  return <WeeklyTab realData={weekly} />;
       case "unusual": return <UnusualTab unusualData={unusual} oiData={oiSummary} />;
       case "sellers": return <SellersTab data={sellerData} />;
-      case "tradeai": return <TradeAITab data={tradeAnalysis} />;
       case "hidden":  return <HiddenShiftTab data={hiddenShift} />;
       case "trap":    return <TrapFinderTab />;
       case "priceact":return <PriceActionTab />;
-      case "aibrain": return <AIBrainTab />;
       case "oichange":return <OIChangeTab oiData={oiSummary} />;
       case "pnl":     return <PnLTracker />;
       case "ttimes":  return <TradingTimesTab />;
       case "autopsy": return <TradeAutopsyTab />;
       case "reports": return <ReportsTab />;
-      case "prompt":  return <PromptTab />;
       default:        return null;
     }
   };
@@ -3088,6 +3083,13 @@ export default function Universe({ onLogout }) {
       <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <EngineControl isOpen={engineControlOpen} onClose={() => setEngineControlOpen(false)} />
       <TrainingDashboard isOpen={trainingDashOpen} onClose={() => setTrainingDashOpen(false)} />
+
+      {/* Floating AI Assistant — always visible bottom-right */}
+      <AIAssistant
+        activeTab={activeTab}
+        pinnedStrikes={watchlist.pinned}
+        openTrade={null}
+      />
 
       {/* Battle Station — god-mode strike comparison */}
       <BattleStation

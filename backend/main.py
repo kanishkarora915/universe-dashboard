@@ -1098,6 +1098,285 @@ async def battle_compare(payload: dict):
     return {"strikes": enriched, "strategies": strategies}
 
 
+# ── AI Assistant — Floating 🧠 button (Option 3 full scale) ────────────
+
+def _claude_client():
+    """Build Claude client, returns None if not configured."""
+    try:
+        import os, anthropic
+        key = os.environ.get("CLAUDE_API_KEY", "")
+        if not key:
+            return None
+        return anthropic.Anthropic(api_key=key)
+    except Exception:
+        return None
+
+
+def _build_context_summary():
+    """Build a compact context summary for Claude — current market state."""
+    if not engine:
+        return {"error": "Engine not running"}
+    try:
+        live = engine.get_live_data()
+        signals = engine.get_signals()[:3] if hasattr(engine, "get_signals") else []
+        trap = engine.get_trap_verdict() if hasattr(engine, "get_trap_verdict") else {}
+        return {
+            "live": live,
+            "topSignals": signals if isinstance(signals, list) else [],
+            "verdict": trap,
+            "timestamp": str(__import__("datetime").datetime.now()),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/ai/chat")
+async def ai_chat(payload: dict):
+    """General chat endpoint — user sends message + optional context,
+    returns Claude response. Context auto-augmented with live dashboard state."""
+    import json as _json
+    user_msg = payload.get("message", "").strip()
+    frontend_context = payload.get("context", {})
+    chat_history = payload.get("history", [])[-6:]  # last 6 turns
+
+    if not user_msg:
+        return {"error": "Empty message"}
+
+    client = _claude_client()
+    if not client:
+        return {"error": "Claude API key not configured"}
+
+    backend_context = _build_context_summary()
+
+    # Build system prompt
+    system_prompt = """You are UNIVERSE AI, a trading assistant for an options BUYER on NSE (NIFTY / BANKNIFTY).
+You have access to LIVE market data + the user's pinned strikes + current tab context.
+Be direct, specific with numbers, use Hinglish when it helps clarity.
+Never suggest selling options (user is buyer only). Always respect risk management.
+Max response: 4-6 short sentences unless deep analysis requested."""
+
+    # Build messages
+    messages = []
+    for turn in chat_history:
+        if turn.get("role") and turn.get("content"):
+            messages.append({"role": turn["role"], "content": turn["content"]})
+
+    # Add live context + user message
+    context_snippet = f"\n\nCURRENT CONTEXT:\nTab: {frontend_context.get('activeTab', '?')}\nPinned: {frontend_context.get('pinnedStrikes', [])}\nLive data: {_json.dumps(backend_context, default=str)[:1500]}"
+    messages.append({"role": "user", "content": user_msg + context_snippet})
+
+    try:
+        msg = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=800,
+            system=system_prompt,
+            messages=messages,
+        )
+        return {"reply": msg.content[0].text.strip(), "tokensUsed": msg.usage.input_tokens + msg.usage.output_tokens}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/ai/morning-brief")
+async def ai_morning_brief(payload: dict = None):
+    """Morning brief — global cues + expected day setup. Cached 3 hours."""
+    import json as _json, time
+    global _morning_brief_cache, _morning_brief_time
+    now_t = time.time()
+    if '_morning_brief_cache' not in globals():
+        _morning_brief_cache = None
+        _morning_brief_time = 0
+    if _morning_brief_cache and (now_t - _morning_brief_time) < 10800:
+        return {"brief": _morning_brief_cache, "cached": True}
+
+    client = _claude_client()
+    if not client:
+        return {"error": "Claude API key not configured"}
+
+    backend_context = _build_context_summary()
+
+    try:
+        msg = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=500,
+            system="You are a morning market brief generator for an NSE options buyer. Output 5-6 sentences covering: overnight global markets, SGX NIFTY futures direction, key levels for today, and ONE specific trading insight. Be specific with numbers. Hinglish OK.",
+            messages=[{"role": "user", "content": f"Generate morning brief. Current data: {_json.dumps(backend_context, default=str)[:2000]}"}],
+        )
+        brief = msg.content[0].text.strip()
+        _morning_brief_cache = brief
+        _morning_brief_time = now_t
+        return {"brief": brief, "cached": False}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/ai/risk-calc")
+async def ai_risk_calc(payload: dict):
+    """Position sizing calculator — deterministic math, no Claude call."""
+    try:
+        capital = float(payload.get("capital", 500000))
+        risk_pct = float(payload.get("riskPct", 2)) / 100
+        entry = float(payload.get("entry", 0))
+        sl = float(payload.get("sl", 0))
+        lot_size = int(payload.get("lotSize", 75))
+
+        if entry <= 0 or sl <= 0 or sl >= entry:
+            return {"error": "Invalid entry/SL. SL must be below entry."}
+
+        max_risk = capital * risk_pct
+        risk_per_lot = (entry - sl) * lot_size
+        max_lots = int(max_risk / risk_per_lot) if risk_per_lot > 0 else 0
+        total_position = entry * lot_size * max_lots
+        actual_risk = risk_per_lot * max_lots
+
+        return {
+            "maxRisk": round(max_risk),
+            "riskPerLot": round(risk_per_lot),
+            "recommendedLots": max_lots,
+            "positionSize": round(total_position),
+            "actualRisk": round(actual_risk),
+            "actualRiskPct": round((actual_risk / capital) * 100, 2),
+            "advice": f"Risk {max_lots} lots = ₹{round(actual_risk):,} ({round((actual_risk/capital)*100, 2)}% of capital). Exit if price hits ₹{sl}.",
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/ai/scenario")
+async def ai_scenario(payload: dict):
+    """Scenario explorer — Greeks-based P&L simulation for spot move."""
+    try:
+        spot = float(payload.get("spot", 0))
+        spot_delta_pct = float(payload.get("spotDeltaPct", 0)) / 100
+        strike_ltp = float(payload.get("strikeLTP", 0))
+        delta = float(payload.get("delta", 0.5))
+        gamma = float(payload.get("gamma", 0.018))
+        theta = float(payload.get("theta", -3))
+        hours_held = float(payload.get("hoursHeld", 1))
+        lot_size = int(payload.get("lotSize", 75))
+        lots = int(payload.get("lots", 1))
+
+        spot_change = spot * spot_delta_pct
+        # New price = current + delta * spot_change + 0.5 * gamma * spot_change^2 + theta * time
+        price_change = (delta * spot_change) + (0.5 * gamma * (spot_change ** 2)) + (theta * hours_held / 6.25)
+        new_ltp = strike_ltp + price_change
+        pnl_per_lot = price_change * lot_size
+        total_pnl = pnl_per_lot * lots
+
+        return {
+            "newSpot": round(spot + spot_change, 2),
+            "newLTP": round(new_ltp, 2),
+            "pnlPerLot": round(pnl_per_lot),
+            "totalPnL": round(total_pnl),
+            "advice": f"If spot moves {spot_delta_pct*100:+.2f}% in {hours_held}h, your P&L would be ₹{round(total_pnl):,}",
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/ai/trade-decision")
+async def ai_trade_decision(payload: dict):
+    """Claude-based: Should I buy this strike now? Full analysis + verdict."""
+    import json as _json
+    strike = payload.get("strike")
+    client = _claude_client()
+    if not client:
+        return {"error": "Claude API key not configured"}
+    backend_context = _build_context_summary()
+    try:
+        msg = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=600,
+            system="You are UNIVERSE AI helping an options buyer decide a trade. Given the strike + live data, return: 1) Decision (YES/NO/WAIT), 2) Confidence %, 3) 3 reasons, 4) Entry/SL/T1/T2 if YES. Be specific with numbers. Max 6 sentences.",
+            messages=[{"role": "user", "content": f"Should I buy this strike?\nStrike: {_json.dumps(strike, default=str)}\nMarket: {_json.dumps(backend_context, default=str)[:2000]}"}],
+        )
+        return {"decision": msg.content[0].text.strip()}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/ai/emergency")
+async def ai_emergency(payload: dict):
+    """Emergency mid-trade help — 'I'm losing/panicking, what do I do?'"""
+    import json as _json
+    trade_info = payload.get("trade", {})
+    user_concern = payload.get("concern", "My trade is going against me")
+    client = _claude_client()
+    if not client:
+        return {"error": "Claude API key not configured"}
+    backend_context = _build_context_summary()
+    try:
+        msg = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=500,
+            system="You are UNIVERSE AI helping a panicking trader mid-trade. Be CALM and DIRECT. Analyze: 1) Is exit justified? 2) What's the current momentum direction? 3) Exit or hold recommendation. Be brutally honest. No hedging. 4-5 sentences max.",
+            messages=[{"role": "user", "content": f"EMERGENCY: {user_concern}\nMy trade: {_json.dumps(trade_info, default=str)}\nMarket right now: {_json.dumps(backend_context, default=str)[:1500]}"}],
+        )
+        return {"advice": msg.content[0].text.strip()}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/ai/psychology")
+async def ai_psychology_check(payload: dict):
+    """Psychology coach — are you overtrading / revenge trading?"""
+    import json as _json
+    try:
+        # Analyze recent trade pattern from DB
+        trades_db = _data_dir / "trades.db"
+        recent_summary = {}
+        if trades_db.exists():
+            tconn = sqlite3.connect(str(trades_db))
+            tconn.row_factory = sqlite3.Row
+            rows = tconn.execute(
+                "SELECT entry_time, pnl_rupees, qty, probability, status FROM trades WHERE entry_time > datetime('now', '-1 day') ORDER BY entry_time"
+            ).fetchall()
+            tconn.close()
+            trades = [dict(r) for r in rows]
+            wins = sum(1 for t in trades if (t.get("pnl_rupees") or 0) > 0)
+            losses = len(trades) - wins
+            total_pnl = sum((t.get("pnl_rupees") or 0) for t in trades)
+            recent_summary = {
+                "todayTrades": len(trades),
+                "wins": wins,
+                "losses": losses,
+                "todayPnL": round(total_pnl),
+                "avgProbability": round(sum((t.get("probability") or 0) for t in trades) / max(len(trades), 1)),
+            }
+        client = _claude_client()
+        if not client:
+            return {"analysis": f"Today: {recent_summary.get('todayTrades', 0)} trades, P&L ₹{recent_summary.get('todayPnL', 0):+,}"}
+        msg = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=400,
+            system="You are a trading psychology coach. Given today's trade pattern, honestly assess: is the trader overtrading, revenge trading, or disciplined? Be direct. 3-4 sentences. End with clear advice (STOP / SLOW DOWN / KEEP GOING).",
+            messages=[{"role": "user", "content": f"Today's pattern: {_json.dumps(recent_summary, default=str)}"}],
+        )
+        return {"analysis": msg.content[0].text.strip(), "data": recent_summary}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/ai/pattern-explain")
+async def ai_pattern_explain(payload: dict):
+    """Teach the user what a pattern means."""
+    import json as _json
+    pattern_desc = payload.get("pattern", "")
+    client = _claude_client()
+    if not client:
+        return {"error": "Claude API key not configured"}
+    try:
+        msg = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=500,
+            system="You are UNIVERSE AI teaching an options buyer. Explain the market pattern in simple Hinglish. Cover: 1) What it means, 2) Trade implication for option buyer, 3) What to avoid. Max 5 sentences.",
+            messages=[{"role": "user", "content": f"Explain this pattern: {pattern_desc}"}],
+        )
+        return {"explanation": msg.content[0].text.strip()}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ── Beast Mode Training — 11 upgrades over basic weekly Bayesian ───────
 
 @app.post("/api/training/run-now")
