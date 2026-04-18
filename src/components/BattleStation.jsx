@@ -130,22 +130,31 @@ export default function BattleStation({ isOpen, onClose, pinnedStrikes = [], onR
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
+  const [fetchError, setFetchError] = useState(null);
 
   useEffect(() => {
     if (!isOpen || pinnedStrikes.length < 2) return;
     setLoading(true);
+    setFetchError(null);
     // Fetch comparison (no AI — fast)
     fetch("/api/battle/compare", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ strikes: pinnedStrikes.slice(0, 4) }),
     })
-      .then((r) => r.json())
+      .then((r) => r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))
       .then((d) => {
-        setData(d);
+        if (d.error) {
+          setFetchError(d.error);
+        } else {
+          setData(d);
+        }
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch((e) => {
+        setFetchError(e?.message || String(e) || "Failed to load comparison data");
+        setLoading(false);
+      });
   }, [isOpen, pinnedStrikes]);
 
   const fetchAIVerdict = () => {
@@ -306,9 +315,66 @@ export default function BattleStation({ isOpen, onClose, pinnedStrikes = [], onR
           </div>
         )}
 
+        {/* Backend error OR empty response despite 2+ pinned */}
+        {!loading && pinnedStrikes.length >= 2 && (fetchError || strikes.length < 2) && (
+          <div
+            role="alert"
+            style={{
+              padding: SPACE.LG,
+              margin: `${SPACE.MD}px 0`,
+              background: theme.RED_DIM,
+              border: `1px solid ${theme.RED}44`,
+              borderLeft: `3px solid ${theme.RED}`,
+              borderRadius: RADIUS.LG,
+              color: theme.TEXT,
+            }}
+          >
+            <div style={{ color: theme.RED, fontSize: 10, fontWeight: TEXT_WEIGHT.BOLD, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: SPACE.SM }}>
+              Could not load comparison
+            </div>
+            <div style={{ fontSize: TEXT_SIZE.BODY, marginBottom: SPACE.SM }}>
+              {fetchError || "Backend returned empty strike data. Engine may not have these strikes subscribed."}
+            </div>
+            <div style={{ fontSize: TEXT_SIZE.MICRO, color: theme.TEXT_MUTED }}>
+              Pinned: {pinnedStrikes.map(s => `${s.index} ${s.strike}${s.type || ''}`).join(", ")}
+            </div>
+            <button
+              onClick={() => {
+                setLoading(true);
+                setFetchError(null);
+                fetch("/api/battle/compare", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ strikes: pinnedStrikes.slice(0, 4) }),
+                })
+                  .then((r) => r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))
+                  .then((d) => { if (d.error) setFetchError(d.error); else setData(d); setLoading(false); })
+                  .catch((e) => { setFetchError(e?.message || String(e)); setLoading(false); });
+              }}
+              style={{
+                marginTop: SPACE.SM,
+                background: theme.ACCENT, color: "#fff",
+                border: "none", borderRadius: RADIUS.SM,
+                padding: "6px 14px", cursor: "pointer",
+                fontSize: TEXT_SIZE.MICRO, fontWeight: TEXT_WEIGHT.BOLD,
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
         {!loading && strikes.length >= 2 && (
           <>
-            {/* AI Verdict Card (top) */}
+            {/* AI Verdict Card (top) — shows placeholder until user clicks Ask AI */}
+            {!data?.verdict && (
+              <Section title="🧠 AI Verdict" accent={theme.PURPLE} theme={theme}>
+                <div style={{ textAlign: "center", padding: SPACE.MD, color: theme.TEXT_MUTED, fontSize: TEXT_SIZE.BODY }}>
+                  Click <strong style={{ color: theme.PURPLE }}>🧠 Ask AI</strong> button in header to get Claude's analysis:
+                  winner pick, entry/SL/T1/T2, reasoning, dangers, strategies to avoid.
+                </div>
+              </Section>
+            )}
             {data?.verdict && (
               <Section title="🧠 AI Verdict" accent={theme.PURPLE} theme={theme}>
                 {data.verdict.winner && (
