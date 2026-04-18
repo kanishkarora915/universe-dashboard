@@ -1098,6 +1098,84 @@ async def battle_compare(payload: dict):
     return {"strikes": enriched, "strategies": strategies}
 
 
+# ── Beast Mode Training — 11 upgrades over basic weekly Bayesian ───────
+
+@app.post("/api/training/run-now")
+async def training_run_now():
+    """Manually trigger a beast-mode training cycle. Returns full report."""
+    try:
+        from ml_beast import run_beast_training
+        live = engine.get_live_data() if engine else {}
+        nifty = live.get("nifty", {}) if isinstance(live, dict) else {}
+        vix = live.get("vix") or nifty.get("vix")
+        nifty_pct = nifty.get("changePct") or nifty.get("change_pct") or 0
+        pcr = (live.get("oiSummary", {}).get("pcr") if isinstance(live, dict) else None) or 1.0
+        report = run_beast_training(current_vix=vix, current_nifty_pct=nifty_pct, current_pcr=pcr)
+        return report
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/training/history")
+async def training_history(limit: int = 30):
+    try:
+        from ml_beast import get_training_history
+        return {"runs": get_training_history(limit=limit)}
+    except Exception as e:
+        return {"error": str(e), "runs": []}
+
+
+@app.get("/api/training/engine-health")
+async def training_engine_health():
+    try:
+        from ml_beast import get_engine_health_report
+        return {"engines": get_engine_health_report()}
+    except Exception as e:
+        return {"error": str(e), "engines": []}
+
+
+@app.get("/api/training/ab-status")
+async def training_ab_status():
+    try:
+        from ml_beast import get_ab_status
+        return get_ab_status()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/training/ab-start")
+async def training_ab_start(payload: dict):
+    """Start new A/B test with two weight sets."""
+    try:
+        from ml_beast import start_ab_test
+        wa = payload.get("weights_a")
+        wb = payload.get("weights_b")
+        if not wa or not wb:
+            return {"error": "Need weights_a and weights_b"}
+        return start_ab_test(wa, wb)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/training/ab-finalize")
+async def training_ab_finalize():
+    """Check if running A/B has enough data, promote winner if yes."""
+    try:
+        from ml_beast import check_ab_winner
+        return check_ab_winner()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/training/online-status")
+async def training_online_status():
+    try:
+        from ml_beast import get_online_learning_status
+        return get_online_learning_status()
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ── Engine Toggles — User control which engines contribute to verdict ──
 
 @app.get("/api/engine-toggles")

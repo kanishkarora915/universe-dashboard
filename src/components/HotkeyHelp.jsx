@@ -29,6 +29,7 @@ const SHORTCUTS = [
   ]},
   { section: "Engine Control", items: [
     { keys: ["⌘Shift+E", "Ctrl+Shift+E"], desc: "⚙ Engine Control — toggle which engines decide trades" },
+    { keys: ["⌘Shift+T", "Ctrl+Shift+T"], desc: "🧠 ML Training Dashboard — beast mode" },
   ]},
   { section: "Help", items: [
     { keys: ["?"], desc: "Show this shortcut guide" },

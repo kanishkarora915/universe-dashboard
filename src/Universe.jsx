@@ -21,6 +21,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import ReplayMode from "./components/ReplayMode";
 import BattleStation from "./components/BattleStation";
 import EngineControl from "./components/EngineControl";
+import TrainingDashboard from "./components/TrainingDashboard";
 import { VerdictHero } from "./components/DashboardHero";
 import { useTheme } from "./ThemeContext";
 import { useHotkeys } from "./hooks/useHotkeys";
@@ -2664,6 +2665,7 @@ export default function Universe({ onLogout }) {
   const [replayOpen, setReplayOpen] = useState(false);
   const [battleOpen, setBattleOpen] = useState(false);
   const [engineControlOpen, setEngineControlOpen] = useState(false);
+  const [trainingDashOpen, setTrainingDashOpen] = useState(false);
   const [strikeTabs, setStrikeTabs] = useState([]);
   const [trapVerdict, setTrapVerdict] = useState(null);
   const { live, unusual, intraday, nextday, weekly, signals, oiSummary, sellerData, tradeAnalysis, hiddenShift, connected } = useMarketData();
@@ -2766,6 +2768,8 @@ export default function Universe({ onLogout }) {
     "ctrl+shift+b": () => setBattleOpen(true),
     "cmd+shift+e": () => setEngineControlOpen(true),
     "ctrl+shift+e": () => setEngineControlOpen(true),
+    "cmd+shift+t": () => setTrainingDashOpen(true),
+    "ctrl+shift+t": () => setTrainingDashOpen(true),
     "1": () => setActiveTab("dashboard"),
     "2": () => setActiveTab("oichange"),
     "3": () => setActiveTab("pnl"),
@@ -2923,6 +2927,14 @@ export default function Universe({ onLogout }) {
             }}>
               <span style={{ fontSize: 12 }}>⚙</span> Engines
             </button>
+            <button onClick={() => setTrainingDashOpen(true)} title="ML Training Dashboard (⌘Shift+T) — beast mode auto-training" style={{
+              background: theme.PURPLE_DIM, color: theme.PURPLE, border: `1px solid ${theme.PURPLE}33`,
+              borderRadius: RADIUS.SM, padding: "4px 10px", cursor: "pointer",
+              fontSize: 10, fontWeight: 700, whiteSpace: "nowrap",
+              display: "flex", alignItems: "center", gap: 4,
+            }}>
+              <span style={{ fontSize: 12 }}>🧠</span> Training
+            </button>
             <button onClick={() => setHelpOpen(true)} title="Keyboard Shortcuts (?)" style={{
               background: theme.PURPLE_DIM, color: theme.PURPLE, border: `1px solid ${theme.PURPLE}33`,
               borderRadius: RADIUS.SM, padding: "4px 10px", cursor: "pointer",
@@ -3075,6 +3087,7 @@ export default function Universe({ onLogout }) {
       <HotkeyHelp isOpen={helpOpen} onClose={() => setHelpOpen(false)} />
       <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <EngineControl isOpen={engineControlOpen} onClose={() => setEngineControlOpen(false)} />
+      <TrainingDashboard isOpen={trainingDashOpen} onClose={() => setTrainingDashOpen(false)} />
 
       {/* Battle Station — god-mode strike comparison */}
       <BattleStation
