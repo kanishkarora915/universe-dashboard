@@ -2256,8 +2256,10 @@ class MarketEngine:
             now_ist = ist_now()
             if now_ist.hour >= 14:
                 risks.append("Late session — theta decay accelerating, quick trade only")
-            if now_ist.weekday() >= 3:  # Thursday/Friday
-                risks.append("Near expiry — avoid holding overnight")
+            # NIFTY weekly expiry = Tuesday (was Thursday); BANKNIFTY = monthly
+            # Risk elevated from Monday onwards as we approach Tuesday NIFTY expiry
+            if now_ist.weekday() in (1, 2):  # Tue (expiry) or Wed (next-day hangover)
+                risks.append("Near/post NIFTY expiry — avoid holding overnight")
 
             # Predictions
             current_exp = trap.get("current", {})
@@ -2974,11 +2976,11 @@ class MarketEngine:
                 "Check economic calendar for RBI/Fed/NFP events this week",
             ],
             "plan": [
-                {"day": "Monday", "col": "#0A84FF", "text": "Wait and watch — observe open + first 30 min before entry"},
-                {"day": "Tuesday", "col": "#0A84FF", "text": "Core trade window — look for clean signal with strong OI confirmation"},
-                {"day": "Wednesday", "col": "#30D158", "text": "Best momentum day — add to winning positions if trend clear"},
-                {"day": "Thursday", "col": "#FF453A", "text": "⚠️ Theta decay aggressive — NO option buying after 2 PM"},
-                {"day": "Friday", "col": "#FF9F0A", "text": "🚫 No new positions — weekend risk, exit all by 1 PM"},
+                {"day": "Monday", "col": "#0A84FF", "text": "Pre-expiry setup — observe open + prep for Tuesday NIFTY expiry"},
+                {"day": "Tuesday", "col": "#FF453A", "text": "⚠️ NIFTY WEEKLY EXPIRY — theta decay aggressive, NO option buying after 2 PM"},
+                {"day": "Wednesday", "col": "#30D158", "text": "Fresh weekly cycle — best day for new CE/PE entries with clean signal"},
+                {"day": "Thursday", "col": "#0A84FF", "text": "Momentum day — add to winning positions; BANKNIFTY monthly expiry if last Thu"},
+                {"day": "Friday", "col": "#FF9F0A", "text": "🚫 No new positions — weekend gap risk, exit all by 1 PM"},
             ],
             "niftyMoB": n_mob, "bnMoB": b_mob,
         }

@@ -82,7 +82,7 @@ RULES:
 - Use the actual data provided, don't hallucinate numbers
 - IVR > 60 = premiums expensive, warn the trader
 - VIX > 20 = high volatility, adjust SL wider
-- Consider expiry decay if Thursday/Friday
+- Consider expiry decay: NIFTY weekly expiry = Tuesday (heavy decay), BANKNIFTY = monthly last-Thursday
 - If PCR extreme (<0.7 or >1.3), highlight it
 - Only respond with valid JSON, no markdown or extra text"""
 

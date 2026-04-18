@@ -453,9 +453,29 @@ export function EventRisk({ strike, spot, theme }) {
 
   const warnings = [];
 
-  // Expiry day (Thursday)
-  if (day === 4) {
-    warnings.push({ level: "critical", text: "Today is Thursday — weekly expiry. Theta decay accelerates sharply." });
+  // Expiry day detection per index
+  // NIFTY weekly: Tuesday (day 2)
+  // BANKNIFTY: monthly only (last Thursday of month) — checked below
+  const idx = (strike.index || "").toUpperCase();
+  if (idx === "NIFTY" && day === 2) {
+    warnings.push({ level: "critical", text: "Today is Tuesday — NIFTY weekly expiry. Theta decay accelerates sharply." });
+  }
+
+  // BANKNIFTY monthly expiry: last Thursday of the month
+  if (idx === "BANKNIFTY" && day === 4) {
+    const date = now.getDate();
+    const month = now.getMonth();
+    const year = now.getFullYear();
+    // Find last Thursday of this month
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    let lastThursday = lastDay;
+    const lastDow = new Date(year, month, lastDay).getDay();
+    if (lastDow !== 4) {
+      lastThursday = lastDay - ((lastDow - 4 + 7) % 7);
+    }
+    if (date === lastThursday) {
+      warnings.push({ level: "critical", text: "Today is monthly BANKNIFTY expiry. Theta decay accelerates sharply." });
+    }
   }
 
   // Market hours context
