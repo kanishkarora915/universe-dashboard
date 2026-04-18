@@ -59,7 +59,7 @@ INDEX_CONFIG = {
 }
 
 
-# ── Dynamic Weight Loading ────────────────────────────────────────────────
+# ── Dynamic Weight Loading + Engine Toggles ──────────────────────────────
 
 _WEIGHT_DEFAULTS = {
     "seller_positioning": 30,
@@ -72,12 +72,29 @@ _WEIGHT_DEFAULTS = {
     "fii_dii": 10,
     "global_cues": 10,
 }
+
+# Per-engine ON/OFF toggle. User can disable noisy engines for cleaner verdict.
+# If False, engine's score is zeroed in verdict computation (still runs for display).
+_TOGGLE_DEFAULTS = {
+    "seller_positioning": True,
+    "trap_fingerprints": True,
+    "price_action": True,
+    "oi_flow": True,
+    "market_context": True,
+    "vwap": True,
+    "multi_timeframe": True,
+    "fii_dii": True,
+    "global_cues": True,
+}
 _weights_cache = None
 _weights_cache_time = 0
+_toggles_cache = None
+_toggles_cache_time = 0
 
 
 def _load_dynamic_weights():
-    """Load engine weights from JSON config. Cached for 60s."""
+    """Load engine weights from JSON config. Cached for 60s.
+    Applies on/off toggle — if engine is OFF, its weight becomes 0 for verdict."""
     global _weights_cache, _weights_cache_time
     now = time.time()
     if _weights_cache and now - _weights_cache_time < 60:
@@ -89,6 +106,9 @@ def _load_dynamic_weights():
         if weights_file.exists():
             data = json.loads(weights_file.read_text())
             w = {k: data.get(k, v) for k, v in _WEIGHT_DEFAULTS.items()}
+            # Apply toggle: OFF engines get weight=0
+            toggles = _load_engine_toggles()
+            w = {k: (w[k] if toggles.get(k, True) else 0) for k in w}
             _weights_cache = w
             _weights_cache_time = now
             return w
@@ -98,6 +118,45 @@ def _load_dynamic_weights():
     _weights_cache = dict(_WEIGHT_DEFAULTS)
     _weights_cache_time = now
     return _weights_cache
+
+
+def _load_engine_toggles():
+    """Load per-engine ON/OFF flags from JSON config. Cached for 10s."""
+    global _toggles_cache, _toggles_cache_time
+    now = time.time()
+    if _toggles_cache and now - _toggles_cache_time < 10:
+        return _toggles_cache
+
+    _data_dir = Path("/data") if Path("/data").is_dir() else Path(__file__).parent
+    toggles_file = _data_dir / "engine_toggles.json"
+    try:
+        if toggles_file.exists():
+            data = json.loads(toggles_file.read_text())
+            t = {k: bool(data.get(k, v)) for k, v in _TOGGLE_DEFAULTS.items()}
+            _toggles_cache = t
+            _toggles_cache_time = now
+            return t
+    except Exception:
+        pass
+
+    _toggles_cache = dict(_TOGGLE_DEFAULTS)
+    _toggles_cache_time = now
+    return _toggles_cache
+
+
+def _save_engine_toggles(toggles: dict):
+    """Persist user's engine ON/OFF preferences to JSON."""
+    global _toggles_cache, _toggles_cache_time, _weights_cache, _weights_cache_time
+    _data_dir = Path("/data") if Path("/data").is_dir() else Path(__file__).parent
+    toggles_file = _data_dir / "engine_toggles.json"
+    # Merge with defaults to ensure all keys present
+    merged = {k: bool(toggles.get(k, v)) for k, v in _TOGGLE_DEFAULTS.items()}
+    toggles_file.write_text(json.dumps(merged, indent=2))
+    # Invalidate both caches so new toggles take effect immediately
+    _toggles_cache = merged
+    _toggles_cache_time = time.time()
+    _weights_cache = None  # force reload with new toggles applied
+    return merged
 
 
 # ── Black-Scholes Greeks ─────────────────────────────────────────────────

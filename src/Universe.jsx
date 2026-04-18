@@ -20,6 +20,7 @@ import SettingsPanel from "./components/SettingsPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
 import ReplayMode from "./components/ReplayMode";
 import BattleStation from "./components/BattleStation";
+import EngineControl from "./components/EngineControl";
 import { VerdictHero } from "./components/DashboardHero";
 import { useTheme } from "./ThemeContext";
 import { useHotkeys } from "./hooks/useHotkeys";
@@ -2662,6 +2663,7 @@ export default function Universe({ onLogout }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [replayOpen, setReplayOpen] = useState(false);
   const [battleOpen, setBattleOpen] = useState(false);
+  const [engineControlOpen, setEngineControlOpen] = useState(false);
   const [strikeTabs, setStrikeTabs] = useState([]);
   const [trapVerdict, setTrapVerdict] = useState(null);
   const { live, unusual, intraday, nextday, weekly, signals, oiSummary, sellerData, tradeAnalysis, hiddenShift, connected } = useMarketData();
@@ -2762,6 +2764,8 @@ export default function Universe({ onLogout }) {
     },
     "cmd+shift+b": () => setBattleOpen(true),
     "ctrl+shift+b": () => setBattleOpen(true),
+    "cmd+shift+e": () => setEngineControlOpen(true),
+    "ctrl+shift+e": () => setEngineControlOpen(true),
     "1": () => setActiveTab("dashboard"),
     "2": () => setActiveTab("oichange"),
     "3": () => setActiveTab("pnl"),
@@ -2911,6 +2915,14 @@ export default function Universe({ onLogout }) {
         onTabChange={setActiveTab}
         rightAction={
           <div style={{ display: "flex", gap: 4 }}>
+            <button onClick={() => setEngineControlOpen(true)} title="Engine Control (⌘Shift+E) — toggle which engines decide trades" style={{
+              background: theme.AMBER_DIM, color: theme.AMBER, border: `1px solid ${theme.AMBER}33`,
+              borderRadius: RADIUS.SM, padding: "4px 10px", cursor: "pointer",
+              fontSize: 10, fontWeight: 700, whiteSpace: "nowrap",
+              display: "flex", alignItems: "center", gap: 4,
+            }}>
+              <span style={{ fontSize: 12 }}>⚙</span> Engines
+            </button>
             <button onClick={() => setHelpOpen(true)} title="Keyboard Shortcuts (?)" style={{
               background: theme.PURPLE_DIM, color: theme.PURPLE, border: `1px solid ${theme.PURPLE}33`,
               borderRadius: RADIUS.SM, padding: "4px 10px", cursor: "pointer",
@@ -3062,6 +3074,7 @@ export default function Universe({ onLogout }) {
       />
       <HotkeyHelp isOpen={helpOpen} onClose={() => setHelpOpen(false)} />
       <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <EngineControl isOpen={engineControlOpen} onClose={() => setEngineControlOpen(false)} />
 
       {/* Battle Station — god-mode strike comparison */}
       <BattleStation

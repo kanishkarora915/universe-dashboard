@@ -27,6 +27,9 @@ const SHORTCUTS = [
     { keys: ["⌘Shift+A", "Ctrl+Shift+A"], desc: "Toggle alerts drawer" },
     { keys: ["⌘Shift+M", "Ctrl+Shift+M"], desc: "Mute / unmute all sounds" },
   ]},
+  { section: "Engine Control", items: [
+    { keys: ["⌘Shift+E", "Ctrl+Shift+E"], desc: "⚙ Engine Control — toggle which engines decide trades" },
+  ]},
   { section: "Help", items: [
     { keys: ["?"], desc: "Show this shortcut guide" },
   ]},

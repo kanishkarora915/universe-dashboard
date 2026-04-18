@@ -1098,6 +1098,44 @@ async def battle_compare(payload: dict):
     return {"strikes": enriched, "strategies": strategies}
 
 
+# ── Engine Toggles — User control which engines contribute to verdict ──
+
+@app.get("/api/engine-toggles")
+async def engine_toggles_get():
+    """Return current ON/OFF state + weight of each engine."""
+    try:
+        from engine import _load_engine_toggles, _load_dynamic_weights, _WEIGHT_DEFAULTS, _TOGGLE_DEFAULTS
+        toggles = _load_engine_toggles()
+        weights = _load_dynamic_weights()
+        # Show max weight too (what it would be if ON)
+        return {
+            "engines": [
+                {
+                    "key": k,
+                    "active": toggles.get(k, True),
+                    "weight": weights.get(k, 0),
+                    "maxWeight": _WEIGHT_DEFAULTS.get(k, 0),
+                } for k in _WEIGHT_DEFAULTS
+            ],
+        }
+    except Exception as e:
+        return {"error": str(e), "engines": []}
+
+
+@app.post("/api/engine-toggles")
+async def engine_toggles_set(payload: dict):
+    """Persist user's toggle preferences. Verdict uses immediately."""
+    try:
+        from engine import _save_engine_toggles
+        toggles = payload.get("toggles") or payload
+        if not isinstance(toggles, dict):
+            return {"error": "Invalid payload"}
+        saved = _save_engine_toggles(toggles)
+        return {"saved": saved, "ok": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ── Battle Station Bonus: strike history / spread / correlation ────────
 
 @app.get("/api/strike-history")
