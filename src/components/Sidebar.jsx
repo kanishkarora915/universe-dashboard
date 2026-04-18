@@ -90,32 +90,53 @@ function SidebarButton({ tab, active, onClick, badge, flashing, theme }) {
             top: "50%",
             transform: "translateY(-50%)",
             background: theme.SURFACE_HI,
-            border: `1px solid ${theme.BORDER}`,
+            border: `1px solid ${theme.ACCENT}44`,
             color: theme.TEXT,
-            padding: "4px 8px",
-            borderRadius: RADIUS.SM,
-            fontSize: TEXT_SIZE.MICRO,
+            padding: "6px 12px",
+            borderRadius: RADIUS.MD,
+            fontSize: TEXT_SIZE.BODY,
             fontWeight: TEXT_WEIGHT.BOLD,
             fontFamily: FONT.UI,
             whiteSpace: "nowrap",
             zIndex: Z.TOOLTIP,
             pointerEvents: "none",
-            boxShadow: theme.SHADOW,
+            boxShadow: theme.SHADOW_HI,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
           }}
         >
           {tab.label}
-          <span
+          {tab.hotkey && (
+            <span
+              style={{
+                color: theme.ACCENT,
+                padding: "1px 6px",
+                background: theme.ACCENT_DIM,
+                borderRadius: 3,
+                fontFamily: FONT.MONO,
+                fontSize: 10,
+                fontWeight: TEXT_WEIGHT.BOLD,
+                letterSpacing: 0.5,
+              }}
+            >
+              {tab.hotkey}
+            </span>
+          )}
+          {/* Arrow pointing left to the icon */}
+          <div
             style={{
-              color: theme.TEXT_DIM,
-              marginLeft: 6,
-              padding: "0 4px",
-              background: theme.BG,
-              borderRadius: 2,
-              fontFamily: FONT.MONO,
+              position: "absolute",
+              left: -5,
+              top: "50%",
+              transform: "translateY(-50%)",
+              width: 0,
+              height: 0,
+              borderTop: "5px solid transparent",
+              borderBottom: "5px solid transparent",
+              borderRight: `5px solid ${theme.SURFACE_HI}`,
             }}
-          >
-            {tab.hotkey}
-          </span>
+          />
         </div>
       )}
     </div>

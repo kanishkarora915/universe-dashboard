@@ -3,6 +3,15 @@ import { useTheme } from "../ThemeContext";
 import { FONT, TEXT_SIZE, TEXT_WEIGHT, SPACE, RADIUS, TRANSITION, Z } from "../theme";
 import PayoffDiagram from "./PayoffDiagram";
 import GreeksRadar from "./GreeksRadar";
+import {
+  SimpleVerdict,
+  PriceJourney,
+  BreakevenAnalysis,
+  ThetaBurn,
+  IVContext,
+  EventRisk,
+  SupportResistance,
+} from "./BattleDeepAnalysis";
 
 /**
  * BATTLE STATION — God-mode strike comparison.
@@ -131,6 +140,20 @@ export default function BattleStation({ isOpen, onClose, pinnedStrikes = [], onR
   const [loading, setLoading] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [fetchError, setFetchError] = useState(null);
+  const [liveData, setLiveData] = useState(null);
+  const [trapVerdict, setTrapVerdict] = useState(null);
+
+  // Fetch live spot + engine verdict alongside battle data (for deep analysis cards)
+  useEffect(() => {
+    if (!isOpen) return;
+    const fetchExtras = () => {
+      fetch("/api/live").then(r => r.ok ? r.json() : null).then(d => { if (d) setLiveData(d); }).catch(() => {});
+      fetch("/api/trap/verdict").then(r => r.ok ? r.json() : null).then(d => { if (d) setTrapVerdict(d); }).catch(() => {});
+    };
+    fetchExtras();
+    const iv = setInterval(fetchExtras, 10000);
+    return () => clearInterval(iv);
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen || pinnedStrikes.length < 1) return;
@@ -366,7 +389,30 @@ export default function BattleStation({ isOpen, onClose, pinnedStrikes = [], onR
 
         {!loading && strikes.length >= 1 && (
           <>
-            {/* AI Verdict Card (top) — shows placeholder until user clicks Ask AI */}
+            {/* ── DEEP ANALYSIS (new) ── */}
+
+            {/* BUY / DON'T BUY quick verdict — big decision card on top */}
+            <SimpleVerdict strike={strikes[0]} spot={spot} verdict={trapVerdict} theme={theme} />
+
+            {/* Price Journey — where did spot come from today */}
+            <PriceJourney index={strikes[0].index} liveData={liveData} theme={theme} />
+
+            {/* Breakeven with probability estimate */}
+            <BreakevenAnalysis strike={strikes[0]} spot={spot} theme={theme} />
+
+            {/* Theta burn live timer */}
+            <ThetaBurn strike={strikes[0]} lotSize={lotSize} theme={theme} />
+
+            {/* IV cheap/expensive context */}
+            <IVContext strike={strikes[0]} theme={theme} />
+
+            {/* Event / timing risks */}
+            <EventRisk strike={strikes[0]} spot={spot} theme={theme} />
+
+            {/* Market structure (PCR, max pain) */}
+            <SupportResistance strikes={strikes} spot={spot} theme={theme} />
+
+            {/* ── CLAUDE AI VERDICT (deeper, clickable) ── */}
             {!data?.verdict && (
               <Section title="🧠 AI Verdict" accent={theme.PURPLE} theme={theme}>
                 <div style={{ textAlign: "center", padding: SPACE.MD, color: theme.TEXT_MUTED, fontSize: TEXT_SIZE.BODY }}>
