@@ -2,252 +2,433 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useTheme } from "../ThemeContext";
 import { FONT, TEXT_SIZE, TEXT_WEIGHT, SPACE, RADIUS, TRANSITION, Z } from "../theme";
 
-function fuzzyMatch(query, items) {
-  if (!query) return items;
-  const q = query.toLowerCase().replace(/\s+/g, " ").trim();
-  const tokens = q.split(" ").filter(Boolean);
-  return items
-    .map((item) => {
-      const hay = `${item.index} ${item.strike} ${item.type || ""} ${item.label || ""}`.toLowerCase();
-      const allMatch = tokens.every((t) => hay.includes(t));
-      if (!allMatch) return null;
-      // rank by earliest match position
-      const score = tokens.reduce((acc, t) => acc + hay.indexOf(t), 0);
-      return { item, score };
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.score - b.score)
-    .map((x) => x.item);
+/**
+ * STRIKE SEARCH — Options Chain Browser
+ *
+ * Layout (TradingView-inspired):
+ * ┌──────────────────────────────────────────────┐
+ * │ 🔍 Type strike (e.g., 24400 or nifty 25000) │
+ * ├──────────────────────────────────────────────┤
+ * │ [NIFTY] [BN] [BOTH]                          │ Index toggle
+ * │ Apr 24  May 1  May 8  May 29  Jun 26 ...     │ Expiry pills (horizontal)
+ * ├──────────────────────────────────────────────┤
+ * │ NIFTY · 24 Apr                               │
+ * │  CE LTP    Strike    PE LTP    CE OI   PE OI │
+ * │  ₹195      24200     ₹58       1.2L    2.1L  │
+ * │  ₹158      24400 ATM ₹92       4.2L    5.1L  │
+ * │  ₹12       25000     ₹650      0.3L    0.1L  │
+ * │                                              │
+ * │ BANKNIFTY · 24 Apr                           │
+ * │  CE LTP    Strike    PE LTP    CE OI   PE OI │
+ * │  ...                                         │
+ * └──────────────────────────────────────────────┘
+ *
+ * Users can pin any strike with ☆ for Battle Station comparison.
+ */
+
+async function fetchJSON(url) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
 }
 
-function Row({ strike, active, onClick, onPin, pinned, theme }) {
-  const color = strike.type === "CE" ? theme.GREEN : strike.type === "PE" ? theme.RED : theme.TEXT;
+function Row({ ceLTP, peLTP, strike, ceOI, peOI, index, isATM, pinned, onPin, onSelect, theme }) {
+  const rowBg = isATM ? theme.ACCENT + "08" : "transparent";
+  const rowBorder = isATM ? theme.ACCENT + "44" : theme.BORDER + "22";
   return (
     <div
-      onClick={onClick}
       style={{
-        display: "flex",
+        display: "grid",
+        gridTemplateColumns: "60px 70px 1fr 70px 60px 60px 28px 28px 22px",
+        gap: 4,
         alignItems: "center",
-        gap: SPACE.MD,
-        padding: `${SPACE.SM}px ${SPACE.MD}px`,
-        background: active ? theme.SURFACE_ACTIVE : "transparent",
-        borderLeft: active ? `2px solid ${theme.ACCENT}` : "2px solid transparent",
-        cursor: "pointer",
-        transition: TRANSITION.FAST,
+        padding: `6px ${SPACE.SM}px`,
+        borderBottom: `1px solid ${rowBorder}`,
+        background: rowBg,
+        fontSize: TEXT_SIZE.MICRO,
+        fontFamily: FONT.MONO,
       }}
-      onMouseEnter={(e) => (e.currentTarget.style.background = theme.SURFACE_HI)}
-      onMouseLeave={(e) => (e.currentTarget.style.background = active ? theme.SURFACE_ACTIVE : "transparent")}
     >
+      {/* CE LTP */}
       <span
         style={{
-          color: theme.TEXT_MUTED,
-          fontSize: TEXT_SIZE.MICRO,
+          color: theme.GREEN,
           fontWeight: TEXT_WEIGHT.BOLD,
-          minWidth: 70,
-          fontFamily: FONT.UI,
-          letterSpacing: 0.5,
+          textAlign: "right",
+          cursor: "pointer",
         }}
+        onClick={() => onSelect && onSelect({ index, strike, type: "CE", ltp: ceLTP })}
+        title="Click to open CE details"
       >
-        {strike.index}
+        {ceLTP > 0 ? `₹${ceLTP}` : "—"}
       </span>
+      {/* CE OI */}
+      <span style={{ color: theme.TEXT_MUTED, textAlign: "right" }}>
+        {ceOI > 0 ? `${(ceOI / 100000).toFixed(1)}L` : "—"}
+      </span>
+      {/* Strike */}
       <span
         style={{
-          color: theme.TEXT,
-          fontSize: 14,
+          color: isATM ? theme.ACCENT : theme.TEXT,
           fontWeight: TEXT_WEIGHT.BOLD,
-          fontFamily: FONT.MONO,
-          minWidth: 60,
+          textAlign: "center",
+          fontSize: TEXT_SIZE.BODY,
         }}
       >
-        {strike.strike}
+        {strike}
+        {isATM && (
+          <span
+            style={{
+              marginLeft: 4,
+              color: theme.ACCENT,
+              fontSize: 8,
+              fontFamily: FONT.UI,
+              fontWeight: TEXT_WEIGHT.BOLD,
+              letterSpacing: 1,
+              padding: "1px 4px",
+              background: theme.ACCENT_DIM,
+              borderRadius: 2,
+            }}
+          >
+            ATM
+          </span>
+        )}
       </span>
-      {strike.type && (
-        <span
-          style={{
-            color,
-            fontSize: TEXT_SIZE.MICRO,
-            fontWeight: TEXT_WEIGHT.BOLD,
-            padding: "2px 6px",
-            background: color + "22",
-            borderRadius: RADIUS.XS,
-            fontFamily: FONT.UI,
-            letterSpacing: 0.5,
-          }}
-        >
-          {strike.type}
-        </span>
-      )}
-      {strike.ltp != null && (
-        <span
-          style={{
-            color: theme.TEXT,
-            fontSize: TEXT_SIZE.BODY,
-            fontWeight: TEXT_WEIGHT.BOLD,
-            fontFamily: FONT.MONO,
-            marginLeft: "auto",
-          }}
-        >
-          ₹{strike.ltp}
-        </span>
-      )}
-      {strike.badge && (
-        <span
-          style={{
-            color: theme.ACCENT,
-            fontSize: TEXT_SIZE.MICRO,
-            fontWeight: TEXT_WEIGHT.BOLD,
-            padding: "2px 6px",
-            background: theme.ACCENT_DIM,
-            borderRadius: RADIUS.XS,
-            fontFamily: FONT.UI,
-          }}
-        >
-          {strike.badge}
-        </span>
-      )}
-      {onPin && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onPin(strike);
-          }}
-          title={pinned ? "Unpin" : "Pin to watchlist"}
-          style={{
-            background: "transparent",
-            border: "none",
-            color: pinned ? theme.AMBER : theme.TEXT_DIM,
-            cursor: "pointer",
-            fontSize: 14,
-            padding: 4,
-          }}
-        >
-          {pinned ? "★" : "☆"}
-        </button>
-      )}
+      {/* PE LTP */}
+      <span
+        style={{
+          color: theme.RED,
+          fontWeight: TEXT_WEIGHT.BOLD,
+          cursor: "pointer",
+        }}
+        onClick={() => onSelect && onSelect({ index, strike, type: "PE", ltp: peLTP })}
+        title="Click to open PE details"
+      >
+        {peLTP > 0 ? `₹${peLTP}` : "—"}
+      </span>
+      {/* PE OI */}
+      <span style={{ color: theme.TEXT_MUTED, textAlign: "right" }}>
+        {peOI > 0 ? `${(peOI / 100000).toFixed(1)}L` : "—"}
+      </span>
+      <span />
+      {/* Pin CE */}
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onPin && onPin({ index, strike, type: "CE", ltp: ceLTP });
+        }}
+        aria-label={`Pin ${index} ${strike} CE to watchlist`}
+        title="Pin CE"
+        style={{
+          background: "transparent",
+          border: "none",
+          color: pinned?.ce ? theme.GREEN : theme.TEXT_DIM,
+          cursor: "pointer",
+          fontSize: 11,
+          padding: 0,
+          lineHeight: 1,
+        }}
+      >
+        {pinned?.ce ? "★" : "☆"}
+      </button>
+      {/* Pin PE */}
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onPin && onPin({ index, strike, type: "PE", ltp: peLTP });
+        }}
+        aria-label={`Pin ${index} ${strike} PE to watchlist`}
+        title="Pin PE"
+        style={{
+          background: "transparent",
+          border: "none",
+          color: pinned?.pe ? theme.RED : theme.TEXT_DIM,
+          cursor: "pointer",
+          fontSize: 11,
+          padding: 0,
+          lineHeight: 1,
+        }}
+      >
+        {pinned?.pe ? "★" : "☆"}
+      </button>
+      <span />
     </div>
   );
 }
 
-function Section({ title, count, children, action, theme }) {
+function HeaderRow({ theme }) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "60px 70px 1fr 70px 60px 60px 28px 28px 22px",
+        gap: 4,
+        padding: `4px ${SPACE.SM}px`,
+        borderBottom: `1px solid ${theme.BORDER_HI}`,
+        background: theme.SURFACE_HI,
+        fontSize: 9,
+        fontWeight: TEXT_WEIGHT.BOLD,
+        color: theme.TEXT_DIM,
+        letterSpacing: 1,
+        textTransform: "uppercase",
+        fontFamily: FONT.UI,
+        position: "sticky",
+        top: 0,
+        zIndex: 2,
+      }}
+    >
+      <span style={{ textAlign: "right", color: theme.GREEN }}>CE LTP</span>
+      <span style={{ textAlign: "right" }}>CE OI</span>
+      <span style={{ textAlign: "center" }}>STRIKE</span>
+      <span style={{ color: theme.RED }}>PE LTP</span>
+      <span style={{ textAlign: "right" }}>PE OI</span>
+      <span />
+      <span style={{ textAlign: "center" }}>CE</span>
+      <span style={{ textAlign: "center" }}>PE</span>
+      <span />
+    </div>
+  );
+}
+
+function ExpiryPill({ label, active, onClick, theme }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        background: active ? theme.ACCENT : "transparent",
+        color: active ? "#fff" : theme.TEXT_MUTED,
+        border: `1px solid ${active ? theme.ACCENT : theme.BORDER}`,
+        borderRadius: RADIUS.SM,
+        padding: "4px 10px",
+        fontSize: TEXT_SIZE.MICRO,
+        fontWeight: TEXT_WEIGHT.BOLD,
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+        transition: TRANSITION.FAST,
+        fontFamily: FONT.UI,
+        letterSpacing: 0.5,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function ChainSection({ index, expiry, strikes, query, isPinned, togglePin, onSelect, theme }) {
+  // Filter by query if numeric
+  const filtered = useMemo(() => {
+    const q = (query || "").trim();
+    const num = parseInt(q.replace(/\D/g, ""), 10);
+    if (!isNaN(num) && num > 0) {
+      return strikes.filter((s) => String(s.strike).includes(String(num)));
+    }
+    return strikes;
+  }, [strikes, query]);
+
+  if (!filtered.length) {
+    return (
+      <div
+        style={{
+          padding: SPACE.MD,
+          color: theme.TEXT_DIM,
+          fontSize: TEXT_SIZE.MICRO,
+          textAlign: "center",
+        }}
+      >
+        No strikes match "{query}" for {index}
+      </div>
+    );
+  }
+
   return (
     <div style={{ marginBottom: SPACE.MD }}>
+      {/* Section header */}
       <div
         style={{
           display: "flex",
           alignItems: "center",
-          padding: `${SPACE.XS}px ${SPACE.MD}px`,
+          justifyContent: "space-between",
+          padding: `${SPACE.SM}px ${SPACE.MD}px`,
+          background: theme.BG,
+          borderTop: `1px solid ${theme.BORDER}`,
+          position: "sticky",
+          top: 0,
+          zIndex: 1,
         }}
       >
+        <div style={{ display: "flex", alignItems: "baseline", gap: SPACE.SM }}>
+          <span
+            style={{
+              color: index === "NIFTY" ? theme.ACCENT : theme.PURPLE,
+              fontSize: TEXT_SIZE.BODY,
+              fontWeight: TEXT_WEIGHT.BLACK,
+              letterSpacing: 1.5,
+              fontFamily: FONT.UI,
+            }}
+          >
+            {index}
+          </span>
+          <span
+            style={{
+              color: theme.TEXT_MUTED,
+              fontSize: TEXT_SIZE.MICRO,
+              fontFamily: FONT.MONO,
+            }}
+          >
+            · {expiry}
+          </span>
+        </div>
         <span
           style={{
             color: theme.TEXT_DIM,
             fontSize: TEXT_SIZE.MICRO,
-            fontWeight: TEXT_WEIGHT.BOLD,
-            letterSpacing: 1.5,
-            textTransform: "uppercase",
-            flex: 1,
+            fontFamily: FONT.MONO,
           }}
         >
-          {title} {count != null && <span style={{ color: theme.TEXT_MUTED }}>({count})</span>}
+          {filtered.length} strikes
         </span>
-        {action}
       </div>
-      {children}
+
+      <HeaderRow theme={theme} />
+
+      {filtered.map((s) => {
+        const pinState = {
+          ce: isPinned && isPinned({ index, strike: s.strike, type: "CE" }),
+          pe: isPinned && isPinned({ index, strike: s.strike, type: "PE" }),
+        };
+        return (
+          <Row
+            key={`${index}-${s.strike}`}
+            index={index}
+            strike={s.strike}
+            ceLTP={s.ceLTP || s.ce_ltp || 0}
+            peLTP={s.peLTP || s.pe_ltp || 0}
+            ceOI={s.ceOI || s.ce_oi || 0}
+            peOI={s.peOI || s.pe_oi || 0}
+            isATM={s.isATM || s.is_atm}
+            pinned={pinState}
+            onPin={togglePin}
+            onSelect={onSelect}
+            theme={theme}
+          />
+        );
+      })}
     </div>
   );
 }
 
-export default function StrikeSearch({ isOpen, onClose, onSelect, suggestions = [], quickJumps = [], watchlist, onCompare }) {
+// Format expiry date: "2026-04-24" → "24 Apr"
+function formatExpiry(dateStr) {
+  if (!dateStr) return "";
+  try {
+    const d = new Date(dateStr);
+    return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+  } catch {
+    return dateStr;
+  }
+}
+
+export default function StrikeSearch({ isOpen, onClose, onSelect, watchlist, onCompare }) {
   const { theme } = useTheme();
   const [query, setQuery] = useState("");
-  const [activeIdx, setActiveIdx] = useState(0);
+  const [indexFilter, setIndexFilter] = useState("BOTH"); // NIFTY | BANKNIFTY | BOTH
+  const [niftyExpiries, setNiftyExpiries] = useState([]);
+  const [bnExpiries, setBnExpiries] = useState([]);
+  const [selectedNiftyExp, setSelectedNiftyExp] = useState("");
+  const [selectedBnExp, setSelectedBnExp] = useState("");
+  const [niftyChain, setNiftyChain] = useState([]);
+  const [bnChain, setBnChain] = useState([]);
+  const [loadingChain, setLoadingChain] = useState(false);
   const inputRef = useRef(null);
 
-  const { recent = [], pinned = [], addRecent, clearRecent, isPinned, togglePin } = watchlist || {};
+  const { pinned = [], isPinned, togglePin } = watchlist || {};
 
+  // Load expiries on open
   useEffect(() => {
-    if (isOpen) {
-      setQuery("");
-      setActiveIdx(0);
-      setTimeout(() => inputRef.current?.focus(), 10);
-    }
+    if (!isOpen) return;
+    setQuery("");
+    setTimeout(() => inputRef.current?.focus(), 10);
+
+    fetchJSON("/api/expiries/NIFTY").then((d) => {
+      const list = Array.isArray(d) ? d : d?.expiries || [];
+      setNiftyExpiries(list);
+      if (list.length && !selectedNiftyExp) {
+        const cur = list.find((e) => e.isCurrent) || list[0];
+        setSelectedNiftyExp(cur.date || cur);
+      }
+    });
+    fetchJSON("/api/expiries/BANKNIFTY").then((d) => {
+      const list = Array.isArray(d) ? d : d?.expiries || [];
+      setBnExpiries(list);
+      if (list.length && !selectedBnExp) {
+        const cur = list.find((e) => e.isCurrent) || list[0];
+        setSelectedBnExp(cur.date || cur);
+      }
+    });
   }, [isOpen]);
 
-  const matches = useMemo(() => fuzzyMatch(query, suggestions), [query, suggestions]);
-
-  // If query is a pure number, build "Open anyway" synthetic entries
-  // This lets user search for ANY strike, even if not in cached chain (backend will fetch)
-  const syntheticMatches = useMemo(() => {
-    const q = (query || "").trim();
-    const numMatch = q.match(/^(\d{3,6})$/) || q.match(/^(nifty|bn|banknifty)?\s*(\d{3,6})/i);
-    if (!numMatch) return [];
-    const strikeNum = parseInt(numMatch[numMatch.length - 1], 10);
-    if (isNaN(strikeNum) || strikeNum < 100) return [];
-
-    // Detect if user wrote NIFTY / BN
-    const lower = q.toLowerCase();
-    const explicitBN = lower.includes("bn") || lower.includes("banknifty");
-    const explicitNifty = lower.includes("nifty") && !explicitBN;
-
-    // Detect if user specified CE/PE
-    const isCE = lower.includes("ce") || lower.includes("call");
-    const isPE = lower.includes("pe") || lower.includes("put");
-
-    // If match already found in suggestions for this strike, skip synthetic
-    const alreadyFound = matches.some((m) => parseInt(m.strike, 10) === strikeNum);
-    if (alreadyFound) return [];
-
-    const out = [];
-    const indexes = explicitBN ? ["BANKNIFTY"] : explicitNifty ? ["NIFTY"] : ["NIFTY", "BANKNIFTY"];
-    const types = isCE ? ["CE"] : isPE ? ["PE"] : ["CE", "PE"];
-
-    indexes.forEach((idx) => {
-      types.forEach((type) => {
-        out.push({
-          index: idx,
-          strike: strikeNum,
-          type,
-          badge: "fetch",
-          synthetic: true,
-        });
-      });
+  // Fetch chains when expiry changes
+  useEffect(() => {
+    if (!isOpen || !selectedNiftyExp || indexFilter === "BANKNIFTY") return;
+    setLoadingChain(true);
+    fetchJSON(`/api/expiry-chain/NIFTY/${encodeURIComponent(selectedNiftyExp)}`).then((d) => {
+      setNiftyChain(d?.strikes || []);
+      setLoadingChain(false);
     });
-    return out;
-  }, [query, matches]);
+  }, [isOpen, selectedNiftyExp, indexFilter]);
 
-  const displayList = query ? [...matches, ...syntheticMatches] : [];
+  useEffect(() => {
+    if (!isOpen || !selectedBnExp || indexFilter === "NIFTY") return;
+    setLoadingChain(true);
+    fetchJSON(`/api/expiry-chain/BANKNIFTY/${encodeURIComponent(selectedBnExp)}`).then((d) => {
+      setBnChain(d?.strikes || []);
+      setLoadingChain(false);
+    });
+  }, [isOpen, selectedBnExp, indexFilter]);
 
   const handleSelect = useCallback(
     (strike) => {
       if (!strike) return;
-      if (addRecent) addRecent(strike);
-      if (onSelect) onSelect(strike);
+      const withExpiry = {
+        ...strike,
+        expiry: strike.index === "NIFTY" ? selectedNiftyExp : selectedBnExp,
+      };
+      if (watchlist?.addRecent) watchlist.addRecent(withExpiry);
+      if (onSelect) onSelect(withExpiry);
       onClose();
     },
-    [addRecent, onSelect, onClose]
+    [onSelect, onClose, selectedNiftyExp, selectedBnExp, watchlist]
   );
 
+  const handleTogglePin = useCallback(
+    (strike) => {
+      const withExpiry = {
+        ...strike,
+        expiry: strike.index === "NIFTY" ? selectedNiftyExp : selectedBnExp,
+      };
+      if (togglePin) togglePin(withExpiry);
+    },
+    [togglePin, selectedNiftyExp, selectedBnExp]
+  );
+
+  // ESC to close
   useEffect(() => {
     if (!isOpen) return;
     const handler = (e) => {
-      if (e.key === "Escape") {
-        onClose();
-      } else if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setActiveIdx((i) => Math.min(i + 1, displayList.length - 1));
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setActiveIdx((i) => Math.max(i - 1, 0));
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        if (displayList[activeIdx]) handleSelect(displayList[activeIdx]);
-      }
+      if (e.key === "Escape") onClose();
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [isOpen, displayList, activeIdx, handleSelect, onClose]);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
+
+  const showNifty = indexFilter === "BOTH" || indexFilter === "NIFTY";
+  const showBN = indexFilter === "BOTH" || indexFilter === "BANKNIFTY";
 
   return (
     <div
@@ -259,15 +440,16 @@ export default function StrikeSearch({ isOpen, onClose, onSelect, suggestions = 
         zIndex: Z.MODAL,
         display: "flex",
         justifyContent: "center",
-        paddingTop: "10vh",
+        paddingTop: "6vh",
+        paddingBottom: "4vh",
         backdropFilter: "blur(4px)",
       }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: "min(640px, 90vw)",
-          maxHeight: "70vh",
+          width: "min(780px, 94vw)",
+          maxHeight: "88vh",
           background: theme.SURFACE,
           border: `1px solid ${theme.BORDER_HI}`,
           borderRadius: RADIUS.LG,
@@ -292,18 +474,15 @@ export default function StrikeSearch({ isOpen, onClose, onSelect, suggestions = 
             ref={inputRef}
             type="text"
             value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setActiveIdx(0);
-            }}
-            placeholder="Search strike (22900, nifty 22900 ce, bn 48500...)"
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter by strike (24400) — or browse the full chain below"
             style={{
               flex: 1,
               background: "transparent",
               border: "none",
               outline: "none",
               color: theme.TEXT,
-              fontSize: 15,
+              fontSize: 14,
               fontFamily: FONT.UI,
               fontWeight: TEXT_WEIGHT.MED,
             }}
@@ -322,140 +501,170 @@ export default function StrikeSearch({ isOpen, onClose, onSelect, suggestions = 
           </span>
         </div>
 
-        {/* Results / suggestions */}
-        <div style={{ flex: 1, overflowY: "auto", padding: `${SPACE.SM}px 0` }}>
-          {query && displayList.length === 0 && (
-            <div
+        {/* Index filter + Expiry pills */}
+        <div
+          style={{
+            padding: `${SPACE.SM}px ${SPACE.MD}px`,
+            borderBottom: `1px solid ${theme.BORDER}`,
+            display: "flex",
+            flexDirection: "column",
+            gap: SPACE.SM,
+          }}
+        >
+          <div style={{ display: "flex", gap: SPACE.XS, alignItems: "center" }}>
+            <span
               style={{
-                padding: SPACE.XL,
-                textAlign: "center",
                 color: theme.TEXT_DIM,
-                fontSize: TEXT_SIZE.BODY,
+                fontSize: 9,
+                fontWeight: TEXT_WEIGHT.BOLD,
+                letterSpacing: 1.5,
+                textTransform: "uppercase",
+                marginRight: SPACE.XS,
               }}
             >
-              <div>No matches for "{query}"</div>
-              <div style={{ fontSize: TEXT_SIZE.MICRO, marginTop: 6 }}>
-                Try typing a number like "24400" or "nifty 24000 ce"
-              </div>
+              Index
+            </span>
+            {["BOTH", "NIFTY", "BANKNIFTY"].map((f) => (
+              <button
+                key={f}
+                onClick={() => setIndexFilter(f)}
+                style={{
+                  background: indexFilter === f ? theme.ACCENT : "transparent",
+                  color: indexFilter === f ? "#fff" : theme.TEXT_MUTED,
+                  border: `1px solid ${indexFilter === f ? theme.ACCENT : theme.BORDER}`,
+                  borderRadius: RADIUS.SM,
+                  padding: "3px 10px",
+                  fontSize: TEXT_SIZE.MICRO,
+                  fontWeight: TEXT_WEIGHT.BOLD,
+                  cursor: "pointer",
+                  fontFamily: FONT.UI,
+                }}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
+
+          {showNifty && niftyExpiries.length > 0 && (
+            <div style={{ display: "flex", gap: SPACE.XS, alignItems: "center", overflowX: "auto" }}>
+              <span
+                style={{
+                  color: theme.ACCENT,
+                  fontSize: 9,
+                  fontWeight: TEXT_WEIGHT.BOLD,
+                  letterSpacing: 1.5,
+                  textTransform: "uppercase",
+                  marginRight: SPACE.XS,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                NIFTY
+              </span>
+              {niftyExpiries.slice(0, 8).map((e) => {
+                const date = e.date || e;
+                return (
+                  <ExpiryPill
+                    key={date}
+                    label={formatExpiry(date) + (e.isCurrent ? " •" : "")}
+                    active={selectedNiftyExp === date}
+                    onClick={() => setSelectedNiftyExp(date)}
+                    theme={theme}
+                  />
+                );
+              })}
             </div>
           )}
 
-          {query && displayList.length > 0 && (
-            <>
-              {matches.length > 0 && (
-                <Section title="Cached strikes (live data)" count={matches.length} theme={theme}>
-                  {matches.slice(0, 15).map((s, i) => (
-                    <Row
-                      key={`m-${i}`}
-                      strike={s}
-                      active={i === activeIdx}
-                      onClick={() => handleSelect(s)}
-                      onPin={togglePin}
-                      pinned={isPinned && isPinned(s)}
-                      theme={theme}
-                    />
-                  ))}
-                </Section>
-              )}
-              {syntheticMatches.length > 0 && (
-                <Section
-                  title="Fetch any strike (from Kite)"
-                  count={syntheticMatches.length}
-                  action={
-                    <span style={{ color: theme.TEXT_DIM, fontSize: 9, fontWeight: TEXT_WEIGHT.BOLD, letterSpacing: 1 }}>
-                      NOT IN LOCAL CHAIN
-                    </span>
-                  }
-                  theme={theme}
-                >
-                  {syntheticMatches.map((s, i) => (
-                    <Row
-                      key={`syn-${i}`}
-                      strike={s}
-                      active={matches.length + i === activeIdx}
-                      onClick={() => handleSelect(s)}
-                      onPin={togglePin}
-                      pinned={isPinned && isPinned(s)}
-                      theme={theme}
-                    />
-                  ))}
-                </Section>
-              )}
-            </>
-          )}
-
-          {!query && pinned && pinned.length > 0 && (
-            <Section title="Pinned" count={pinned.length} theme={theme}>
-              {pinned.map((s, i) => (
-                <Row
-                  key={`p-${i}`}
-                  strike={{ ...s, badge: "pinned" }}
-                  onClick={() => handleSelect(s)}
-                  onPin={togglePin}
-                  pinned={true}
-                  theme={theme}
-                />
-              ))}
-            </Section>
-          )}
-
-          {!query && recent && recent.length > 0 && (
-            <Section
-              title="Recent"
-              count={recent.length}
-              action={
-                <button
-                  onClick={clearRecent}
-                  style={{
-                    background: "transparent",
-                    border: "none",
-                    color: theme.TEXT_DIM,
-                    fontSize: TEXT_SIZE.MICRO,
-                    cursor: "pointer",
-                    fontFamily: FONT.UI,
-                  }}
-                >
-                  Clear
-                </button>
-              }
-              theme={theme}
-            >
-              {recent.map((s, i) => (
-                <Row
-                  key={`r-${i}`}
-                  strike={s}
-                  onClick={() => handleSelect(s)}
-                  onPin={togglePin}
-                  pinned={isPinned && isPinned(s)}
-                  theme={theme}
-                />
-              ))}
-            </Section>
-          )}
-
-          {!query && quickJumps && quickJumps.length > 0 && (
-            <Section title="Quick Jumps" theme={theme}>
-              {quickJumps.map((s, i) => (
-                <Row key={`q-${i}`} strike={s} onClick={() => handleSelect(s)} theme={theme} />
-              ))}
-            </Section>
-          )}
-
-          {!query && (!recent || recent.length === 0) && (!pinned || pinned.length === 0) && (!quickJumps || quickJumps.length === 0) && (
-            <div
-              style={{
-                padding: SPACE.XL,
-                textAlign: "center",
-                color: theme.TEXT_DIM,
-                fontSize: TEXT_SIZE.BODY,
-              }}
-            >
-              Start typing to search strikes
+          {showBN && bnExpiries.length > 0 && (
+            <div style={{ display: "flex", gap: SPACE.XS, alignItems: "center", overflowX: "auto" }}>
+              <span
+                style={{
+                  color: theme.PURPLE,
+                  fontSize: 9,
+                  fontWeight: TEXT_WEIGHT.BOLD,
+                  letterSpacing: 1.5,
+                  textTransform: "uppercase",
+                  marginRight: SPACE.XS,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                BN
+              </span>
+              {bnExpiries.slice(0, 8).map((e) => {
+                const date = e.date || e;
+                return (
+                  <ExpiryPill
+                    key={date}
+                    label={formatExpiry(date) + (e.isCurrent ? " •" : "")}
+                    active={selectedBnExp === date}
+                    onClick={() => setSelectedBnExp(date)}
+                    theme={theme}
+                  />
+                );
+              })}
             </div>
           )}
         </div>
 
-        {/* Footer hints */}
+        {/* Chain display */}
+        <div style={{ flex: 1, overflowY: "auto", minHeight: 200 }}>
+          {loadingChain && (
+            <div
+              style={{
+                padding: SPACE.XL,
+                textAlign: "center",
+                color: theme.TEXT_DIM,
+                fontSize: TEXT_SIZE.BODY,
+              }}
+            >
+              Loading chain from Kite...
+            </div>
+          )}
+
+          {!loadingChain && showNifty && niftyChain.length > 0 && (
+            <ChainSection
+              index="NIFTY"
+              expiry={formatExpiry(selectedNiftyExp)}
+              strikes={niftyChain}
+              query={query}
+              isPinned={isPinned}
+              togglePin={handleTogglePin}
+              onSelect={handleSelect}
+              theme={theme}
+            />
+          )}
+
+          {!loadingChain && showBN && bnChain.length > 0 && (
+            <ChainSection
+              index="BANKNIFTY"
+              expiry={formatExpiry(selectedBnExp)}
+              strikes={bnChain}
+              query={query}
+              isPinned={isPinned}
+              togglePin={handleTogglePin}
+              onSelect={handleSelect}
+              theme={theme}
+            />
+          )}
+
+          {!loadingChain &&
+            ((showNifty && !niftyChain.length) || (showBN && !bnChain.length)) && (
+              <div
+                style={{
+                  padding: SPACE.XL,
+                  textAlign: "center",
+                  color: theme.TEXT_DIM,
+                  fontSize: TEXT_SIZE.BODY,
+                }}
+              >
+                {!niftyExpiries.length && !bnExpiries.length
+                  ? "No expiries available. Backend engine may not be running."
+                  : "Select an expiry to load its chain."}
+              </div>
+            )}
+        </div>
+
+        {/* Footer */}
         <div
           style={{
             display: "flex",
@@ -469,20 +678,31 @@ export default function StrikeSearch({ isOpen, onClose, onSelect, suggestions = 
           }}
         >
           <span>
-            <kbd style={{ fontFamily: FONT.MONO, padding: "1px 4px", background: theme.BG, borderRadius: 2 }}>↑↓</kbd>{" "}
-            navigate
+            Click <strong style={{ color: theme.GREEN }}>CE LTP</strong> or{" "}
+            <strong style={{ color: theme.RED }}>PE LTP</strong> to open details
           </span>
           <span>
-            <kbd style={{ fontFamily: FONT.MONO, padding: "1px 4px", background: theme.BG, borderRadius: 2 }}>↵</kbd>{" "}
-            open
-          </span>
-          <span>
-            <kbd style={{ fontFamily: FONT.MONO, padding: "1px 4px", background: theme.BG, borderRadius: 2 }}>☆</kbd>{" "}
+            <kbd
+              style={{
+                fontFamily: FONT.MONO,
+                padding: "1px 4px",
+                background: theme.BG,
+                borderRadius: 2,
+              }}
+            >
+              ☆
+            </kbd>{" "}
             pin
+          </span>
+          <span style={{ color: theme.AMBER }}>
+            Pinned: {pinned?.length || 0} / 4
           </span>
           {pinned && pinned.length >= 2 && onCompare && (
             <button
-              onClick={() => { onCompare(); onClose(); }}
+              onClick={() => {
+                onCompare();
+                onClose();
+              }}
               style={{
                 marginLeft: "auto",
                 background: theme.PURPLE,
@@ -503,9 +723,7 @@ export default function StrikeSearch({ isOpen, onClose, onSelect, suggestions = 
               ⚔ Battle {pinned.length} strikes
             </button>
           )}
-          {(!pinned || pinned.length < 2) && (
-            <span style={{ marginLeft: "auto" }}>Universe Pro</span>
-          )}
+          {(!pinned || pinned.length < 2) && <span style={{ marginLeft: "auto" }}>Universe Pro</span>}
         </div>
       </div>
     </div>
