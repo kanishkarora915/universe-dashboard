@@ -11,6 +11,13 @@ import {
   IVContext,
   EventRisk,
   SupportResistance,
+  PriceSparkline,
+  OpeningPnL,
+  PatternDetector,
+  OIVelocity,
+  BidAskSpread,
+  MarketNews,
+  IndexCorrelation,
 } from "./BattleDeepAnalysis";
 
 /**
@@ -411,6 +418,29 @@ export default function BattleStation({ isOpen, onClose, pinnedStrikes = [], onR
 
             {/* Market structure (PCR, max pain) */}
             <SupportResistance strikes={strikes} spot={spot} theme={theme} />
+
+            {/* ── BONUS ANALYSIS SECTIONS (7 features) ── */}
+
+            {/* #1 Price sparkline - last 30 min */}
+            <PriceSparkline strike={strikes[0]} theme={theme} />
+
+            {/* #2 Opening P&L - if you entered at 9:15 */}
+            <OpeningPnL strike={strikes[0]} liveData={liveData} lotSize={lotSize} theme={theme} />
+
+            {/* #3 Chart pattern detector */}
+            <PatternDetector strike={strikes[0]} liveData={liveData} theme={theme} />
+
+            {/* #4 OI buildup speed (velocity) */}
+            <OIVelocity strike={strikes[0]} theme={theme} />
+
+            {/* #5 Bid-ask spread (liquidity check) */}
+            <BidAskSpread strike={strikes[0]} theme={theme} />
+
+            {/* #7 NSE market context (Claude AI) */}
+            <MarketNews strikes={pinnedStrikes} theme={theme} />
+
+            {/* #8 NIFTY-BN correlation & leader detection */}
+            <IndexCorrelation theme={theme} />
 
             {/* ── CLAUDE AI VERDICT (deeper, clickable) ── */}
             {!data?.verdict && (

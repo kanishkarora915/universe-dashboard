@@ -1,6 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useTheme } from "../ThemeContext";
 import { FONT, TEXT_SIZE, TEXT_WEIGHT, SPACE, RADIUS } from "../theme";
+
+// Helper: simple fetch
+async function fetchJ(url) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Deep analysis sections for Battle Station.
@@ -611,5 +622,436 @@ function Stat({ label, value, color, theme, sub }) {
         </div>
       )}
     </div>
+  );
+}
+
+// ═════════════════ BONUS #1: PRICE SPARKLINE ═════════════════
+
+export function PriceSparkline({ strike, theme }) {
+  const [history, setHistory] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!strike) return;
+    setLoading(true);
+    fetchJ(`/api/strike-history?index=${strike.index}&strike=${strike.strike}&minutes=30`)
+      .then((d) => {
+        setHistory(d?.points || []);
+        setLoading(false);
+      });
+  }, [strike?.index, strike?.strike]);
+
+  if (loading) {
+    return <Section title="📉 Price Sparkline (last 30 min)" theme={theme}><div style={{ color: theme.TEXT_DIM, fontSize: TEXT_SIZE.MICRO }}>Loading...</div></Section>;
+  }
+
+  if (!history.length) {
+    return <Section title="📉 Price Sparkline (last 30 min)" theme={theme}><div style={{ color: theme.TEXT_DIM, fontSize: TEXT_SIZE.MICRO }}>No history available (backend needs trading_times data)</div></Section>;
+  }
+
+  // Build SVG for spot + CE LTP + PE LTP
+  const w = 600, h = 80, pad = 20;
+  const spotSeries = history.map((p) => p.spot || 0);
+  const minS = Math.min(...spotSeries);
+  const maxS = Math.max(...spotSeries);
+  const rangeS = maxS - minS || 1;
+  const spotPath = history.map((p, i) => {
+    const x = pad + (i / Math.max(history.length - 1, 1)) * (w - 2 * pad);
+    const y = pad + ((maxS - p.spot) / rangeS) * (h - 2 * pad);
+    return `${i === 0 ? "M" : "L"}${x},${y}`;
+  }).join(" ");
+
+  const first = spotSeries[0];
+  const last = spotSeries[spotSeries.length - 1];
+  const diff = last - first;
+  const diffPct = first ? (diff / first) * 100 : 0;
+
+  return (
+    <Section title="📉 Price Sparkline (last 30 min)" theme={theme}>
+      <div style={{ display: "flex", alignItems: "center", gap: SPACE.LG, marginBottom: SPACE.SM }}>
+        <Stat label="Start" value={first?.toFixed(0) || "—"} theme={theme} />
+        <Stat label="Now" value={last?.toFixed(0) || "—"} color={theme.ACCENT} theme={theme} />
+        <Stat
+          label="Change"
+          value={`${diff > 0 ? "+" : ""}${diff.toFixed(1)} (${diffPct > 0 ? "+" : ""}${diffPct.toFixed(2)}%)`}
+          color={diff >= 0 ? theme.GREEN : theme.RED}
+          theme={theme}
+        />
+        <Stat label="Samples" value={history.length} theme={theme} />
+      </div>
+      <svg width="100%" viewBox={`0 0 ${w} ${h}`} style={{ background: theme.SURFACE_HI, borderRadius: RADIUS.SM }}>
+        <path d={spotPath} fill="none" stroke={diff >= 0 ? theme.GREEN : theme.RED} strokeWidth={2} />
+        <line x1={pad} y1={h - pad} x2={w - pad} y2={h - pad} stroke={theme.BORDER} strokeWidth={0.5} />
+      </svg>
+      <div style={{ color: theme.TEXT_DIM, fontSize: 10, marginTop: 4, fontStyle: "italic" }}>
+        Shows spot price trend for {strike.index} over last 30 min
+      </div>
+    </Section>
+  );
+}
+
+// ═════════════════ BONUS #2: OPENING P&L ═════════════════
+
+export function OpeningPnL({ strike, liveData, lotSize = 75, theme }) {
+  if (!strike) return null;
+  const ce = strike.ceLTP || 0;
+  const pe = strike.peLTP || 0;
+  if (!ce && !pe) return null;
+
+  // Best-effort: we don't have exact opening LTP per strike stored.
+  // Use moneyness / premium ratio to approximate.
+  // Assumption: opening ATM options typically 70-75% of current if no big move.
+  const d = liveData?.[strike.index?.toLowerCase()] || {};
+  const open = d.open || d.openPrice;
+  const currentSpot = d.ltp || strike.spot || 0;
+
+  if (!open || !currentSpot) {
+    return (
+      <Section title="💰 If you entered at 9:15 open" theme={theme}>
+        <div style={{ color: theme.TEXT_DIM, fontSize: TEXT_SIZE.MICRO }}>
+          Opening spot data not available yet.
+        </div>
+      </Section>
+    );
+  }
+
+  const spotChange = currentSpot - open;
+  // Rough CE opening price estimate: current - delta * spot_change
+  const deltaCE = strike.greeks?.deltaCE || 0.5;
+  const deltaPE = strike.greeks?.deltaPE || -0.5;
+  const estOpenCE = ce - deltaCE * spotChange;
+  const estOpenPE = pe - deltaPE * spotChange;
+
+  const pnlCE = (ce - estOpenCE) * lotSize;
+  const pnlPE = (pe - estOpenPE) * lotSize;
+
+  return (
+    <Section title="💰 If you entered at 9:15 open" accent={theme.CYAN} theme={theme}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: SPACE.MD }}>
+        {ce > 0 && (
+          <div style={{ padding: SPACE.MD, background: pnlCE >= 0 ? theme.GREEN_DIM : theme.RED_DIM, borderRadius: RADIUS.MD, borderLeft: `2px solid ${pnlCE >= 0 ? theme.GREEN : theme.RED}` }}>
+            <div style={{ color: theme.TEXT_DIM, fontSize: 9, fontWeight: TEXT_WEIGHT.BOLD, letterSpacing: 1, textTransform: "uppercase" }}>BUY CE AT OPEN</div>
+            <div style={{ color: pnlCE >= 0 ? theme.GREEN : theme.RED, fontSize: 22, fontWeight: TEXT_WEIGHT.BLACK, fontFamily: FONT.MONO }}>
+              ₹{pnlCE >= 0 ? "+" : ""}{Math.round(pnlCE).toLocaleString("en-IN")}
+            </div>
+            <div style={{ color: theme.TEXT_MUTED, fontSize: TEXT_SIZE.MICRO }}>
+              Est. open ₹{estOpenCE.toFixed(0)} → now ₹{ce}
+            </div>
+          </div>
+        )}
+        {pe > 0 && (
+          <div style={{ padding: SPACE.MD, background: pnlPE >= 0 ? theme.GREEN_DIM : theme.RED_DIM, borderRadius: RADIUS.MD, borderLeft: `2px solid ${pnlPE >= 0 ? theme.GREEN : theme.RED}` }}>
+            <div style={{ color: theme.TEXT_DIM, fontSize: 9, fontWeight: TEXT_WEIGHT.BOLD, letterSpacing: 1, textTransform: "uppercase" }}>BUY PE AT OPEN</div>
+            <div style={{ color: pnlPE >= 0 ? theme.GREEN : theme.RED, fontSize: 22, fontWeight: TEXT_WEIGHT.BLACK, fontFamily: FONT.MONO }}>
+              ₹{pnlPE >= 0 ? "+" : ""}{Math.round(pnlPE).toLocaleString("en-IN")}
+            </div>
+            <div style={{ color: theme.TEXT_MUTED, fontSize: TEXT_SIZE.MICRO }}>
+              Est. open ₹{estOpenPE.toFixed(0)} → now ₹{pe}
+            </div>
+          </div>
+        )}
+      </div>
+      <div style={{ color: theme.TEXT_DIM, fontSize: 10, marginTop: SPACE.SM, fontStyle: "italic" }}>
+        Estimated using current delta × spot change from open. Actual opening premium may differ.
+      </div>
+    </Section>
+  );
+}
+
+// ═════════════════ BONUS #3: PATTERN DETECTOR ═════════════════
+
+export function PatternDetector({ strike, liveData, theme }) {
+  if (!strike) return null;
+  const d = liveData?.[strike.index?.toLowerCase()] || {};
+  const ltp = d.ltp || 0;
+  const open = d.open || 0;
+  const high = d.high || 0;
+  const low = d.low || 0;
+
+  if (!ltp || !open || !high || !low) {
+    return (
+      <Section title="🔍 Chart Pattern Detector" theme={theme}>
+        <div style={{ color: theme.TEXT_DIM, fontSize: TEXT_SIZE.MICRO }}>
+          Waiting for OHLC data to detect patterns.
+        </div>
+      </Section>
+    );
+  }
+
+  const patterns = [];
+  const range = high - low;
+  const bodyPct = Math.abs(ltp - open) / Math.max(range, 1);
+  const posInRange = (ltp - low) / Math.max(range, 1);
+
+  // Simplified detection
+  if (bodyPct < 0.1) {
+    patterns.push({ name: "DOJI", color: theme.AMBER, meaning: "Indecision — watch next candle for direction" });
+  }
+  if (ltp > open && posInRange > 0.9) {
+    patterns.push({ name: "STRONG BULLISH CLOSE", color: theme.GREEN, meaning: "Closing near day high — momentum upward" });
+  }
+  if (ltp < open && posInRange < 0.1) {
+    patterns.push({ name: "STRONG BEARISH CLOSE", color: theme.RED, meaning: "Closing near day low — momentum downward" });
+  }
+  if (posInRange > 0.7 && (high - ltp) > (ltp - open) * 1.5) {
+    patterns.push({ name: "UPPER WICK REJECTION", color: theme.RED, meaning: "Sellers pushed back from highs — potential reversal" });
+  }
+  if (posInRange < 0.3 && (ltp - low) > (open - ltp) * 1.5) {
+    patterns.push({ name: "LOWER WICK SUPPORT", color: theme.GREEN, meaning: "Buyers defended lows — potential bounce" });
+  }
+  if (bodyPct > 0.7 && ltp > open) {
+    patterns.push({ name: "MARUBOZU BULLISH", color: theme.GREEN, meaning: "Strong buying all day — trend continuation" });
+  }
+  if (bodyPct > 0.7 && ltp < open) {
+    patterns.push({ name: "MARUBOZU BEARISH", color: theme.RED, meaning: "Strong selling all day — trend continuation" });
+  }
+
+  return (
+    <Section title="🔍 Pattern Detector (today's candle)" accent={theme.PURPLE} theme={theme}>
+      {patterns.length === 0 ? (
+        <div style={{ color: theme.TEXT_DIM, fontSize: TEXT_SIZE.BODY }}>
+          No clear candle pattern detected. Price moving within normal range.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: SPACE.SM }}>
+          {patterns.map((p, i) => (
+            <div
+              key={i}
+              style={{
+                padding: SPACE.SM,
+                background: p.color + "15",
+                borderLeft: `2px solid ${p.color}`,
+                borderRadius: RADIUS.SM,
+              }}
+            >
+              <div style={{ color: p.color, fontSize: TEXT_SIZE.BODY, fontWeight: TEXT_WEIGHT.BLACK, letterSpacing: 1 }}>
+                {p.name}
+              </div>
+              <div style={{ color: theme.TEXT_MUTED, fontSize: TEXT_SIZE.MICRO, marginTop: 2 }}>
+                {p.meaning}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ color: theme.TEXT_DIM, fontSize: 10, marginTop: SPACE.SM, fontStyle: "italic" }}>
+        Simplified single-candle analysis. For complex patterns (H&S, flags), view in chart.
+      </div>
+    </Section>
+  );
+}
+
+// ═════════════════ BONUS #4: OI BUILDUP SPEED ═════════════════
+
+export function OIVelocity({ strike, theme }) {
+  if (!strike) return null;
+  const ceOI = strike.ceOI || 0;
+  const peOI = strike.peOI || 0;
+  const ceVol = strike.ceVol || 0;
+  const peVol = strike.peVol || 0;
+
+  if (!ceOI && !peOI) return null;
+
+  // Velocity proxy: volume / OI ratio indicates fresh activity relative to existing positions
+  // Higher ratio = more turnover / fresh building
+  const ceVelocity = ceOI > 0 ? (ceVol / ceOI) * 100 : 0;
+  const peVelocity = peOI > 0 ? (peVol / peOI) * 100 : 0;
+
+  const getStatus = (v) => {
+    if (v > 50) return { label: "EXTREME", color: theme.RED };
+    if (v > 25) return { label: "HIGH", color: theme.AMBER };
+    if (v > 10) return { label: "ACTIVE", color: theme.ACCENT };
+    if (v > 3) return { label: "MODERATE", color: theme.GREEN };
+    return { label: "QUIET", color: theme.TEXT_MUTED };
+  };
+
+  const ceStatus = getStatus(ceVelocity);
+  const peStatus = getStatus(peVelocity);
+
+  return (
+    <Section title="⚡ OI Buildup Speed" accent={theme.AMBER} theme={theme}>
+      <div style={{ color: theme.TEXT_MUTED, fontSize: TEXT_SIZE.MICRO, marginBottom: SPACE.MD }}>
+        Volume/OI ratio indicates how actively this strike is being traded relative to existing positions.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: SPACE.MD }}>
+        <div style={{ padding: SPACE.MD, background: theme.GREEN_DIM, borderRadius: RADIUS.MD, borderLeft: `2px solid ${theme.GREEN}` }}>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
+            <span style={{ color: theme.GREEN, fontSize: 9, fontWeight: TEXT_WEIGHT.BOLD, letterSpacing: 1, textTransform: "uppercase" }}>CE</span>
+            <span style={{ color: ceStatus.color, fontSize: 9, fontWeight: TEXT_WEIGHT.BOLD, letterSpacing: 1 }}>{ceStatus.label}</span>
+          </div>
+          <div style={{ color: theme.TEXT, fontSize: 20, fontWeight: TEXT_WEIGHT.BOLD, fontFamily: FONT.MONO }}>
+            {ceVelocity.toFixed(1)}%
+          </div>
+          <div style={{ color: theme.TEXT_MUTED, fontSize: TEXT_SIZE.MICRO }}>
+            Vol {(ceVol / 100000).toFixed(1)}L / OI {(ceOI / 100000).toFixed(1)}L
+          </div>
+        </div>
+        <div style={{ padding: SPACE.MD, background: theme.RED_DIM, borderRadius: RADIUS.MD, borderLeft: `2px solid ${theme.RED}` }}>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
+            <span style={{ color: theme.RED, fontSize: 9, fontWeight: TEXT_WEIGHT.BOLD, letterSpacing: 1, textTransform: "uppercase" }}>PE</span>
+            <span style={{ color: peStatus.color, fontSize: 9, fontWeight: TEXT_WEIGHT.BOLD, letterSpacing: 1 }}>{peStatus.label}</span>
+          </div>
+          <div style={{ color: theme.TEXT, fontSize: 20, fontWeight: TEXT_WEIGHT.BOLD, fontFamily: FONT.MONO }}>
+            {peVelocity.toFixed(1)}%
+          </div>
+          <div style={{ color: theme.TEXT_MUTED, fontSize: TEXT_SIZE.MICRO }}>
+            Vol {(peVol / 100000).toFixed(1)}L / OI {(peOI / 100000).toFixed(1)}L
+          </div>
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+// ═════════════════ BONUS #5: BID-ASK SPREAD ═════════════════
+
+export function BidAskSpread({ strike, theme }) {
+  const [spread, setSpread] = useState(null);
+
+  useEffect(() => {
+    if (!strike) return;
+    const type = strike.type || "CE";
+    fetchJ(`/api/spread?index=${strike.index}&strike=${strike.strike}&type=${type}`).then(setSpread);
+  }, [strike?.index, strike?.strike, strike?.type]);
+
+  if (!spread || spread.error) {
+    return (
+      <Section title="💧 Bid-Ask Spread (liquidity)" theme={theme}>
+        <div style={{ color: theme.TEXT_DIM, fontSize: TEXT_SIZE.MICRO }}>
+          {spread?.error || "Fetching depth..."}
+        </div>
+      </Section>
+    );
+  }
+
+  const color = spread.status === "tight" ? theme.GREEN : spread.status === "moderate" ? theme.AMBER : theme.RED;
+  const advice = spread.status === "tight"
+    ? "Tight spread — safe for market orders."
+    : spread.status === "moderate"
+    ? "Moderate spread — consider limit orders."
+    : "Wide spread — USE LIMIT ORDERS, avoid market orders (slippage risk).";
+
+  return (
+    <Section title="💧 Bid-Ask Spread (liquidity)" accent={color} theme={theme}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(100px, 1fr))", gap: SPACE.MD, marginBottom: SPACE.MD }}>
+        <Stat label="Bid" value={`₹${spread.bid}`} color={theme.RED} sub={`${spread.bidQty} qty`} theme={theme} />
+        <Stat label="Ask" value={`₹${spread.ask}`} color={theme.GREEN} sub={`${spread.askQty} qty`} theme={theme} />
+        <Stat label="LTP" value={`₹${spread.ltp}`} theme={theme} />
+        <Stat label="Spread" value={`₹${spread.spread}`} color={color} sub={`${spread.spreadPct}%`} theme={theme} />
+      </div>
+      <div style={{ padding: SPACE.SM, background: color + "15", borderLeft: `2px solid ${color}`, borderRadius: RADIUS.SM, color: theme.TEXT, fontSize: TEXT_SIZE.BODY }}>
+        <strong style={{ color, letterSpacing: 1, textTransform: "uppercase", marginRight: 8 }}>{spread.status}</strong>
+        {advice}
+      </div>
+    </Section>
+  );
+}
+
+// ═════════════════ BONUS #7: NSE NEWS / MARKET CONTEXT ═════════════════
+
+export function MarketNews({ strikes, theme }) {
+  const [summary, setSummary] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [asked, setAsked] = useState(false);
+
+  const fetchSummary = () => {
+    if (!strikes?.length) return;
+    setLoading(true);
+    setAsked(true);
+    fetch("/api/news/summary", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ strikes: strikes.slice(0, 4) }),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        setSummary(d.summary || d.error || "No summary available");
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  };
+
+  return (
+    <Section title="📰 Market Context (AI synthesis)" accent={theme.CYAN} theme={theme}>
+      {!asked && (
+        <button
+          onClick={fetchSummary}
+          style={{
+            background: theme.CYAN,
+            color: "#000",
+            border: "none",
+            borderRadius: RADIUS.SM,
+            padding: "6px 14px",
+            cursor: "pointer",
+            fontSize: TEXT_SIZE.MICRO,
+            fontWeight: TEXT_WEIGHT.BOLD,
+            letterSpacing: 1,
+            textTransform: "uppercase",
+          }}
+        >
+          🧠 Synthesize market context
+        </button>
+      )}
+      {loading && <div style={{ color: theme.TEXT_DIM, fontSize: TEXT_SIZE.BODY }}>Claude analyzing...</div>}
+      {summary && !loading && (
+        <div style={{ color: theme.TEXT, fontSize: TEXT_SIZE.BODY, lineHeight: 1.6, padding: SPACE.MD, background: theme.SURFACE_HI, borderRadius: RADIUS.MD }}>
+          {summary}
+        </div>
+      )}
+      <div style={{ color: theme.TEXT_DIM, fontSize: 10, marginTop: SPACE.SM, fontStyle: "italic" }}>
+        AI synthesizes live signals + unusual activity + OI shifts relevant to pinned strikes.
+      </div>
+    </Section>
+  );
+}
+
+// ═════════════════ BONUS #8: NIFTY-BN CORRELATION ═════════════════
+
+export function IndexCorrelation({ theme }) {
+  const [data, setData] = useState(null);
+
+  useEffect(() => {
+    const fetchCorr = () => fetchJ("/api/correlation?minutes=30").then(setData);
+    fetchCorr();
+    const iv = setInterval(fetchCorr, 30000);
+    return () => clearInterval(iv);
+  }, []);
+
+  if (!data || data.error) {
+    return (
+      <Section title="🔗 NIFTY vs BANKNIFTY" theme={theme}>
+        <div style={{ color: theme.TEXT_DIM, fontSize: TEXT_SIZE.MICRO }}>
+          {data?.error || "Loading correlation..."}
+        </div>
+      </Section>
+    );
+  }
+
+  const corr = data.correlation || 0;
+  const leader = data.leader;
+  const corrColor = corr > 0.7 ? theme.GREEN : corr > 0.3 ? theme.AMBER : corr > -0.3 ? theme.TEXT_MUTED : theme.RED;
+  const corrLabel = corr > 0.7 ? "STRONG" : corr > 0.3 ? "MODERATE" : corr > -0.3 ? "WEAK" : "INVERSE";
+
+  let leaderText = "";
+  if (leader === "BANKNIFTY") leaderText = "BANKNIFTY is leading — watch BN signals first, NIFTY usually follows within 2-5 min.";
+  else if (leader === "NIFTY") leaderText = "NIFTY is leading — mainstream flow driving both indices.";
+  else if (leader === "MOVING_TOGETHER") leaderText = "Both indices moving in sync — no clear leader.";
+  else leaderText = "Insufficient data for leader detection.";
+
+  return (
+    <Section title="🔗 NIFTY vs BANKNIFTY" accent={corrColor} theme={theme}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: SPACE.MD, marginBottom: SPACE.MD }}>
+        <Stat label="Correlation" value={corr.toFixed(2)} color={corrColor} sub={corrLabel} theme={theme} />
+        <Stat label="NIFTY Vol" value={`${data.niftyVol?.toFixed(2) || "—"}%`} theme={theme} />
+        <Stat label="BN Vol" value={`${data.bnVol?.toFixed(2) || "—"}%`} theme={theme} />
+        <Stat label="Leader" value={leader || "—"} color={theme.PURPLE} theme={theme} />
+      </div>
+      <div style={{ color: theme.TEXT, fontSize: TEXT_SIZE.BODY, lineHeight: 1.5 }}>
+        {leaderText}
+      </div>
+      <div style={{ color: theme.TEXT_DIM, fontSize: 10, marginTop: SPACE.SM, fontStyle: "italic" }}>
+        Rolling 30-min window, based on {data.samples || 0} 1-min samples.
+      </div>
+    </Section>
   );
 }

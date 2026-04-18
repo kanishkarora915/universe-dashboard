@@ -1098,6 +1098,207 @@ async def battle_compare(payload: dict):
     return {"strikes": enriched, "strategies": strategies}
 
 
+# ── Battle Station Bonus: strike history / spread / correlation ────────
+
+@app.get("/api/strike-history")
+async def strike_history(index: str, strike: int, minutes: int = 30):
+    """Return time-ordered LTP + OI snapshots for a specific strike over
+    the last N minutes. Used for inline sparklines in Battle Station."""
+    idx = index.upper()
+    if not engine or idx not in ("NIFTY", "BANKNIFTY"):
+        return {"points": []}
+
+    # Read from trading_times market_snapshots (already captures per-tick data)
+    data_dir = Path("/data") if Path("/data").is_dir() else Path(__file__).parent
+    db = data_dir / "trading_times.db"
+    if not db.exists():
+        return {"points": []}
+
+    try:
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+        conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
+        # market_snapshots has ATM strikes LTP, for specific strike we approximate
+        # using spot + atm_ce_ltp / atm_pe_ltp. For exact strike history, we'd need
+        # a dedicated per-strike table. For now, return spot + ATM premium trend.
+        rows = conn.execute(
+            "SELECT timestamp, spot, atm_ce_ltp, atm_pe_ltp FROM market_snapshots "
+            "WHERE idx=? AND timestamp > ? ORDER BY timestamp ASC",
+            (idx, cutoff)
+        ).fetchall()
+        conn.close()
+        points = [{
+            "t": r["timestamp"][11:16] if r["timestamp"] else "",
+            "spot": r["spot"],
+            "ceLTP": r["atm_ce_ltp"],
+            "peLTP": r["atm_pe_ltp"],
+        } for r in rows]
+        return {"points": points, "strike": strike, "index": idx}
+    except Exception as e:
+        print(f"[STRIKE-HISTORY] {e}")
+        return {"points": [], "error": str(e)}
+
+
+@app.get("/api/spread")
+async def spread_check(index: str, strike: int, type: str = "CE"):
+    """Fetch Kite depth quote to compute bid-ask spread % for a strike.
+    Used for 'wide spread' warning in Battle Station."""
+    idx = index.upper()
+    if not engine or idx not in ("NIFTY", "BANKNIFTY"):
+        return {"error": "Engine not ready"}
+
+    try:
+        # Find instrument
+        cfg = {"NIFTY": "NIFTY", "BANKNIFTY": "BANKNIFTY"}[idx]
+        nearest = str(engine.nearest_expiry.get(idx, ""))
+        from datetime import date as date_type
+        target_date = date_type.fromisoformat(nearest) if nearest else None
+        if not target_date:
+            return {"error": "No expiry"}
+
+        opts = [i for i in engine.nfo_instruments
+                if i["name"] == cfg
+                and i["instrument_type"] == type.upper()
+                and i["expiry"] == target_date
+                and int(i["strike"]) == int(strike)]
+        if not opts:
+            return {"error": f"Strike {strike} {type} not found"}
+
+        sym = f"NFO:{opts[0]['tradingsymbol']}"
+        q = engine.kite.quote([sym]).get(sym, {})
+        depth = q.get("depth", {})
+        buy = depth.get("buy", [{}])[0] if depth.get("buy") else {}
+        sell = depth.get("sell", [{}])[0] if depth.get("sell") else {}
+        bid = buy.get("price", 0)
+        ask = sell.get("price", 0)
+        ltp = q.get("last_price", 0)
+        spread = ask - bid if (bid and ask) else 0
+        spread_pct = (spread / ltp * 100) if ltp else 0
+        status = "tight" if spread_pct < 0.5 else "moderate" if spread_pct < 1.5 else "wide"
+        return {
+            "bid": bid, "ask": ask, "ltp": ltp,
+            "spread": spread, "spreadPct": round(spread_pct, 2),
+            "bidQty": buy.get("quantity", 0),
+            "askQty": sell.get("quantity", 0),
+            "status": status,
+        }
+    except Exception as e:
+        print(f"[SPREAD] {e}")
+        return {"error": str(e)}
+
+
+@app.get("/api/correlation")
+async def correlation_check(minutes: int = 30):
+    """Compute rolling correlation + leader-lag between NIFTY and BANKNIFTY
+    using recent 1-min price changes from trading_times."""
+    if not engine:
+        return {"error": "Engine not ready"}
+    try:
+        data_dir = Path("/data") if Path("/data").is_dir() else Path(__file__).parent
+        db = data_dir / "trading_times.db"
+        if not db.exists():
+            return {"correlation": 0, "leader": "UNKNOWN"}
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+        conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
+        n_rows = conn.execute(
+            "SELECT timestamp, spot FROM market_snapshots WHERE idx='NIFTY' AND timestamp > ? ORDER BY timestamp",
+            (cutoff,)
+        ).fetchall()
+        b_rows = conn.execute(
+            "SELECT timestamp, spot FROM market_snapshots WHERE idx='BANKNIFTY' AND timestamp > ? ORDER BY timestamp",
+            (cutoff,)
+        ).fetchall()
+        conn.close()
+
+        if len(n_rows) < 5 or len(b_rows) < 5:
+            return {"correlation": 0, "leader": "NOT_ENOUGH_DATA", "samples": min(len(n_rows), len(b_rows))}
+
+        # Pair by nearest timestamp
+        n_series = [r["spot"] for r in n_rows]
+        b_series = [r["spot"] for r in b_rows]
+        n = min(len(n_series), len(b_series))
+        n_series, b_series = n_series[:n], b_series[:n]
+
+        # Compute % returns
+        n_ret = [(n_series[i] - n_series[i-1]) / n_series[i-1] for i in range(1, n) if n_series[i-1]]
+        b_ret = [(b_series[i] - b_series[i-1]) / b_series[i-1] for i in range(1, n) if b_series[i-1]]
+        if not n_ret or not b_ret:
+            return {"correlation": 0, "leader": "UNKNOWN"}
+
+        # Pearson correlation
+        m = min(len(n_ret), len(b_ret))
+        n_ret, b_ret = n_ret[:m], b_ret[:m]
+        mean_n = sum(n_ret) / m
+        mean_b = sum(b_ret) / m
+        cov = sum((n_ret[i] - mean_n) * (b_ret[i] - mean_b) for i in range(m)) / m
+        var_n = sum((x - mean_n)**2 for x in n_ret) / m
+        var_b = sum((x - mean_b)**2 for x in b_ret) / m
+        corr = cov / ((var_n * var_b)**0.5) if (var_n > 0 and var_b > 0) else 0
+
+        # Leader detection: compare volatility / recent momentum
+        # If BN moves happened slightly earlier or are bigger, BN is leading
+        n_vol = (var_n ** 0.5) * 100
+        b_vol = (var_b ** 0.5) * 100
+        leader = "BANKNIFTY" if b_vol > n_vol * 1.1 else "NIFTY" if n_vol > b_vol * 1.1 else "MOVING_TOGETHER"
+
+        return {
+            "correlation": round(corr, 3),
+            "niftyVol": round(n_vol, 3),
+            "bnVol": round(b_vol, 3),
+            "leader": leader,
+            "samples": m,
+            "window": minutes,
+        }
+    except Exception as e:
+        print(f"[CORRELATION] {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/news/summary")
+async def news_summary(payload: dict):
+    """Claude-based summary of current market events relevant to the pinned strike(s).
+    Uses all available engine data to synthesize 'what's happening right now'."""
+    strikes = payload.get("strikes", [])
+    try:
+        import os, anthropic, json as _json
+        key = os.environ.get("CLAUDE_API_KEY", "")
+        if not key:
+            return {"summary": "", "error": "Claude API key not configured"}
+
+        # Gather context
+        live_data = engine.get_live_data() if engine else {}
+        signals = engine.get_signals() if engine else []
+        unusual = engine.get_unusual() if engine else []
+
+        context = {
+            "live": live_data,
+            "signals": signals[:5] if isinstance(signals, list) else [],
+            "unusual": unusual[:10] if isinstance(unusual, list) else [],
+            "pinnedStrikes": strikes,
+        }
+
+        client = anthropic.Anthropic(api_key=key)
+        prompt = f"""You are a market news synthesizer. Given the CURRENT market data below,
+produce a 3-sentence summary of what's moving the market right now that's relevant to
+these specific strikes: {_json.dumps(strikes, default=str)[:500]}.
+
+Market data: {_json.dumps(context, default=str)[:2500]}
+
+Focus on: unusual activity, signals driving the direction, major OI shifts, expiry proximity.
+Be specific with numbers. No hedging language. Max 3 sentences."""
+        msg = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return {"summary": msg.content[0].text.strip()}
+    except Exception as e:
+        return {"summary": "", "error": str(e)}
+
+
 # ── Replay Mode Route (keep existing) ────────────────────────────────────
 
 
