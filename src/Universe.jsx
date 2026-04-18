@@ -2758,7 +2758,7 @@ export default function Universe({ onLogout }) {
     "cmd+shift+r": () => setReplayOpen(true),
     "ctrl+shift+r": () => setReplayOpen(true),
     "b": () => {
-      if (watchlist.pinned.length >= 2) setBattleOpen(true);
+      if (watchlist.pinned.length >= 1) setBattleOpen(true);
     },
     "cmd+shift+b": () => setBattleOpen(true),
     "ctrl+shift+b": () => setBattleOpen(true),
@@ -2894,9 +2894,11 @@ export default function Universe({ onLogout }) {
           flashingTab={flashingTab}
           watchlist={watchlist.pinned}
           onWatchlistClick={openStrike}
+          onWatchlistUnpin={watchlist.togglePin}
+          onWatchlistAdd={() => setSearchOpen(true)}
           onReplayClick={() => setReplayOpen(true)}
           onBattleClick={() => setBattleOpen(true)}
-          battleEnabled={watchlist.pinned.length >= 2}
+          battleEnabled={watchlist.pinned.length >= 1}
         />
 
         {/* MAIN AREA — section nav + content */}

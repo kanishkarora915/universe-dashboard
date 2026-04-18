@@ -122,7 +122,7 @@ function SidebarButton({ tab, active, onClick, badge, flashing, theme }) {
   );
 }
 
-function WatchlistItem({ strike, onClick, theme }) {
+function WatchlistItem({ strike, onClick, onUnpin, theme }) {
   const [hover, setHover] = useState(false);
   return (
     <div
@@ -132,13 +132,14 @@ function WatchlistItem({ strike, onClick, theme }) {
     >
       <button
         onClick={onClick}
+        aria-label={`Open ${strike.index} ${strike.strike} ${strike.type || ""} details`}
         style={{
           width: 36,
           height: 24,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          background: "transparent",
+          background: hover ? theme.SURFACE_HI : "transparent",
           color: strike.type === "CE" ? theme.GREEN : strike.type === "PE" ? theme.RED : theme.TEXT_MUTED,
           border: `1px solid ${theme.BORDER}`,
           borderRadius: RADIUS.XS,
@@ -152,6 +153,40 @@ function WatchlistItem({ strike, onClick, theme }) {
       >
         {String(strike.strike).slice(-3)}
       </button>
+      {/* Unpin × button — visible on hover */}
+      {hover && onUnpin && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onUnpin(strike);
+          }}
+          aria-label={`Unpin ${strike.index} ${strike.strike} ${strike.type || ""}`}
+          title={`Unpin ${strike.index} ${strike.strike} ${strike.type || ""}`}
+          style={{
+            position: "absolute",
+            top: -6,
+            right: -2,
+            width: 14,
+            height: 14,
+            background: theme.RED,
+            color: "#fff",
+            border: "none",
+            borderRadius: "50%",
+            cursor: "pointer",
+            fontSize: 10,
+            fontWeight: TEXT_WEIGHT.BOLD,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 0,
+            lineHeight: 1,
+            boxShadow: theme.SHADOW,
+            zIndex: Z.TOOLTIP,
+          }}
+        >
+          ×
+        </button>
+      )}
       {hover && (
         <div
           style={{
@@ -172,7 +207,7 @@ function WatchlistItem({ strike, onClick, theme }) {
             boxShadow: theme.SHADOW,
           }}
         >
-          {strike.index} {strike.strike} {strike.type || ""}
+          {strike.index} {strike.strike} {strike.type || ""} — click to open
         </div>
       )}
     </div>
@@ -186,6 +221,8 @@ export default function Sidebar({
   flashingTab,
   watchlist = [],
   onWatchlistClick,
+  onWatchlistUnpin,
+  onWatchlistAdd,
   onReplayClick,
   onBattleClick,
   battleEnabled,
@@ -254,7 +291,8 @@ export default function Sidebar({
           />
         )}
 
-        {watchlist.length > 0 && (
+        {/* Watchlist: always show header + Add button when callback provided */}
+        {(watchlist.length > 0 || onWatchlistAdd) && (
           <>
             <div
               style={{
@@ -272,18 +310,56 @@ export default function Sidebar({
                 padding: `0 0 ${SPACE.XS}px`,
                 fontFamily: FONT.UI,
               }}
-              title="Pinned strikes"
+              title={`Watchlist — ${watchlist.length} pinned strike(s)`}
+              aria-label={`Watchlist with ${watchlist.length} pinned strikes`}
             >
               ★
             </div>
+
             {watchlist.slice(0, 8).map((strike, i) => (
               <WatchlistItem
-                key={i}
+                key={`${strike.index}-${strike.strike}-${strike.type || ""}-${i}`}
                 strike={strike}
                 onClick={() => onWatchlistClick && onWatchlistClick(strike)}
+                onUnpin={onWatchlistUnpin}
                 theme={theme}
               />
             ))}
+
+            {/* Quick-add + button — opens search to pin more */}
+            {onWatchlistAdd && watchlist.length < 8 && (
+              <button
+                onClick={onWatchlistAdd}
+                aria-label="Add strike to watchlist — opens search"
+                title="Pin more strikes (⌘K)"
+                style={{
+                  width: 36,
+                  height: 24,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "transparent",
+                  color: theme.ACCENT,
+                  border: `1px dashed ${theme.ACCENT}66`,
+                  borderRadius: RADIUS.XS,
+                  cursor: "pointer",
+                  fontSize: 14,
+                  fontWeight: TEXT_WEIGHT.BOLD,
+                  transition: TRANSITION.FAST,
+                  margin: "0 auto",
+                }}
+                onMouseOver={(e) => {
+                  e.currentTarget.style.background = theme.ACCENT_DIM;
+                  e.currentTarget.style.borderStyle = "solid";
+                }}
+                onMouseOut={(e) => {
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.borderStyle = "dashed";
+                }}
+              >
+                +
+              </button>
+            )}
           </>
         )}
 

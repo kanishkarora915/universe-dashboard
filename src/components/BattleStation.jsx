@@ -133,7 +133,7 @@ export default function BattleStation({ isOpen, onClose, pinnedStrikes = [], onR
   const [fetchError, setFetchError] = useState(null);
 
   useEffect(() => {
-    if (!isOpen || pinnedStrikes.length < 2) return;
+    if (!isOpen || pinnedStrikes.length < 1) return;
     setLoading(true);
     setFetchError(null);
     // Fetch comparison (no AI — fast)
@@ -246,7 +246,7 @@ export default function BattleStation({ isOpen, onClose, pinnedStrikes = [], onR
                 marginTop: 2,
               }}
             >
-              {strikes.length} STRIKE{strikes.length === 1 ? "" : "S"} COMPARED
+              {strikes.length === 1 ? "DEEP ANALYSIS" : `${strikes.length} STRIKES COMPARED`}
             </div>
             {spot > 0 && (
               <div
@@ -305,18 +305,18 @@ export default function BattleStation({ isOpen, onClose, pinnedStrikes = [], onR
           </div>
         )}
 
-        {!loading && pinnedStrikes.length < 2 && (
+        {!loading && pinnedStrikes.length < 1 && (
           <div style={{ textAlign: "center", padding: SPACE.XXXL, color: theme.TEXT_DIM, fontSize: TEXT_SIZE.BODY }}>
-            Pin at least 2 strikes to compare.
+            Pin a strike to analyze it.
             <br />
             <span style={{ fontSize: TEXT_SIZE.MICRO, color: theme.TEXT_DIM }}>
-              (Open search with ⌘K, pin strikes with ☆)
+              (Open search with ⌘K, pin with ☆. Pin 2+ for comparison mode.)
             </span>
           </div>
         )}
 
-        {/* Backend error OR empty response despite 2+ pinned */}
-        {!loading && pinnedStrikes.length >= 2 && (fetchError || strikes.length < 2) && (
+        {/* Backend error OR empty response despite pinned strikes */}
+        {!loading && pinnedStrikes.length >= 1 && (fetchError || strikes.length < 1) && (
           <div
             role="alert"
             style={{
@@ -364,7 +364,7 @@ export default function BattleStation({ isOpen, onClose, pinnedStrikes = [], onR
           </div>
         )}
 
-        {!loading && strikes.length >= 2 && (
+        {!loading && strikes.length >= 1 && (
           <>
             {/* AI Verdict Card (top) — shows placeholder until user clicks Ask AI */}
             {!data?.verdict && (
