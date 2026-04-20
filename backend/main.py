@@ -511,6 +511,42 @@ async def trades_alert_feed():
     return engine.trade_manager.get_trade_alerts()
 
 
+# ── Shadow Autopsy endpoints ──
+
+@app.get("/api/shadow/today")
+async def shadow_today():
+    """Today's shadow autopsy — 52 paper trades on ATM±6 CE+PE, which won/lost."""
+    try:
+        from shadow_autopsy import get_today_summary
+        return get_today_summary()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/shadow/history")
+async def shadow_history(days: int = 7):
+    """Historical shadow autopsy performance."""
+    try:
+        from shadow_autopsy import get_history
+        return get_history(days)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/shadow/trigger-open")
+async def shadow_trigger_open():
+    """Manual trigger — force-open shadow trades NOW (for testing or missed 9:20 AM)."""
+    global engine
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from shadow_autopsy import take_snapshot_open
+        count = take_snapshot_open(engine)
+        return {"status": "success", "created": count}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.post("/api/trades/exit/{trade_id}")
 async def manual_exit_trade(trade_id: int):
     """Manual exit — user clicks EXIT button on a position."""

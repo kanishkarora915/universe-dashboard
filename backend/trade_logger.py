@@ -19,6 +19,7 @@ INITIAL_CAPITAL = 1000000  # ₹10 lakh starting capital
 MAX_RISK_PER_TRADE_PCT = 1.5  # Risk 1.5% of running capital per trade (₹15K on ₹10L)
 MAX_DAILY_LOSS_PCT = 5  # Stop trading after 5% daily loss
 MAX_SIMULTANEOUS_TRADES = 10  # No practical limit — take every valid signal. Per-(idx,action,strike) dup check below prevents same signal duplicates.
+MAX_DAILY_TRADES = 6  # Real trades per day — prevents overtrading
 
 # NSE Holidays — Auto-fetched from Kite API, fallback to hardcoded
 _NSE_HOLIDAYS_CACHE = None
@@ -913,6 +914,15 @@ class TradeManager:
             "SELECT COUNT(*) FROM trades WHERE status='OPEN'"
         ).fetchone()[0]
         if total_open >= MAX_SIMULTANEOUS_TRADES:
+            conn.close()
+            return False
+
+        # ── Daily trade cap: max 6 trades/day (prevents overtrading) ──
+        today_count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE entry_time > ?",
+            (today_start,)
+        ).fetchone()[0]
+        if today_count >= MAX_DAILY_TRADES:
             conn.close()
             return False
 

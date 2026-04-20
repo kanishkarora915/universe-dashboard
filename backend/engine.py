@@ -340,6 +340,12 @@ class MarketEngine:
         self._tt_last_capture = 0
         self._tt_yesterday_saved = False
 
+        # ── Shadow autopsy: paper-track ATM±6 CE+PE daily ──
+        self._shadow_opened_today = False     # True after 9:20 AM open snapshot
+        self._shadow_closed_today = False     # True after 3:15 PM close
+        self._shadow_last_update = 0          # Timestamp of last update_all call
+        self._shadow_last_date = ""           # Track date to reset flags daily
+
         # ── Seller ratio history for cooking detection ──
         self._seller_ratio_history = {"nifty": [], "banknifty": []}  # List of {time, pe_ratio, ce_ratio}
 
@@ -459,6 +465,16 @@ class MarketEngine:
                 save_eod_snapshot(self, idx)
         except Exception as e:
             print(f"[GAP] EOD save error: {e}")
+
+    def _safe_shadow_call(self, method_name):
+        """Safely invoke shadow_autopsy methods — isolated from tick loop."""
+        try:
+            import shadow_autopsy
+            fn = getattr(shadow_autopsy, method_name, None)
+            if fn:
+                fn(self)
+        except Exception as e:
+            print(f"[SHADOW] {method_name} error: {e}")
 
     def _start_trap_scanner(self):
         """Initialize and start the Trap Fingerprint Engine."""
@@ -3370,6 +3386,39 @@ class MarketEngine:
         if now_ist.hour == 15 and now_ist.minute >= 25 and not self._tt_yesterday_saved:
             self._tt_yesterday_saved = True
             threading.Thread(target=self._save_yesterday_oi, daemon=True).start()
+
+        # ── Shadow Autopsy Scheduler ──
+        today_str = now_ist.strftime("%Y-%m-%d")
+        if self._shadow_last_date != today_str:
+            # New day — reset flags
+            self._shadow_last_date = today_str
+            self._shadow_opened_today = False
+            self._shadow_closed_today = False
+
+        # 9:20 AM → open shadow trades (52 paper trades on ATM±6 CE+PE)
+        if not self._shadow_opened_today and now_ist.hour == 9 and now_ist.minute >= 20 and now_ist.minute < 30:
+            self._shadow_opened_today = True
+            threading.Thread(
+                target=lambda: self._safe_shadow_call("take_snapshot_open"),
+                daemon=True, name="shadow-open"
+            ).start()
+
+        # Every 60s during market hours → update all open shadow trades
+        market_active = (now_ist.hour == 9 and now_ist.minute >= 20) or (10 <= now_ist.hour <= 14) or (now_ist.hour == 15 and now_ist.minute <= 15)
+        if market_active and self._shadow_opened_today and now - self._shadow_last_update >= 60:
+            self._shadow_last_update = now
+            threading.Thread(
+                target=lambda: self._safe_shadow_call("update_all"),
+                daemon=True, name="shadow-update"
+            ).start()
+
+        # 3:15 PM → close all shadow trades, calc final PnL
+        if not self._shadow_closed_today and self._shadow_opened_today and now_ist.hour == 15 and now_ist.minute >= 15:
+            self._shadow_closed_today = True
+            threading.Thread(
+                target=lambda: self._safe_shadow_call("close_all"),
+                daemon=True, name="shadow-close"
+            ).start()
 
         # Auto-trade: SL/target check every 5s (lightweight), verdict every 120s (heavy, background)
         if hasattr(self, 'trade_manager') and self.trade_manager and now - self.trade_manager._last_sl_check >= 5:
