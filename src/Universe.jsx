@@ -8,6 +8,7 @@ import TradeAutopsyTab from "./TradeAutopsyTab";
 import LiveTicker from "./components/LiveTicker";
 import Notifications from "./components/Notifications";
 import SignalDashboard from "./components/SignalDashboard";
+import BuyerCockpit from "./components/BuyerCockpit";
 import TopBar from "./components/TopBar";
 import Sidebar from "./components/Sidebar";
 import SectionNav from "./components/SectionNav";
@@ -2834,15 +2835,15 @@ export default function Universe({ onLogout }) {
     switch (activeTab) {
       case "dashboard":
         return (
-          <div style={{ display: "flex", flexDirection: "column", gap: SPACE.MD }}>
-            {(niftyHero || bnHero) && (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: SPACE.MD }}>
-                <VerdictHero index="NIFTY" verdict={niftyHero} reasons={niftyReasons} />
-                <VerdictHero index="BANKNIFTY" verdict={bnHero} reasons={bnReasons} />
-              </div>
-            )}
-            <SignalDashboard live={live} signals={signals} oiSummary={oiSummary} />
-          </div>
+          <BuyerCockpit
+            live={live}
+            verdicts={trapVerdict}
+            reasonsMap={{
+              nifty: trapVerdict?.nifty?.reasons,
+              banknifty: trapVerdict?.banknifty?.reasons,
+            }}
+            openPositions={[]}
+          />
         );
       case "live":    return <LiveDataTab liveData={live} />;
       case "signals": return <SignalsTab realSignals={signals} />;
