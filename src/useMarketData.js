@@ -122,7 +122,8 @@ export function useMarketData() {
 
   const fetchAllTabData = useCallback(async () => {
     try {
-      const [intradayData, nextdayData, weeklyData, unusualData, signalsData, oiData, sellerRes, tradeRes, hiddenRes] = await Promise.all([
+      const [liveData, intradayData, nextdayData, weeklyData, unusualData, signalsData, oiData, sellerRes, tradeRes, hiddenRes] = await Promise.all([
+        fetchLive().catch(() => null),
         fetchIntraday().catch(() => null),
         fetchNextDay().catch(() => null),
         fetchWeekly().catch(() => null),
@@ -133,6 +134,8 @@ export function useMarketData() {
         fetchTradeAnalysis().catch(() => null),
         fetchHiddenShift().catch(() => null),
       ]);
+      // Live data: always set if valid (primary source when WS not delivering)
+      if (liveData && !liveData.error && liveData.nifty) setLiveCached(liveData);
       if (intradayData && !intradayData.error) setIntradayCached(intradayData);
       if (nextdayData && !nextdayData.error) setNextdayCached(nextdayData);
       if (weeklyData && !weeklyData.error) setWeeklyCached(weeklyData);
