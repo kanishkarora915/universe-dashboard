@@ -533,6 +533,111 @@ async def trades_alert_feed():
     return engine.trade_manager.get_trade_alerts()
 
 
+# ── Buyer Suites endpoints (20 engines across 4 modules) ──
+
+@app.get("/api/buyer/greeks/{index}")
+async def buyer_greeks(index: str):
+    """6 Greeks engines: GEX, IVR, IV Skew, Vol Term, Theta, VIX Term."""
+    global engine
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from options_greeks import score_all_greeks_buyer
+        return score_all_greeks_buyer(engine, index.upper())
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/buyer/oi-intel/{index}")
+async def buyer_oi_intel(index: str):
+    """5 OI intelligence engines: Max Pain Drift, Strike Rotation, Delta-Adj, Fresh/Rolled, OTM/ITM."""
+    global engine
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from oi_intelligence import score_all_oi_intel_buyer
+        from datetime import datetime, timedelta
+        import pytz
+        now = datetime.now(pytz.timezone("Asia/Kolkata"))
+        idx = index.upper()
+        is_exp = (idx == "NIFTY" and now.weekday() == 1) or \
+                 (idx == "BANKNIFTY" and now.weekday() == 3 and (now + timedelta(days=7)).month != now.month)
+        return score_all_oi_intel_buyer(engine, idx, is_exp)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/buyer/time-patterns/{index}")
+async def buyer_time_patterns(index: str):
+    """4 time engines: ORB, Power Hour, Pre-market Gap, 0DTE."""
+    global engine
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from time_patterns import score_all_time_patterns_buyer
+        return score_all_time_patterns_buyer(engine, index.upper())
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/buyer/market-structure/{index}")
+async def buyer_market_structure(index: str):
+    """5 structure engines: Sweep, Pin Risk, Stop Hunt, Cross-Asset, Sectoral."""
+    global engine
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from market_structure import score_all_market_structure_buyer
+        from datetime import datetime, timedelta
+        import pytz
+        now = datetime.now(pytz.timezone("Asia/Kolkata"))
+        idx = index.upper()
+        is_exp = (idx == "NIFTY" and now.weekday() == 1) or \
+                 (idx == "BANKNIFTY" and now.weekday() == 3 and (now + timedelta(days=7)).month != now.month)
+        return score_all_market_structure_buyer(engine, idx, is_exp)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/buyer/full/{index}")
+async def buyer_full_suite(index: str):
+    """All 20 engines combined summary."""
+    global engine
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from options_greeks import score_all_greeks_buyer
+        from oi_intelligence import score_all_oi_intel_buyer
+        from time_patterns import score_all_time_patterns_buyer
+        from market_structure import score_all_market_structure_buyer
+        from datetime import datetime, timedelta
+        import pytz
+        now = datetime.now(pytz.timezone("Asia/Kolkata"))
+        idx = index.upper()
+        is_exp = (idx == "NIFTY" and now.weekday() == 1) or \
+                 (idx == "BANKNIFTY" and now.weekday() == 3 and (now + timedelta(days=7)).month != now.month)
+        g = score_all_greeks_buyer(engine, idx)
+        o = score_all_oi_intel_buyer(engine, idx, is_exp)
+        t = score_all_time_patterns_buyer(engine, idx)
+        s = score_all_market_structure_buyer(engine, idx, is_exp)
+        total_bull = g.get("bull", 0) + o.get("bull", 0) + t.get("bull", 0) + s.get("bull", 0)
+        total_bear = g.get("bear", 0) + o.get("bear", 0) + t.get("bear", 0) + s.get("bear", 0)
+        return {
+            "index": idx,
+            "is_expiry_day": is_exp,
+            "total_bull": total_bull,
+            "total_bear": total_bear,
+            "suites": {
+                "greeks": g,
+                "oi_intel": o,
+                "time_patterns": t,
+                "market_structure": s,
+            },
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Smart Money endpoints ──
 
 @app.get("/api/smart-money/{index}")

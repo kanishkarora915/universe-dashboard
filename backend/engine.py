@@ -2334,11 +2334,92 @@ class MarketEngine:
 
             _eng["smart_money"] = (bull_score - _bs0) + (bear_score - _be0)
 
+            # ═══════════════════════════════════════════════════════════════
+            # BUYER-SPECIFIC ENGINE SUITE (20 engines in 4 master groups)
+            # All engines tuned for CE/PE BUYER perspective (not seller)
+            # ═══════════════════════════════════════════════════════════════
+
+            # Detect expiry day
+            now_ist_exp = ist_now()
+            is_exp_nifty = (index == "NIFTY" and now_ist_exp.weekday() == 1)
+            is_exp_bn = (index == "BANKNIFTY" and now_ist_exp.weekday() == 3 and
+                         (now_ist_exp + timedelta(days=7)).month != now_ist_exp.month)
+            is_expiry = is_exp_nifty or is_exp_bn
+
+            # ── 12. OPTIONS GREEKS SUITE (6 engines, 60 pts max each side) ──
+            _bs0, _be0 = bull_score, bear_score
+            greeks_result = None
+            try:
+                from options_greeks import score_all_greeks_buyer
+                greeks_result = score_all_greeks_buyer(self, index)
+                bull_score += greeks_result.get("bull", 0)
+                bear_score += greeks_result.get("bear", 0)
+                for r in greeks_result.get("reasons", []):
+                    if greeks_result["bull"] >= greeks_result["bear"]:
+                        bull_reasons.append(r)
+                    else:
+                        bear_reasons.append(r)
+            except Exception as e:
+                print(f"[GREEKS] Score failed for {index}: {e}")
+            _eng["greeks_suite"] = (bull_score - _bs0) + (bear_score - _be0)
+
+            # ── 13. OI INTELLIGENCE SUITE (5 engines, 50 pts max each side) ──
+            _bs0, _be0 = bull_score, bear_score
+            oi_intel_result = None
+            try:
+                from oi_intelligence import score_all_oi_intel_buyer
+                oi_intel_result = score_all_oi_intel_buyer(self, index, is_expiry)
+                bull_score += oi_intel_result.get("bull", 0)
+                bear_score += oi_intel_result.get("bear", 0)
+                for r in oi_intel_result.get("reasons", []):
+                    if oi_intel_result["bull"] >= oi_intel_result["bear"]:
+                        bull_reasons.append(r)
+                    else:
+                        bear_reasons.append(r)
+            except Exception as e:
+                print(f"[OI_INTEL] Score failed for {index}: {e}")
+            _eng["oi_intel_suite"] = (bull_score - _bs0) + (bear_score - _be0)
+
+            # ── 14. TIME PATTERNS SUITE (4 engines, 40 pts max each side) ──
+            _bs0, _be0 = bull_score, bear_score
+            time_patterns_result = None
+            try:
+                from time_patterns import score_all_time_patterns_buyer
+                time_patterns_result = score_all_time_patterns_buyer(self, index)
+                bull_score += time_patterns_result.get("bull", 0)
+                bear_score += time_patterns_result.get("bear", 0)
+                for r in time_patterns_result.get("reasons", []):
+                    if time_patterns_result["bull"] >= time_patterns_result["bear"]:
+                        bull_reasons.append(r)
+                    else:
+                        bear_reasons.append(r)
+            except Exception as e:
+                print(f"[TIME] Score failed for {index}: {e}")
+            _eng["time_patterns_suite"] = (bull_score - _bs0) + (bear_score - _be0)
+
+            # ── 15. MARKET STRUCTURE SUITE (5 engines, 50 pts max each side) ──
+            _bs0, _be0 = bull_score, bear_score
+            structure_result = None
+            try:
+                from market_structure import score_all_market_structure_buyer
+                structure_result = score_all_market_structure_buyer(self, index, is_expiry)
+                bull_score += structure_result.get("bull", 0)
+                bear_score += structure_result.get("bear", 0)
+                for r in structure_result.get("reasons", []):
+                    if structure_result["bull"] >= structure_result["bear"]:
+                        bull_reasons.append(r)
+                    else:
+                        bear_reasons.append(r)
+            except Exception as e:
+                print(f"[STRUCTURE] Score failed for {index}: {e}")
+            _eng["market_structure_suite"] = (bull_score - _bs0) + (bear_score - _be0)
+
             # ════════════════════════════════════════════════
-            # FINAL DECISION — Based on probability spread (out of ~190 max)
+            # FINAL DECISION — Based on probability spread (out of ~390 max)
+            # 11 original engines (190) + 4 buyer suites (200 = 60+50+40+50)
             # ════════════════════════════════════════════════
-            bull_prob = min(bull_score, 190)
-            bear_prob = min(bear_score, 190)
+            bull_prob = min(bull_score, 390)
+            bear_prob = min(bear_score, 390)
             total = bull_prob + bear_prob if bull_prob + bear_prob > 0 else 1
             bull_pct = round(bull_prob / total * 100)
             bear_pct = round(bear_prob / total * 100)
@@ -2464,6 +2545,13 @@ class MarketEngine:
                 "engineScores": dict(_eng),
                 "predictive": predictive_result or {},
                 "smartMoney": smart_money_result or {},
+                "buyerSuites": {
+                    "greeks": greeks_result or {},
+                    "oiIntel": oi_intel_result or {},
+                    "timePatterns": time_patterns_result or {},
+                    "marketStructure": structure_result or {},
+                },
+                "isExpiryDay": is_expiry,
             }
 
         return result
