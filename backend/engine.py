@@ -346,6 +346,15 @@ class MarketEngine:
         self._shadow_last_update = 0          # Timestamp of last update_all call
         self._shadow_last_date = ""           # Track date to reset flags daily
 
+        # ── Predictive engine state: rolling buffers for momentum/velocity ──
+        try:
+            from predictive_engine import PredictiveState
+            self.predictive_state = PredictiveState()
+        except Exception as e:
+            print(f"[PREDICTIVE] Init failed: {e}")
+            self.predictive_state = None
+        self._predictive_last_record = 0
+
         # ── Seller ratio history for cooking detection ──
         self._seller_ratio_history = {"nifty": [], "banknifty": []}  # List of {time, pe_ratio, ce_ratio}
 
@@ -2262,17 +2271,40 @@ class MarketEngine:
 
             _eng["global_cues"] = (bull_score - _bs0) + (bear_score - _be0)
 
+            # ── 10. PREDICTIVE SIGNALS (25 pts each side max) ──
+            # Momentum + velocity + divergence + exhaustion — catches fast reversals
+            _bs0, _be0 = bull_score, bear_score
+            predictive_result = None
+            try:
+                if self.predictive_state:
+                    from predictive_engine import score_predictive
+                    predictive_result = score_predictive(self.predictive_state, index, ltp)
+                    bull_score += predictive_result.get("bullScore", 0)
+                    bear_score += predictive_result.get("bearScore", 0)
+                    for r in predictive_result.get("reasons", []):
+                        if predictive_result["bullScore"] > predictive_result["bearScore"]:
+                            bull_reasons.append(r)
+                        else:
+                            bear_reasons.append(r)
+                    # Merge engine scores for UI
+                    for k, v in predictive_result.get("engines", {}).items():
+                        _eng[f"pred_{k}"] = v
+            except Exception as e:
+                print(f"[PREDICTIVE] Score failed for {index}: {e}")
+
+            _eng["predictive"] = (bull_score - _bs0) + (bear_score - _be0)
+
             # ════════════════════════════════════════════════
-            # FINAL DECISION — Based on probability spread (out of ~140 max)
+            # FINAL DECISION — Based on probability spread (out of ~165 max)
             # ════════════════════════════════════════════════
-            bull_prob = min(bull_score, 140)
-            bear_prob = min(bear_score, 140)
+            bull_prob = min(bull_score, 165)
+            bear_prob = min(bear_score, 165)
             total = bull_prob + bear_prob if bull_prob + bear_prob > 0 else 1
             bull_pct = round(bull_prob / total * 100)
             bear_pct = round(bear_prob / total * 100)
 
-            # Need >60% edge for a trade
-            if bull_pct >= 60:
+            # Need >55% edge for a trade (relaxed from 60% with predictive confluence filter)
+            if bull_pct >= 55:
                 action = "BUY CE"
                 direction = "BULLISH"
                 win_pct = bull_pct
@@ -2280,7 +2312,7 @@ class MarketEngine:
                 against = bear_reasons
                 atm_data = chain.get(atm, {})
                 entry = atm_data.get("ce_ltp", 0)
-            elif bear_pct >= 60:
+            elif bear_pct >= 55:
                 action = "BUY PE"
                 direction = "BEARISH"
                 win_pct = bear_pct
@@ -2390,6 +2422,7 @@ class MarketEngine:
                 "nextWeek": next_pred,
                 "timestamp": ist_now().strftime("%I:%M:%S %p IST"),
                 "engineScores": dict(_eng),
+                "predictive": predictive_result or {},
             }
 
         return result
@@ -3357,6 +3390,27 @@ class MarketEngine:
             self._last_push = now
             self._push_to_clients()
 
+        # Predictive state recording (every ~5s, throttled inside)
+        if self.predictive_state and now - self._predictive_last_record >= 5:
+            self._predictive_last_record = now
+            try:
+                for idx in ["NIFTY", "BANKNIFTY"]:
+                    spot_tok = self.spot_tokens.get(idx)
+                    spot = self.prices.get(spot_tok, {}).get("ltp", 0) if spot_tok else 0
+                    if spot <= 0:
+                        continue
+                    chain = self.chains.get(idx, {})
+                    cfg = INDEX_CONFIG[idx]
+                    atm = round(spot / cfg["strike_gap"]) * cfg["strike_gap"]
+                    atm_data = chain.get(atm, {})
+                    ce_ltp = atm_data.get("ce_ltp", 0)
+                    pe_ltp = atm_data.get("pe_ltp", 0)
+                    total_ce_oi = sum(d.get("ce_oi", 0) for d in chain.values())
+                    total_pe_oi = sum(d.get("pe_oi", 0) for d in chain.values())
+                    self.predictive_state.record(idx, spot, ce_ltp, pe_ltp, total_ce_oi, total_pe_oi)
+            except Exception as e:
+                pass
+
         # OI snapshot every 30 minutes for Hidden Shift detection
         if now - self._last_snapshot_time >= 1800:
             self._take_oi_snapshot()
@@ -3427,8 +3481,8 @@ class MarketEngine:
                 # 1. Monitor open trades for SL/target hits (FAST — just reads chain data)
                 self.trade_manager.check_and_update(self.chains, self.prices, self.spot_tokens, self.token_to_info)
 
-                # 2. Heavy verdict check every 120s in BACKGROUND thread (doesn't block ticks)
-                if now - self.trade_manager._last_verdict_check >= 120:
+                # 2. Verdict check every 60s (was 120s) — catches reversals faster
+                if now - self.trade_manager._last_verdict_check >= 60:
                     self.trade_manager._last_verdict_check = now
                     threading.Thread(target=self._background_verdict_check, daemon=True).start()
             except Exception as e:
@@ -3504,10 +3558,17 @@ class MarketEngine:
                     # PRICE CONFIRMATION: Don't enter immediately.
                     # Store as pending. If no pending exists, create one.
                     # If pending exists and LTP still holds → confirm entry.
+                    # FAST CONFIRM: If predictive momentum strongly agrees → 30s confirm (was 60s).
                     pending = self.trade_manager._pending_entry
+                    try:
+                        from predictive_engine import should_fast_confirm
+                        fast = should_fast_confirm(v.get("predictive", {}), action)
+                    except Exception:
+                        fast = False
+                    min_confirm_age = 30 if fast else 60
                     if pending and pending["idx"] == idx and pending["action"] == action and pending["strike"] == int(atm):
                         age = time.time() - self.trade_manager._pending_entry_time
-                        if age >= 60:
+                        if age >= min_confirm_age:
                             if fresh_entry >= pending["entry_price"] * 0.97:
                                 tid = self.trade_manager.log_trade(
                                     idx=idx, action=action, strike=int(atm),

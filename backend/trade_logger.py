@@ -122,12 +122,18 @@ def _get_running_capital():
         return INITIAL_CAPITAL
 
 
-def calc_position_size(idx, entry_price, sl_price=0):
-    """Risk-based position sizing.
+def calc_position_size(idx, entry_price, sl_price=0, conviction=70):
+    """Risk-based position sizing SCALED by conviction.
+
+    Conviction scaling:
+      90%+ → full size (100% of max_risk)
+      80-89% → 75% of max_risk
+      70-79% → 50% of max_risk
+      55-69% → 25% of max_risk
 
     Instead of fixed lots, calculate based on:
     - Running capital (reduces after losses)
-    - Max risk per trade = 1.5% of running capital
+    - Max risk per trade × conviction multiplier
     - SL distance determines lot count
     """
     cfg = LOT_CONFIG.get(idx, LOT_CONFIG["NIFTY"])
@@ -136,28 +142,32 @@ def calc_position_size(idx, entry_price, sl_price=0):
     if entry_price <= 0:
         return 1, lot_size, lot_size
 
+    # Conviction multiplier on max risk
+    if conviction >= 90:
+        conv_mult = 1.0
+    elif conviction >= 80:
+        conv_mult = 0.75
+    elif conviction >= 70:
+        conv_mult = 0.50
+    else:
+        conv_mult = 0.25
+
     running_capital = _get_running_capital()
-    max_risk = running_capital * MAX_RISK_PER_TRADE_PCT / 100  # e.g., ₹15,000 on ₹10L
+    max_risk = running_capital * MAX_RISK_PER_TRADE_PCT / 100 * conv_mult
 
     # Risk per unit = entry - SL
     if sl_price > 0 and sl_price < entry_price:
         risk_per_unit = entry_price - sl_price
     else:
-        risk_per_unit = entry_price * 0.15  # Default 15% SL
+        risk_per_unit = entry_price * 0.15
 
-    risk_per_unit = max(risk_per_unit, 1)  # Prevent division by zero
+    risk_per_unit = max(risk_per_unit, 1)
 
-    # Max qty we can afford based on risk
     max_qty_by_risk = int(max_risk / risk_per_unit)
-
-    # Also cap by capital (can't buy more than capital allows)
-    max_qty_by_capital = int(running_capital * 0.5 / max(entry_price, 1))  # 50% max capital usage
-
-    # Take the stricter of the two
+    max_qty_by_capital = int(running_capital * 0.5 / max(entry_price, 1))
     max_qty = min(max_qty_by_risk, max_qty_by_capital)
 
-    # Convert to lots
-    lots = max(1, min(max_qty // lot_size, 20))  # Min 1 lot, max 20 lots
+    lots = max(1, min(max_qty // lot_size, 20))
     qty = lots * lot_size
 
     return lots, lot_size, qty
@@ -374,8 +384,8 @@ class TradeManager:
         sl_price = max(sl_price, round(entry_price - max(straddle * 0.15, 5)))
         sl_price = min(sl_price, round(entry_price * 0.85))  # Never tighter than 15%
 
-        # Position size based on risk (uses running capital, not fixed ₹10L)
-        lots, lot_size, qty = calc_position_size(idx, entry_price, sl_price)
+        # Position size SCALED by conviction (probability) — more size on A+ setups
+        lots, lot_size, qty = calc_position_size(idx, entry_price, sl_price, conviction=probability)
 
         # Smart T1: based on straddle or 20% of entry
         if straddle > 0:
@@ -881,7 +891,8 @@ class TradeManager:
 
     def should_enter_trade(self, idx, verdict_data):
         """Practical entry — trade when edge exists. Don't overthink.
-        Market waits for no one. If signal is good, take the trade."""
+        Market waits for no one. If signal is good, take the trade.
+        With predictive confluence filter: lower thresholds if momentum agrees."""
         if not verdict_data or verdict_data.get("action") == "NO TRADE":
             return False
 
@@ -894,17 +905,48 @@ class TradeManager:
         if not market_open:
             return False
 
+        # ── TIME-OF-DAY FILTER ──
+        # Avoid lunch chop (11:30-13:00) unless very strong signal (80%+)
+        # Avoid last 5 min (>15:10) — theta decay too fast
         win_pct = verdict_data.get("winProbability", 0)
+        hour_min = now.hour * 100 + now.minute
+        if 1130 <= hour_min <= 1300 and win_pct < 80:
+            return False
+        if hour_min >= 1510:
+            return False
+
         bull_pct = verdict_data.get("bullPct", 50)
         bear_pct = verdict_data.get("bearPct", 50)
         spread = abs(bull_pct - bear_pct)
 
-        # ── BASIC QUALITY: 62%+ probability, 20+ spread ──
-        # Not 75%, not 82% — just a real edge. Market doesn't give perfect signals.
-        if win_pct < 62:
-            return False
-        if spread < 20:
-            return False
+        # ── PREDICTIVE CONFLUENCE FILTER ──
+        # Lower win threshold allowed IF momentum engines support the direction
+        predictive = verdict_data.get("predictive", {}) or {}
+        pred_bull = predictive.get("bullScore", 0)
+        pred_bear = predictive.get("bearScore", 0)
+        momentum = predictive.get("momentum", "NEUTRAL")
+        action = verdict_data.get("action", "")
+
+        # Momentum must align with trade direction
+        momentum_aligned = False
+        if "CE" in action and (pred_bull >= 5 or momentum in ("UP", "STRONG_UP")):
+            momentum_aligned = True
+        if "PE" in action and (pred_bear >= 5 or momentum in ("DOWN", "STRONG_DOWN")):
+            momentum_aligned = True
+
+        # ── QUALITY THRESHOLDS (adaptive based on momentum) ──
+        if momentum_aligned:
+            # Relaxed: 55% + 15 spread
+            if win_pct < 55:
+                return False
+            if spread < 15:
+                return False
+        else:
+            # Strict: 65% + 20 spread (need strong signal without momentum help)
+            if win_pct < 65:
+                return False
+            if spread < 20:
+                return False
 
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         conn = _conn()
@@ -971,8 +1013,13 @@ class TradeManager:
                             conn.close()
                             return False
 
-        # ── DAILY LOSS CAP: If lost 5% of capital today, need 70%+ (still trade, just careful) ──
-        today_loss = conn.execute(
+        # ── DAILY P&L GUARDS ──
+        today_pnl = conn.execute(
+            "SELECT COALESCE(SUM(pnl_rupees), 0) FROM trades WHERE entry_time > ? AND status != 'OPEN'",
+            (today_start,)
+        ).fetchone()[0] or 0
+
+        today_losses = conn.execute(
             "SELECT COALESCE(SUM(pnl_rupees), 0) FROM trades WHERE entry_time > ? AND status != 'OPEN' AND pnl_rupees < 0",
             (today_start,)
         ).fetchone()[0] or 0
@@ -980,9 +1027,32 @@ class TradeManager:
         conn.close()
 
         running_capital = _get_running_capital()
-        if today_loss < -(running_capital * MAX_DAILY_LOSS_PCT / 100):
+
+        # Guard 1: If lost 5% today, need 70%+ conviction
+        if today_losses < -(running_capital * MAX_DAILY_LOSS_PCT / 100):
             if win_pct < 70:
-                return False  # After heavy loss, just slightly more careful
+                return False
+
+        # Guard 2: If already profitable +3% today, protect the gain — only high-conviction
+        if today_pnl > (running_capital * 0.03):
+            if win_pct < 75:
+                return False  # Guard profits, only take A+ setups
+
+        # Guard 3: 3 consecutive losses → pause unless 80%+ conviction
+        last_3 = conn.execute(
+            "SELECT pnl_rupees FROM trades WHERE entry_time > ? AND status != 'OPEN' ORDER BY exit_time DESC LIMIT 3",
+            (today_start,)
+        ) if False else None  # Placeholder; reopen conn once
+        # Re-open connection to check last 3 (closed above)
+        _c = _conn()
+        last_3_rows = _c.execute(
+            "SELECT pnl_rupees FROM trades WHERE entry_time > ? AND status != 'OPEN' ORDER BY exit_time DESC LIMIT 3",
+            (today_start,)
+        ).fetchall()
+        _c.close()
+        if len(last_3_rows) == 3 and all((r[0] or 0) < 0 for r in last_3_rows):
+            if win_pct < 80:
+                return False
 
         return True
 
