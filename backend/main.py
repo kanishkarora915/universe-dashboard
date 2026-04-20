@@ -143,25 +143,46 @@ async def login(body: dict):
 
 @app.post("/api/auto-login")
 async def auto_login(request: Request):
-    """Auto-login using cached access_token from auto_login.py daemon."""
+    """Auto-login using cached access_token from auto_login.py daemon.
+    Accepts either:
+    - POST body with {api_key, access_token, api_secret} — for remote AWS daemon
+    - OR reads from cached token file on Render filesystem
+    """
     global engine
+    api_key = ""
+    access_token = ""
+    api_secret = ""
+
+    # Try body first (remote daemon pushes credentials directly)
+    try:
+        body = await request.json()
+        api_key = body.get("api_key", "")
+        access_token = body.get("access_token", "")
+        api_secret = body.get("api_secret", "")
+    except Exception:
+        body = {}
+
+    # Fallback to cached token file
     token_file = _data_dir / "access_token.json"
-    if not token_file.exists():
-        return JSONResponse({"error": "No cached token. Run auto_login.py first."}, status_code=400)
+    if not api_key and token_file.exists():
+        try:
+            token_data = json.loads(token_file.read_text())
+            api_key = token_data.get("api_key", "")
+            access_token = token_data.get("access_token", "")
+            api_secret = token_data.get("api_secret", "")
+        except Exception as e:
+            return JSONResponse({"error": f"Invalid token cache: {e}"}, status_code=400)
+
+    if not api_key or not access_token:
+        return JSONResponse({"error": "No credentials provided (body or cache)"}, status_code=400)
 
     try:
-        token_data = json.loads(token_file.read_text())
-        api_key = token_data.get("api_key", "")
-        access_token = token_data.get("access_token", "")
-
-        if not api_key or not access_token:
-            return JSONResponse({"error": "Invalid token cache"}, status_code=400)
 
         kite = KiteConnect(api_key=api_key)
         kite.set_access_token(access_token)
 
         session["api_key"] = api_key
-        session["api_secret"] = token_data.get("api_secret", "")
+        session["api_secret"] = api_secret
         session["access_token"] = access_token
         session["kite"] = kite
 

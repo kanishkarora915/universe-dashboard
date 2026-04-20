@@ -190,31 +190,29 @@ def kite_login():
 
 
 def trigger_backend_login():
-    """Tell the backend to use the new access_token."""
+    """POST real access_token to backend — starts engine without fake callback flow."""
     if not TOKEN_CACHE.exists():
         print("[AUTO-LOGIN] No cached token found")
         return False
 
     token_data = json.loads(TOKEN_CACHE.read_text())
 
-    # Option 1: POST to backend login API
     try:
-        # First login with API key/secret
-        resp = requests.post(f"{BACKEND_URL}/api/login", json={
-            "api_key": token_data["api_key"],
-            "api_secret": token_data["api_secret"],
-        })
+        resp = requests.post(
+            f"{BACKEND_URL}/api/auto-login",
+            json={
+                "api_key": token_data["api_key"],
+                "access_token": token_data["access_token"],
+                "api_secret": token_data.get("api_secret", ""),
+            },
+            timeout=30,
+        )
         if resp.ok:
-            login_url = resp.json().get("login_url", "")
-            print(f"[AUTO-LOGIN] Backend login initiated")
-
-        # Now simulate the callback with access_token
-        resp2 = requests.get(f"{BACKEND_URL}/api/callback", params={
-            "request_token": "auto_" + token_data["access_token"][:20],
-            "status": "success",
-        }, allow_redirects=False)
-        print(f"[AUTO-LOGIN] Backend callback triggered: {resp2.status_code}")
-        return True
+            print(f"[AUTO-LOGIN] Backend engine started: {resp.json()}")
+            return True
+        else:
+            print(f"[AUTO-LOGIN] Backend rejected: {resp.status_code} {resp.text[:200]}")
+            return False
     except Exception as e:
         print(f"[AUTO-LOGIN] Backend trigger failed: {e}")
         return False
