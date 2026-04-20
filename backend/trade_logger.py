@@ -18,7 +18,7 @@ DB_PATH = None
 INITIAL_CAPITAL = 1000000  # ₹10 lakh starting capital
 MAX_RISK_PER_TRADE_PCT = 1.5  # Risk 1.5% of running capital per trade (₹15K on ₹10L)
 MAX_DAILY_LOSS_PCT = 5  # Stop trading after 5% daily loss
-MAX_SIMULTANEOUS_TRADES = 1  # Only 1 trade at a time (across all indices)
+MAX_SIMULTANEOUS_TRADES = 10  # No practical limit — take every valid signal. Per-(idx,action,strike) dup check below prevents same signal duplicates.
 
 # NSE Holidays — Auto-fetched from Kite API, fallback to hardcoded
 _NSE_HOLIDAYS_CACHE = None
@@ -824,11 +824,22 @@ class TradeManager:
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         conn = _conn()
 
-        # ── No duplicate: max 1 open trade at a time ──
+        # ── Soft cap on concurrent trades ──
         total_open = conn.execute(
             "SELECT COUNT(*) FROM trades WHERE status='OPEN'"
         ).fetchone()[0]
         if total_open >= MAX_SIMULTANEOUS_TRADES:
+            conn.close()
+            return False
+
+        # ── Duplicate block: same idx+action already open → skip ──
+        # Prevents entering NIFTY BUY CE twice when it's already open.
+        action_str = verdict_data.get("action", "")
+        dup_open = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE status='OPEN' AND idx=? AND action=?",
+            (idx, action_str)
+        ).fetchone()[0]
+        if dup_open > 0:
             conn.close()
             return False
 
