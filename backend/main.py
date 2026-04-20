@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from kiteconnect import KiteConnect
 
 from engine import MarketEngine
+from trade_logger import ist_now
 from historical_validation import run_validation, get_real_trade_analysis
 from trade_autopsy import (
     get_trade_autopsy, get_win_loss_patterns, get_gap_prediction,
@@ -196,7 +197,7 @@ async def auto_login(request: Request):
         engine = MarketEngine(api_key=api_key, access_token=access_token, loop=event_loop)
         engine.start()
 
-        print(f"[AUTO-LOGIN] Engine started with cached token from {token_data.get('login_time', 'unknown')}")
+        print(f"[AUTO-LOGIN] Engine started with access_token {access_token[:8]}...")
         return {"status": "success", "message": "Auto-login successful, engine started"}
     except Exception as e:
         print(f"[AUTO-LOGIN] Failed: {e}")
@@ -1385,8 +1386,11 @@ async def ai_psychology_check(payload: dict):
         if trades_db.exists():
             tconn = sqlite3.connect(str(trades_db))
             tconn.row_factory = sqlite3.Row
+            from datetime import timedelta as _td
+            _one_day_ago = (ist_now() - _td(days=1)).isoformat()
             rows = tconn.execute(
-                "SELECT entry_time, pnl_rupees, qty, probability, status FROM trades WHERE entry_time > datetime('now', '-1 day') ORDER BY entry_time"
+                "SELECT entry_time, pnl_rupees, qty, probability, status FROM trades WHERE entry_time > ? ORDER BY entry_time",
+                (_one_day_ago,)
             ).fetchall()
             tconn.close()
             trades = [dict(r) for r in rows]
@@ -1567,8 +1571,8 @@ async def strike_history(index: str, strike: int, minutes: int = 30):
         return {"points": []}
 
     try:
-        from datetime import datetime, timedelta
-        cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+        from datetime import timedelta
+        cutoff = (ist_now() - timedelta(minutes=minutes)).isoformat()
         conn = sqlite3.connect(str(db))
         conn.row_factory = sqlite3.Row
         # market_snapshots has ATM strikes LTP, for specific strike we approximate
@@ -1651,8 +1655,8 @@ async def correlation_check(minutes: int = 30):
         db = data_dir / "trading_times.db"
         if not db.exists():
             return {"correlation": 0, "leader": "UNKNOWN"}
-        from datetime import datetime, timedelta
-        cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+        from datetime import timedelta
+        cutoff = (ist_now() - timedelta(minutes=minutes)).isoformat()
         conn = sqlite3.connect(str(db))
         conn.row_factory = sqlite3.Row
         n_rows = conn.execute(

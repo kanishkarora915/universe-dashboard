@@ -48,11 +48,11 @@ def init_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ts_tid ON trade_snapshots(trade_id)")
 
-    # Gap tracking — EOD snapshot + next day gap
+    # Gap tracking — EOD snapshot + next day gap (one row per date+idx)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS gap_tracker (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL UNIQUE,
+            date TEXT NOT NULL,
             idx TEXT NOT NULL,
             eod_spot REAL,
             eod_pcr REAL,
@@ -69,10 +69,12 @@ def init_db():
             next_open REAL DEFAULT 0,
             gap_pts REAL DEFAULT 0,
             gap_pct REAL DEFAULT 0,
-            gap_type TEXT DEFAULT 'PENDING'
+            gap_type TEXT DEFAULT 'PENDING',
+            UNIQUE(date, idx)
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_gt_date ON gap_tracker(date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_gt_date_idx ON gap_tracker(date, idx)")
 
     # Learned patterns
     conn.execute("""

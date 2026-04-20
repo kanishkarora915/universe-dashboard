@@ -10,6 +10,7 @@ import sqlite3
 import json
 import time
 import math
+import threading
 from datetime import datetime, timedelta, date
 from pathlib import Path
 from collections import defaultdict
@@ -21,6 +22,8 @@ _data_dir = Path("/data") if Path("/data").is_dir() else Path(__file__).parent
 DB_PATH = _data_dir / "trading_times.db"
 
 # ── In-memory state for rolling calculations ────────────────────────────
+# Lock protects concurrent access from tick thread + FastAPI request threads
+_state_lock = threading.Lock()
 
 _prev_snapshots = {}  # {index: last_snapshot_dict}
 _accumulation_tracker = {}  # {index: {ce_blocks: int, pe_blocks: int, history: []}}

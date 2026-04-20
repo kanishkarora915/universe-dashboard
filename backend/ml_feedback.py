@@ -117,7 +117,7 @@ def get_engine_accuracy(days=30):
     # Probability band accuracy
     prob_bands = {"60-70": [], "70-80": [], "80-90": [], "90-100": []}
     for r in rows:
-        p = r["verdict_probability"]
+        p = r["verdict_probability"] or 0
         if p < 70:
             prob_bands["60-70"].append(r)
         elif p < 80:
@@ -340,7 +340,7 @@ def get_hourly_analysis(days=30):
     trade_pnl_by_hour = {}
     if trades_conn:
         trades = trades_conn.execute(
-            "SELECT * FROM trades WHERE status = 'CLOSED' AND entry_time > ?",
+            "SELECT * FROM trades WHERE status != 'OPEN' AND entry_time > ?",
             (cutoff,)
         ).fetchall()
         trades_conn.close()
@@ -431,9 +431,9 @@ def get_pattern_analysis(days=30):
     if not rows:
         return {"error": "No checked data", "patterns": []}
 
-    high_prob = [r for r in rows if r["verdict_probability"] >= 80]
-    med_prob = [r for r in rows if 70 <= r["verdict_probability"] < 80]
-    low_prob = [r for r in rows if r["verdict_probability"] < 70]
+    high_prob = [r for r in rows if (r["verdict_probability"] or 0) >= 80]
+    med_prob = [r for r in rows if 70 <= (r["verdict_probability"] or 0) < 80]
+    low_prob = [r for r in rows if (r["verdict_probability"] or 0) < 70]
 
     def calc_stats(subset, label):
         valid = [r for r in subset if r["outcome_30min"] in ("WIN", "LOSS")]
@@ -548,7 +548,7 @@ def get_weekly_report():
     trade_stats = {"total": 0, "pnl": 0, "wins": 0, "losses": 0}
     if trades_conn:
         trades = trades_conn.execute(
-            "SELECT * FROM trades WHERE status = 'CLOSED' AND exit_time > ?",
+            "SELECT * FROM trades WHERE status != 'OPEN' AND exit_time > ?",
             (week_start.isoformat(),)
         ).fetchall()
         trades_conn.close()

@@ -268,7 +268,9 @@ def close_all(engine):
         side = t["side"]
         chain = engine.chains.get(idx, {})
         sd = chain.get(strike, {})
-        exit_ltp = sd.get(f"{side.lower()}_ltp", t["current_ltp"] or t["entry_ltp"])
+        chain_ltp = sd.get(f"{side.lower()}_ltp", 0) or 0
+        # Only use chain LTP if valid (>0), else fall back to last-good current_ltp
+        exit_ltp = chain_ltp if chain_ltp > 0 else (t["current_ltp"] or t["entry_ltp"])
 
         entry_ltp = t["entry_ltp"]
         qty = t["qty"]

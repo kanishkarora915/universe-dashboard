@@ -150,30 +150,40 @@ class BacktestTracker:
 
             updates = {}
 
-            # Check 15 min outcome
-            if age_min >= 15 and r["outcome_15min"] == "PENDING":
-                updates["spot_15min"] = current_spot
-                if "CE" in action:
-                    updates["outcome_15min"] = "WIN" if current_spot > entry_spot else "LOSS"
-                else:
-                    updates["outcome_15min"] = "WIN" if current_spot < entry_spot else "LOSS"
+            # SKIP stale rows (engine was offline — prices aren't from the right window anymore)
+            # Only backfill outcomes within a small tolerance after their target time.
+            # 15min → fill between 15-25 min, 30min → 30-45 min, 1hr → 60-90 min.
+            if age_min > 90:
+                updates["checked"] = 1  # Mark as checked to skip future retries
+                continue_row = False
+            else:
+                continue_row = True
 
-            # Check 30 min
-            if age_min >= 30 and r["outcome_30min"] == "PENDING":
-                updates["spot_30min"] = current_spot
-                if "CE" in action:
-                    updates["outcome_30min"] = "WIN" if current_spot > entry_spot else "LOSS"
-                else:
-                    updates["outcome_30min"] = "WIN" if current_spot < entry_spot else "LOSS"
+            if continue_row:
+                # Check 15 min outcome (within 15-25 min window)
+                if 15 <= age_min <= 25 and r["outcome_15min"] == "PENDING":
+                    updates["spot_15min"] = current_spot
+                    if "CE" in action:
+                        updates["outcome_15min"] = "WIN" if current_spot > entry_spot else "LOSS"
+                    else:
+                        updates["outcome_15min"] = "WIN" if current_spot < entry_spot else "LOSS"
 
-            # Check 1 hr
-            if age_min >= 60 and r["outcome_1hr"] == "PENDING":
-                updates["spot_1hr"] = current_spot
-                if "CE" in action:
-                    updates["outcome_1hr"] = "WIN" if current_spot > entry_spot else "LOSS"
-                else:
-                    updates["outcome_1hr"] = "WIN" if current_spot < entry_spot else "LOSS"
-                updates["checked"] = 1
+                # Check 30 min (30-45 min window)
+                if 30 <= age_min <= 45 and r["outcome_30min"] == "PENDING":
+                    updates["spot_30min"] = current_spot
+                    if "CE" in action:
+                        updates["outcome_30min"] = "WIN" if current_spot > entry_spot else "LOSS"
+                    else:
+                        updates["outcome_30min"] = "WIN" if current_spot < entry_spot else "LOSS"
+
+                # Check 1 hr (60-90 min window)
+                if 60 <= age_min <= 90 and r["outcome_1hr"] == "PENDING":
+                    updates["spot_1hr"] = current_spot
+                    if "CE" in action:
+                        updates["outcome_1hr"] = "WIN" if current_spot > entry_spot else "LOSS"
+                    else:
+                        updates["outcome_1hr"] = "WIN" if current_spot < entry_spot else "LOSS"
+                    updates["checked"] = 1
 
             if updates:
                 set_clause = ", ".join(f"{k}=?" for k in updates.keys())
