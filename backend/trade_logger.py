@@ -16,7 +16,8 @@ IST = pytz.timezone("Asia/Kolkata")
 DB_PATH = None
 
 INITIAL_CAPITAL = 1000000  # ₹10 lakh starting capital
-MAX_RISK_PER_TRADE_PCT = 1.5  # Risk 1.5% of running capital per trade (₹15K on ₹10L)
+MAX_RISK_PER_TRADE_PCT = 1.5  # Risk 1.5% of running capital per trade baseline
+MAX_RISK_WHALE_ALIGNED_PCT = 2.5  # Aggressive risk when smart money aligned (25% more)
 MAX_DAILY_LOSS_PCT = 5  # Stop trading after 5% daily loss
 MAX_SIMULTANEOUS_TRADES = 10  # No practical limit — take every valid signal. Per-(idx,action,strike) dup check below prevents same signal duplicates.
 MAX_DAILY_TRADES = 6  # Real trades per day — prevents overtrading
@@ -122,8 +123,8 @@ def _get_running_capital():
         return INITIAL_CAPITAL
 
 
-def calc_position_size(idx, entry_price, sl_price=0, conviction=70):
-    """Risk-based position sizing SCALED by conviction.
+def calc_position_size(idx, entry_price, sl_price=0, conviction=70, whale_aligned=False):
+    """Risk-based position sizing SCALED by conviction + whale alignment.
 
     Conviction scaling:
       90%+ → full size (100% of max_risk)
@@ -131,10 +132,11 @@ def calc_position_size(idx, entry_price, sl_price=0, conviction=70):
       70-79% → 50% of max_risk
       55-69% → 25% of max_risk
 
-    Instead of fixed lots, calculate based on:
-    - Running capital (reduces after losses)
-    - Max risk per trade × conviction multiplier
-    - SL distance determines lot count
+    Whale alignment bonus (smart money agrees with direction):
+      Uses MAX_RISK_WHALE_ALIGNED_PCT (2.5%) instead of 1.5% base → +67% size
+
+    Result: 90%+ conviction + whale aligned = 2.5% risk (beast mode)
+    Result: 55% conviction + no whale = 0.375% risk (protect capital)
     """
     cfg = LOT_CONFIG.get(idx, LOT_CONFIG["NIFTY"])
     lot_size = cfg["lot_size"]
@@ -153,7 +155,8 @@ def calc_position_size(idx, entry_price, sl_price=0, conviction=70):
         conv_mult = 0.25
 
     running_capital = _get_running_capital()
-    max_risk = running_capital * MAX_RISK_PER_TRADE_PCT / 100 * conv_mult
+    base_risk_pct = MAX_RISK_WHALE_ALIGNED_PCT if whale_aligned else MAX_RISK_PER_TRADE_PCT
+    max_risk = running_capital * base_risk_pct / 100 * conv_mult
 
     # Risk per unit = entry - SL
     if sl_price > 0 and sl_price < entry_price:
@@ -371,8 +374,9 @@ class TradeManager:
         return "NORMAL"
 
     def log_trade(self, idx, action, strike, entry_price, probability, source="verdict", expiry="",
-                  straddle=0, big_wall=0):
-        """Log a new trade entry with smart SL/targets."""
+                  straddle=0, big_wall=0, whale_aligned=False):
+        """Log a new trade entry with smart SL/targets.
+        whale_aligned=True → uses larger position (smart money agrees with direction)."""
         if entry_price <= 0:
             return None
 
@@ -384,8 +388,12 @@ class TradeManager:
         sl_price = max(sl_price, round(entry_price - max(straddle * 0.15, 5)))
         sl_price = min(sl_price, round(entry_price * 0.85))  # Never tighter than 15%
 
-        # Position size SCALED by conviction (probability) — more size on A+ setups
-        lots, lot_size, qty = calc_position_size(idx, entry_price, sl_price, conviction=probability)
+        # Position size SCALED by conviction (probability) + whale alignment bonus
+        lots, lot_size, qty = calc_position_size(
+            idx, entry_price, sl_price,
+            conviction=probability,
+            whale_aligned=whale_aligned,
+        )
 
         # Smart T1: based on straddle or 20% of entry
         if straddle > 0:

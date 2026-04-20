@@ -355,6 +355,15 @@ class MarketEngine:
             self.predictive_state = None
         self._predictive_last_record = 0
 
+        # ── Smart money state: per-strike OI snapshots every 60s ──
+        try:
+            from smart_money import SmartMoneyState
+            self.smart_money_state = SmartMoneyState()
+        except Exception as e:
+            print(f"[SMART_MONEY] Init failed: {e}")
+            self.smart_money_state = None
+        self._smart_money_last_record = 0
+
         # ── Seller ratio history for cooking detection ──
         self._seller_ratio_history = {"nifty": [], "banknifty": []}  # List of {time, pe_ratio, ce_ratio}
 
@@ -484,6 +493,16 @@ class MarketEngine:
                 fn(self)
         except Exception as e:
             print(f"[SHADOW] {method_name} error: {e}")
+
+    def _run_beast_retrain(self):
+        """Weekly auto-retrain: Friday EOD — retune engine weights based on week's outcomes."""
+        try:
+            from ml_beast import run_beast_training
+            print(f"[BEAST] Weekly retrain started at {ist_now().isoformat()}")
+            result = run_beast_training()
+            print(f"[BEAST] Retrain complete: {result}")
+        except Exception as e:
+            print(f"[BEAST] Weekly retrain failed: {e}")
 
     def _start_trap_scanner(self):
         """Initialize and start the Trap Fingerprint Engine."""
@@ -2294,11 +2313,32 @@ class MarketEngine:
 
             _eng["predictive"] = (bull_score - _bs0) + (bear_score - _be0)
 
+            # ── 11. SMART MONEY (25 pts each side max) ──
+            # Institutional footprint: slow cooking OI, block trades, iceberg orders
+            # Highest weight because whales move market
+            _bs0, _be0 = bull_score, bear_score
+            smart_money_result = None
+            try:
+                if self.smart_money_state:
+                    from smart_money import score_smart_money
+                    smart_money_result = score_smart_money(self.smart_money_state, self, index)
+                    bull_score += smart_money_result.get("bullScore", 0)
+                    bear_score += smart_money_result.get("bearScore", 0)
+                    for r in smart_money_result.get("reasons", []):
+                        if smart_money_result["bullScore"] > smart_money_result["bearScore"]:
+                            bull_reasons.append(r)
+                        else:
+                            bear_reasons.append(r)
+            except Exception as e:
+                print(f"[SMART_MONEY] Score failed for {index}: {e}")
+
+            _eng["smart_money"] = (bull_score - _bs0) + (bear_score - _be0)
+
             # ════════════════════════════════════════════════
-            # FINAL DECISION — Based on probability spread (out of ~165 max)
+            # FINAL DECISION — Based on probability spread (out of ~190 max)
             # ════════════════════════════════════════════════
-            bull_prob = min(bull_score, 165)
-            bear_prob = min(bear_score, 165)
+            bull_prob = min(bull_score, 190)
+            bear_prob = min(bear_score, 190)
             total = bull_prob + bear_prob if bull_prob + bear_prob > 0 else 1
             bull_pct = round(bull_prob / total * 100)
             bear_pct = round(bear_prob / total * 100)
@@ -2423,6 +2463,7 @@ class MarketEngine:
                 "timestamp": ist_now().strftime("%I:%M:%S %p IST"),
                 "engineScores": dict(_eng),
                 "predictive": predictive_result or {},
+                "smartMoney": smart_money_result or {},
             }
 
         return result
@@ -3411,6 +3452,14 @@ class MarketEngine:
             except Exception as e:
                 pass
 
+        # Smart money recording (every 60s, throttled inside record_chain_snapshot)
+        if self.smart_money_state and now - self._smart_money_last_record >= 60:
+            self._smart_money_last_record = now
+            try:
+                self.smart_money_state.record_chain_snapshot(self)
+            except Exception as e:
+                pass
+
         # OI snapshot every 30 minutes for Hidden Shift detection
         if now - self._last_snapshot_time >= 1800:
             self._take_oi_snapshot()
@@ -3440,6 +3489,13 @@ class MarketEngine:
         if now_ist.hour == 15 and now_ist.minute >= 25 and not self._tt_yesterday_saved:
             self._tt_yesterday_saved = True
             threading.Thread(target=self._save_yesterday_oi, daemon=True).start()
+
+        # Weekly Beast Mode retrain: Friday 3:25 PM EOD
+        if (now_ist.weekday() == 4 and now_ist.hour == 15 and now_ist.minute >= 25
+                and not getattr(self, '_beast_retrain_done', False)):
+            self._beast_retrain_done = True
+            threading.Thread(target=self._run_beast_retrain, daemon=True,
+                             name="beast-retrain").start()
 
         # ── Shadow Autopsy Scheduler ──
         today_str = now_ist.strftime("%Y-%m-%d")
@@ -3570,6 +3626,15 @@ class MarketEngine:
                         age = time.time() - self.trade_manager._pending_entry_time
                         if age >= min_confirm_age:
                             if fresh_entry >= pending["entry_price"] * 0.97:
+                                # Check whale alignment for aggressive sizing
+                                whale_aligned = False
+                                try:
+                                    from smart_money import is_smart_money_aligned
+                                    whale_aligned = is_smart_money_aligned(
+                                        v.get("smartMoney", {}), action
+                                    )
+                                except Exception:
+                                    pass
                                 tid = self.trade_manager.log_trade(
                                     idx=idx, action=action, strike=int(atm),
                                     entry_price=fresh_entry,
@@ -3577,6 +3642,7 @@ class MarketEngine:
                                     source="verdict_confirmed",
                                     expiry=str(self.nearest_expiry.get(idx, "")),
                                     straddle=straddle,
+                                    whale_aligned=whale_aligned,
                                 )
                                 self.trade_manager._pending_entry = None
                                 print(f"[TRADE] CONFIRMED: {action} {idx} {atm} @ ₹{fresh_entry} — price held for {age:.0f}s")

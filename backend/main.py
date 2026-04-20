@@ -533,6 +533,27 @@ async def trades_alert_feed():
     return engine.trade_manager.get_trade_alerts()
 
 
+# ── Smart Money endpoints ──
+
+@app.get("/api/smart-money/{index}")
+async def smart_money_data(index: str):
+    """Get smart money signals (slow cooking OI, block trades, iceberg) for an index."""
+    global engine
+    if not engine or not hasattr(engine, 'smart_money_state') or not engine.smart_money_state:
+        return {"error": "Engine not running or smart_money state unavailable"}
+    try:
+        from smart_money import score_smart_money
+        idx = index.upper()
+        if idx not in ("NIFTY", "BANKNIFTY"):
+            return JSONResponse({"error": "Invalid index"}, status_code=400)
+        result = score_smart_money(engine.smart_money_state, engine, idx)
+        snap_keys = [k for k in engine.smart_money_state.snapshots.keys() if k[0] == idx]
+        result["tracked_strikes"] = len(snap_keys)
+        return result
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Shadow Autopsy endpoints ──
 
 @app.get("/api/shadow/today")
