@@ -311,6 +311,54 @@ class TradeManager:
 
         return False
 
+    def _detect_trade_context(self, trade, idx, action, chain, current_ltp):
+        """Detect if trade is in 'reversal zone' (OI against us) or 'stop hunt' (price dipped+bouncing).
+        Returns: 'REVERSAL' | 'STOP_HUNT' | 'NORMAL'
+
+        REVERSAL → tighten SL to 10% (OI says we're wrong, exit fast)
+        STOP_HUNT → widen SL to 20% (temporary dip, give room to recover)
+        NORMAL → default 15% SL
+        """
+        strike = trade["strike"]
+        entry = trade["entry_price"]
+        sd = chain.get(strike, {})
+
+        # ── STOP HUNT: price dipped 10%+ then recovered 5%+ ──
+        peak = max(trade.get("peak_ltp", entry), current_ltp)
+        price_dip_pct = (entry - current_ltp) / entry * 100 if entry > 0 else 0
+
+        # Track min price in memory
+        if not hasattr(self, '_trade_min_ltp'):
+            self._trade_min_ltp = {}
+        tid = trade["id"]
+        prev_min = self._trade_min_ltp.get(tid, current_ltp)
+        if current_ltp < prev_min:
+            self._trade_min_ltp[tid] = current_ltp
+            prev_min = current_ltp
+
+        # Stop hunt: went down 10%+ from entry, then recovered 5%+ from bottom
+        if prev_min < entry * 0.90 and current_ltp > prev_min * 1.05:
+            return "STOP_HUNT"
+
+        # ── REVERSAL: OI building against our direction ──
+        if "CE" in action:
+            # CE trade → watch for PE premium rising, CE falling, PE OI surging
+            ce_oi = sd.get("ce_oi", 0)
+            pe_oi = sd.get("pe_oi", 0)
+            pe_ltp = sd.get("pe_ltp", 0)
+            # PE premium > CE premium (bears winning at this strike)
+            if pe_ltp > current_ltp * 1.15 and pe_oi > ce_oi * 1.2:
+                return "REVERSAL"
+        elif "PE" in action:
+            # PE trade → watch for CE premium rising, PE falling
+            ce_oi = sd.get("ce_oi", 0)
+            pe_oi = sd.get("pe_oi", 0)
+            ce_ltp = sd.get("ce_ltp", 0)
+            if ce_ltp > current_ltp * 1.15 and ce_oi > pe_oi * 1.2:
+                return "REVERSAL"
+
+        return "NORMAL"
+
     def log_trade(self, idx, action, strike, entry_price, probability, source="verdict", expiry="",
                   straddle=0, big_wall=0):
         """Log a new trade entry with smart SL/targets."""
@@ -473,6 +521,28 @@ class TradeManager:
             trail_level = t.get("trail_level", "")
 
             # ══════════════════════════════════════════════
+            # ADAPTIVE SL: tighten on reversal, widen on stop-hunt
+            # Only adjusts BEFORE breakeven (once in profit, trailing takes over)
+            # ══════════════════════════════════════════════
+            if not breakeven_active:
+                context = self._detect_trade_context(t, idx, action, chain, current_ltp)
+                original_sl = t.get("original_sl", sl) or sl
+                if context == "REVERSAL":
+                    # OI flipped against us → 10% SL (tighter, exit fast)
+                    tight_sl = round(entry * 0.90)
+                    if tight_sl > new_sl:  # Only tighten, never loosen
+                        new_sl = tight_sl
+                        trail_level = "OI_REVERSAL_TIGHT"
+                        alerts_list.append(f"OI REVERSAL detected — SL tightened to 10% (₹{new_sl}). Exit fast if triggered.")
+                elif context == "STOP_HUNT":
+                    # Price was hunted → 20% SL (wider, give room)
+                    wide_sl = round(entry * 0.80)
+                    if wide_sl < new_sl and current_ltp > wide_sl:
+                        new_sl = wide_sl
+                        trail_level = "STOP_HUNT_WIDE"
+                        alerts_list.append(f"STOP HUNT pattern detected — SL widened to 20% (₹{new_sl}) to avoid hunt. Recovery expected.")
+
+            # ══════════════════════════════════════════════
             # SMART SL MANAGEMENT
             # ══════════════════════════════════════════════
 
@@ -490,18 +560,32 @@ class TradeManager:
                 alerts_list.append(f"EARLY BREAKEVEN: Conviction dropped to {current_conviction}% but profit +{profit_pct:.0f}%. SL moved to entry ₹{entry}. Zero loss protected.")
                 print(f"[TRADE] EARLY BREAKEVEN (conviction): {action} {idx} {strike} — conviction {current_conviction}%, profit +{profit_pct:.0f}%")
 
-            # STAGE 1: BREAKEVEN — activate when 15% profit from entry
-            if not breakeven_active and profit_pct >= 15:
+            # STAGE 1: BREAKEVEN — activate at +2% profit (quick lock, no greed)
+            if not breakeven_active and profit_pct >= 2:
                 breakeven_active = 1
                 new_sl = entry
                 trail_level = "BREAKEVEN"
-                alerts_list.append(f"BREAKEVEN activated at +{profit_pct:.0f}% — SL moved to entry ₹{entry}")
+                alerts_list.append(f"BREAKEVEN activated at +{profit_pct:.1f}% — SL moved to entry ₹{entry}")
                 print(f"[TRADE] BREAKEVEN: {action} {idx} {strike} — SL moved to entry ₹{entry} (was ₹{sl})")
 
-            # STAGE 2: TRAILING SL — after breakeven, trail SL to lock profits
-            if breakeven_active:
-                # Trail at 60% of peak profit (keep 60% of max gain)
-                trail_from_peak = round(peak - (peak - entry) * 0.40)  # Lock 60% of peak gain
+            # STAGE 1.5: REVERSAL EXIT — if -3% after 10 min hold, accept small loss
+            # Prevents 15% SL catastrophe when trade clearly going wrong
+            try:
+                entry_time = datetime.fromisoformat(t["entry_time"])
+                hold_sec = (ist_now() - entry_time).total_seconds()
+            except Exception:
+                hold_sec = 0
+
+            if not breakeven_active and hold_sec >= 600 and profit_pct <= -3:
+                new_status = "REVERSAL_EXIT"
+                exit_price = current_ltp
+                exit_reason = f"Reversal exit at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — held {int(hold_sec/60)}min, no recovery. Small loss accepted, 15% SL avoided."
+                print(f"[TRADE] REVERSAL EXIT: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}% after {int(hold_sec/60)}min)")
+
+            # STAGE 2: TRAILING SL — after breakeven, lock 50% of peak gain (user preference)
+            if breakeven_active and new_status == "OPEN":
+                # Lock 50% of peak profit (more aggressive protection)
+                trail_from_peak = round(peak - (peak - entry) * 0.50)
                 if trail_from_peak > new_sl and trail_from_peak > entry:
                     new_sl = trail_from_peak
                     trailing_active = 1
