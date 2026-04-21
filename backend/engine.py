@@ -2424,8 +2424,8 @@ class MarketEngine:
             bull_pct = round(bull_prob / total * 100)
             bear_pct = round(bear_prob / total * 100)
 
-            # Need >55% edge for a trade (relaxed from 60% with predictive confluence filter)
-            if bull_pct >= 55:
+            # Need >50% edge for a trade (trust the engines — minimal threshold)
+            if bull_pct >= 50:
                 action = "BUY CE"
                 direction = "BULLISH"
                 win_pct = bull_pct
@@ -2433,7 +2433,7 @@ class MarketEngine:
                 against = bear_reasons
                 atm_data = chain.get(atm, {})
                 entry = atm_data.get("ce_ltp", 0)
-            elif bear_pct >= 55:
+            elif bear_pct >= 50:
                 action = "BUY PE"
                 direction = "BEARISH"
                 win_pct = bear_pct

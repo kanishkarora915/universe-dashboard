@@ -901,79 +901,41 @@ class TradeManager:
                 print(f"[TRADE] STOP HUNT DETECTED: {action} {idx} {strike} — SL at {sl}, now at {current_ltp:.1f}")
 
     def should_enter_trade(self, idx, verdict_data):
-        """Practical entry — trade when edge exists. Don't overthink.
-        Market waits for no one. If signal is good, take the trade.
-        With predictive confluence filter: lower thresholds if momentum agrees."""
+        """SIMPLE entry logic. Trust the engines.
+        Only 4 hard rules:
+          1. Market hours (9:20-15:15)
+          2. Probability >= 50% (engines voted yes — take the trade)
+          3. Daily cap (6 trades max)
+          4. No duplicate same direction (1 NIFTY CE at a time)
+
+        NO MORE:
+          - Spread requirements (engines already aggregate this)
+          - Cooldown after loss (let SL handle losses, take next signal)
+          - Profit guard (don't get scared after winning)
+          - Loss streak pause (each trade independent)
+          - Conviction bumps (trust the threshold)
+        """
         if not verdict_data or verdict_data.get("action") == "NO TRADE":
             return False
 
         now = ist_now()
 
-        # ── HARD BLOCKS: Calendar + market hours only ──
+        # Rule 1: Market hours
         if not _is_trading_day():
             return False
         market_open = (now.hour == 9 and now.minute >= 20) or (10 <= now.hour <= 14) or (now.hour == 15 and now.minute <= 15)
         if not market_open:
             return False
 
-        # ── NO HARDCODED TIME WINDOWS ──
-        # Market can cook anything at any time. Trader philosophy:
-        # "Market mein koi rule nahi ki aaj bullish rahega ya sideways"
-        # Let engines READ the market state:
-        #   - Chop filter detects actual chop (not assumed "lunch chop")
-        #   - Predictive momentum detects actual move (not assumed "trend day")
-        #   - Max pain drift detects actual pull (not assumed "expiry bias")
-        #   - OI + price movements are the ONLY truth
-        #
-        # Only sanity check: basic market hours (already handled above via market_open).
-        # 9:20-15:15 is the full trading window. Inside this window, any time is fair game
-        # IF the engines agree a setup is valid.
+        # Rule 2: Probability threshold (50% — engines already filter quality)
         win_pct = verdict_data.get("winProbability", 0)
-        bull_pct = verdict_data.get("bullPct", 50)
-        bear_pct = verdict_data.get("bearPct", 50)
-        spread = abs(bull_pct - bear_pct)
-
-        # ── PREDICTIVE CONFLUENCE FILTER ──
-        # Lower win threshold allowed IF momentum engines support the direction
-        predictive = verdict_data.get("predictive", {}) or {}
-        pred_bull = predictive.get("bullScore", 0)
-        pred_bear = predictive.get("bearScore", 0)
-        momentum = predictive.get("momentum", "NEUTRAL")
-        action = verdict_data.get("action", "")
-
-        # Momentum must align with trade direction
-        momentum_aligned = False
-        if "CE" in action and (pred_bull >= 5 or momentum in ("UP", "STRONG_UP")):
-            momentum_aligned = True
-        if "PE" in action and (pred_bear >= 5 or momentum in ("DOWN", "STRONG_DOWN")):
-            momentum_aligned = True
-
-        # ── QUALITY THRESHOLDS (adaptive based on momentum) ──
-        if momentum_aligned:
-            # Relaxed: 55% + 15 spread
-            if win_pct < 55:
-                return False
-            if spread < 15:
-                return False
-        else:
-            # Strict: 65% + 20 spread (need strong signal without momentum help)
-            if win_pct < 65:
-                return False
-            if spread < 20:
-                return False
+        if win_pct < 50:
+            return False
 
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         conn = _conn()
 
-        # ── Soft cap on concurrent trades ──
-        total_open = conn.execute(
-            "SELECT COUNT(*) FROM trades WHERE status='OPEN'"
-        ).fetchone()[0]
-        if total_open >= MAX_SIMULTANEOUS_TRADES:
-            conn.close()
-            return False
-
-        # ── Daily trade cap: max 6 trades/day (prevents overtrading) ──
+        # Rule 3: Daily trade cap
         today_count = conn.execute(
             "SELECT COUNT(*) FROM trades WHERE entry_time > ?",
             (today_start,)
@@ -982,92 +944,25 @@ class TradeManager:
             conn.close()
             return False
 
-        # ── Duplicate block: same idx+action already open → skip ──
-        # Prevents entering NIFTY BUY CE twice when it's already open.
+        # Concurrent trade cap (high — basically never blocks)
+        total_open = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE status='OPEN'"
+        ).fetchone()[0]
+        if total_open >= MAX_SIMULTANEOUS_TRADES:
+            conn.close()
+            return False
+
+        # Rule 4: No duplicate same idx+action open
         action_str = verdict_data.get("action", "")
         dup_open = conn.execute(
             "SELECT COUNT(*) FROM trades WHERE status='OPEN' AND idx=? AND action=?",
             (idx, action_str)
         ).fetchone()[0]
+        conn.close()
         if dup_open > 0:
-            conn.close()
             return False
 
-        # ── SMART RE-ENTRY after loss ──
-        # If last trade was SL hit but NEW signal is STRONGER (higher prob),
-        # don't wait — re-enter immediately. The market gave a second chance.
-        last_trade = conn.execute(
-            "SELECT * FROM trades WHERE idx=? AND entry_time > ? ORDER BY entry_time DESC LIMIT 1",
-            (idx, today_start)
-        ).fetchone()
-
-        if last_trade:
-            lt = dict(last_trade)
-            # Was it a loss?
-            if lt["status"] != "OPEN" and (lt.get("pnl_rupees", 0) or 0) < 0:
-                last_prob = lt.get("probability", 0)
-                last_action = lt.get("action", "")
-                try:
-                    exit_time = datetime.fromisoformat(lt.get("exit_time", now.isoformat()))
-                    time_since_exit = (now - exit_time).total_seconds()
-                except Exception:
-                    time_since_exit = 9999
-
-                if time_since_exit < 300:  # Within 5 min of loss
-                    # SMART RE-ENTRY: Allow if new signal is STRONGER
-                    if win_pct > last_prob + 5:
-                        # Signal improved — re-enter immediately, no cooldown
-                        print(f"[TRADE] SMART RE-ENTRY: {idx} signal improved {last_prob}% → {win_pct}%, re-entering")
-                    elif verdict_data.get("action") != last_action:
-                        # Direction REVERSED — market flipped, take the new signal
-                        print(f"[TRADE] REVERSAL RE-ENTRY: {idx} was {last_action}, now {verdict_data.get('action')}")
-                    else:
-                        # Same signal, not stronger — wait 10 min minimum
-                        if time_since_exit < 600:
-                            conn.close()
-                            return False
-
-        # ── DAILY P&L GUARDS ──
-        today_pnl = conn.execute(
-            "SELECT COALESCE(SUM(pnl_rupees), 0) FROM trades WHERE entry_time > ? AND status != 'OPEN'",
-            (today_start,)
-        ).fetchone()[0] or 0
-
-        today_losses = conn.execute(
-            "SELECT COALESCE(SUM(pnl_rupees), 0) FROM trades WHERE entry_time > ? AND status != 'OPEN' AND pnl_rupees < 0",
-            (today_start,)
-        ).fetchone()[0] or 0
-
-        conn.close()
-
-        running_capital = _get_running_capital()
-
-        # Guard 1: If lost 5% today, need 70%+ conviction
-        if today_losses < -(running_capital * MAX_DAILY_LOSS_PCT / 100):
-            if win_pct < 70:
-                return False
-
-        # Guard 2: If already profitable +3% today, protect the gain — only high-conviction
-        if today_pnl > (running_capital * 0.03):
-            if win_pct < 75:
-                return False  # Guard profits, only take A+ setups
-
-        # Guard 3: 3 consecutive losses → pause unless 80%+ conviction
-        last_3 = conn.execute(
-            "SELECT pnl_rupees FROM trades WHERE entry_time > ? AND status != 'OPEN' ORDER BY exit_time DESC LIMIT 3",
-            (today_start,)
-        ) if False else None  # Placeholder; reopen conn once
-        # Re-open connection to check last 3 (closed above)
-        _c = _conn()
-        last_3_rows = _c.execute(
-            "SELECT pnl_rupees FROM trades WHERE entry_time > ? AND status != 'OPEN' ORDER BY exit_time DESC LIMIT 3",
-            (today_start,)
-        ).fetchall()
-        _c.close()
-        if len(last_3_rows) == 3 and all((r[0] or 0) < 0 for r in last_3_rows):
-            if win_pct < 80:
-                return False
-
+        # All checks passed — TAKE THE TRADE
         return True
 
     # ── PUBLIC API METHODS ──

@@ -223,10 +223,10 @@ export function EnhancedVerdictCard({ index, verdict, reasons }) {
   const isPE = action.includes("PE");
   const direction = isCE ? "CE" : isPE ? "PE" : "?";
 
-  // Conviction levels
-  const tooLow = winProb > 0 && winProb < 65;
-  const high = winProb >= 75;
-  const medium = winProb >= 65 && winProb < 75;
+  // Conviction levels (relaxed — trust engines)
+  const tooLow = winProb > 0 && winProb < 50;
+  const high = winProb >= 70;
+  const medium = winProb >= 60 && winProb < 70;
 
   // Colors
   const color = tooLow ? GRAY : isCE ? GREEN : isPE ? RED : GRAY;
@@ -303,7 +303,7 @@ export function EnhancedVerdictCard({ index, verdict, reasons }) {
         </div>
       </div>
 
-      {/* Low conviction — actionable wait state */}
+      {/* Low conviction — only blocks below 50% (very rare) */}
       {tooLow && (
         <div
           style={{
@@ -317,19 +317,13 @@ export function EnhancedVerdictCard({ index, verdict, reasons }) {
           }}
         >
           <div style={{ fontSize: 13, color: YELLOW, fontWeight: 700 }}>
-            ⚠️ Conviction {winProb}% — borderline (need 65%+)
+            ⏳ NO CLEAR EDGE — Both sides voting equal ({winProb}%)
           </div>
           <div style={{ fontSize: 11, color: "var(--text-secondary, #aaa)" }}>
-            <b>What's missing:</b> Need {65 - winProb} more pts for entry signal
+            <b>Direction lean:</b> {action} but engines split
           </div>
           <div style={{ fontSize: 11, color: "var(--text-secondary, #aaa)" }}>
-            <b>Direction lean:</b> {action} ({winProb}% confidence)
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-secondary, #aaa)" }}>
-            <b>Auto-recheck:</b> Every 60 sec — will signal when threshold crossed
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-secondary, #aaa)" }}>
-            <b>Watch for:</b> Whale sweep / Max pain shift / Momentum acceleration
+            <b>Auto-recheck:</b> Every 60 sec — signal when one side crosses 50%
           </div>
           <div
             style={{
@@ -341,8 +335,8 @@ export function EnhancedVerdictCard({ index, verdict, reasons }) {
               color: "var(--text-primary, #fff)",
             }}
           >
-            👉 Manual override: If you see clear chart pattern, take trade on Kite.
-            System is conservative — your judgment matters.
+            👉 If you see clear chart move, take trade manually on Kite.
+            Auto-trade fires at 50%+ probability.
           </div>
         </div>
       )}
