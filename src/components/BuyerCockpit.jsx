@@ -9,6 +9,8 @@
 
 import React, { useMemo, useState, useEffect } from "react";
 import { SPACE, RADIUS, TEXT_SIZE, TEXT_WEIGHT, FONT } from "../theme";
+import NextDayPredictor from "./NextDayPredictor";
+import OIHeatmap from "./OIHeatmap";
 
 const GREEN = "#10b981";
 const RED = "#ef4444";
@@ -502,6 +504,12 @@ export default function BuyerCockpit({ live, verdicts, reasonsMap, openPositions
 
       {/* 3. Open Positions */}
       <OpenPositionsQuick positions={openPositions} />
+
+      {/* 4. Live OI Heatmap (with running spot line) */}
+      <OIHeatmap live={live} />
+
+      {/* 5. Next Day Predictor */}
+      <NextDayPredictor />
     </div>
   );
 }
