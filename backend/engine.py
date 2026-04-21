@@ -3742,61 +3742,64 @@ class MarketEngine:
                         continue
 
                     # PRICE CONFIRMATION: Don't enter immediately.
-                    # Store as pending. If no pending exists, create one.
-                    # If pending exists and LTP still holds → confirm entry.
-                    # FAST CONFIRM: If predictive momentum strongly agrees → 30s confirm (was 60s).
+                    # PRICE-CHANGE CONFIRMATION (no 60s timer)
+                    # First signal → create pending with entry price
+                    # Fire trade when option LTP moves +0.5% in our favor (momentum confirmed)
+                    # Auto-cancel pending if 5 min elapsed without momentum
                     pending = self.trade_manager._pending_entry
-                    try:
-                        from predictive_engine import should_fast_confirm
-                        fast = should_fast_confirm(v.get("predictive", {}), action)
-                    except Exception:
-                        fast = False
-                    min_confirm_age = 30 if fast else 60
                     if pending and pending["idx"] == idx and pending["action"] == action and pending["strike"] == int(atm):
                         age = time.time() - self.trade_manager._pending_entry_time
-                        if age >= min_confirm_age:
-                            if fresh_entry >= pending["entry_price"] * 0.97:
-                                # Check whale alignment for aggressive sizing
-                                whale_aligned = False
+                        # Momentum confirmed if LTP moved +0.5% in our favor
+                        # (same direction as we're buying — option premium rising means trade working)
+                        momentum_confirmed = fresh_entry >= pending["entry_price"] * 1.005
+                        # Pending timeout: 5 min max
+                        pending_expired = age > 300
+                        # Cancel if LTP dropped 2% (bad signal)
+                        signal_reversed = fresh_entry < pending["entry_price"] * 0.98
+
+                        if momentum_confirmed:
+                            # Fire trade with momentum!
+                            whale_aligned = False
+                            try:
+                                from smart_money import is_smart_money_aligned
+                                whale_aligned = is_smart_money_aligned(v.get("smartMoney", {}), action)
+                            except Exception:
+                                pass
+                            tid = self.trade_manager.log_trade(
+                                idx=idx, action=action, strike=int(atm),
+                                entry_price=fresh_entry,
+                                probability=v.get("winProbability", 0),
+                                source="verdict_momentum",
+                                expiry=str(self.nearest_expiry.get(idx, "")),
+                                straddle=straddle,
+                                whale_aligned=whale_aligned,
+                            )
+                            self.trade_manager._pending_entry = None
+                            pct_moved = ((fresh_entry - pending["entry_price"]) / pending["entry_price"]) * 100
+                            print(f"[TRADE] MOMENTUM FIRE: {action} {idx} {atm} @ ₹{fresh_entry} (+{pct_moved:.2f}% in {age:.0f}s)")
+                            if tid:
                                 try:
-                                    from smart_money import is_smart_money_aligned
-                                    whale_aligned = is_smart_money_aligned(
-                                        v.get("smartMoney", {}), action
-                                    )
-                                except Exception:
-                                    pass
-                                tid = self.trade_manager.log_trade(
-                                    idx=idx, action=action, strike=int(atm),
-                                    entry_price=fresh_entry,
-                                    probability=v.get("winProbability", 0),
-                                    source="verdict_confirmed",
-                                    expiry=str(self.nearest_expiry.get(idx, "")),
-                                    straddle=straddle,
-                                    whale_aligned=whale_aligned,
-                                )
-                                self.trade_manager._pending_entry = None
-                                print(f"[TRADE] CONFIRMED: {action} {idx} {atm} @ ₹{fresh_entry} — price held for {age:.0f}s")
-                                # Autopsy: capture entry snapshot using trade_id from log_trade return
-                                if tid:
-                                    try:
-                                        from trade_autopsy import capture_trade_snapshot
-                                        capture_trade_snapshot(self, tid, idx, "ENTRY")
-                                    except Exception as e:
-                                        print(f"[AUTOPSY] ENTRY capture failed for trade #{tid}: {e}")
-                                else:
-                                    print(f"[AUTOPSY] ENTRY skipped — log_trade returned no trade_id")
-                            else:
-                                # LTP dropped — cancel pending
-                                self.trade_manager._pending_entry = None
-                                print(f"[TRADE] CANCELLED: {action} {idx} {atm} — LTP dropped to ₹{fresh_entry} (was ₹{pending['entry_price']})")
+                                    from trade_autopsy import capture_trade_snapshot
+                                    capture_trade_snapshot(self, tid, idx, "ENTRY")
+                                except Exception as e:
+                                    print(f"[AUTOPSY] ENTRY capture failed: {e}")
+                        elif signal_reversed:
+                            # LTP dropped 2%+ → signal was false
+                            self.trade_manager._pending_entry = None
+                            print(f"[TRADE] CANCELLED: {action} {idx} {atm} — LTP reversed to ₹{fresh_entry} (was ₹{pending['entry_price']})")
+                        elif pending_expired:
+                            # 5 min no momentum → cancel
+                            self.trade_manager._pending_entry = None
+                            print(f"[TRADE] EXPIRED: {action} {idx} {atm} — 5 min no momentum (price stuck at ₹{fresh_entry})")
+                        # else: keep pending, wait for momentum
                     else:
-                        # No matching pending — create new one
+                        # New signal → create pending (will fire on momentum)
                         self.trade_manager._pending_entry = {
                             "idx": idx, "action": action, "strike": int(atm),
                             "entry_price": fresh_entry, "probability": v.get("winProbability", 0),
                         }
                         self.trade_manager._pending_entry_time = time.time()
-                        print(f"[TRADE] PENDING: {action} {idx} {atm} @ ₹{fresh_entry} — waiting 60s for price confirmation...")
+                        print(f"[TRADE] PENDING: {action} {idx} {atm} @ ₹{fresh_entry} — waiting for +0.5% momentum...")
         except Exception as e:
             print(f"[TRADE] Background verdict error: {e}")
 
