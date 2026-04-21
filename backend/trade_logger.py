@@ -297,8 +297,9 @@ class TradeManager:
         self._cached_verdict = {}
         self._sl_override_count = {}
         self._trade_alerts = []
-        self._pending_entry = None
-        self._pending_entry_time = 0
+        # Per-index pending entries (was single slot — caused cross-contamination bug)
+        self._pending_entry = {}          # {idx: {action, strike, entry_price, probability}}
+        self._pending_entry_time = {}     # {idx: timestamp}
         self._engine_ref = None  # Set by engine for autopsy snapshots
         self._closed_trade_ids = set()  # Track recently closed to trigger exit snapshot
 

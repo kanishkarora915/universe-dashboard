@@ -3549,7 +3549,7 @@ class MarketEngine:
                     total_pe_oi = sum(d.get("pe_oi", 0) for d in chain.values())
                     self.predictive_state.record(idx, spot, ce_ltp, pe_ltp, total_ce_oi, total_pe_oi)
             except Exception as e:
-                pass
+                print(f"[PREDICTIVE] record error: {e}")
 
         # Smart money recording (every 60s, throttled inside record_chain_snapshot)
         if self.smart_money_state and now - self._smart_money_last_record >= 60:
@@ -3557,7 +3557,7 @@ class MarketEngine:
             try:
                 self.smart_money_state.record_chain_snapshot(self)
             except Exception as e:
-                pass
+                print(f"[SMART_MONEY] record error: {e}")
 
         # OI snapshot every 30 minutes for Hidden Shift detection
         if now - self._last_snapshot_time >= 1800:
@@ -3629,19 +3629,22 @@ class MarketEngine:
                 daemon=True, name="shadow-close"
             ).start()
 
-        # Auto-trade: SL/target check every 5s (lightweight), verdict every 120s (heavy, background)
+        # Auto-trade: SL/target check every 5s (lightweight), verdict every 60s (heavy, background)
         if hasattr(self, 'trade_manager') and self.trade_manager and now - self.trade_manager._last_sl_check >= 5:
             self.trade_manager._last_sl_check = now
+            # Split exceptions: SL monitor error must NOT block verdict scheduling
             try:
-                # 1. Monitor open trades for SL/target hits (FAST — just reads chain data)
                 self.trade_manager.check_and_update(self.chains, self.prices, self.spot_tokens, self.token_to_info)
-
-                # 2. Verdict check every 60s (was 120s) — catches reversals faster
-                if now - self.trade_manager._last_verdict_check >= 60:
-                    self.trade_manager._last_verdict_check = now
-                    threading.Thread(target=self._background_verdict_check, daemon=True).start()
             except Exception as e:
-                pass
+                print(f"[TRADE] check_and_update error: {e}")
+
+            # Verdict check every 60s — always attempted, independent of SL monitor
+            if now - self.trade_manager._last_verdict_check >= 60:
+                try:
+                    threading.Thread(target=self._background_verdict_check, daemon=True).start()
+                    self.trade_manager._last_verdict_check = now  # Only advance after successful start
+                except Exception as e:
+                    print(f"[TRADE] verdict thread launch error: {e}")
 
     def _background_verdict_check(self):
         """Run heavy verdict + stop hunt + trade entry + backtest in background."""
@@ -3669,16 +3672,24 @@ class MarketEngine:
             if not hasattr(self, 'trade_manager') or not self.trade_manager:
                 return
             self.trade_manager.update_verdict_cache(verdict)
-            self.trade_manager.check_stop_hunts(self.chains)
-            self.trade_manager.check_position_alerts(self.chains, verdict)
+            # Isolate each step so failure in one doesn't kill the whole chain
+            try:
+                self.trade_manager.check_stop_hunts(self.chains)
+            except Exception as e:
+                print(f"[TRADE] check_stop_hunts error: {e}")
+            try:
+                self.trade_manager.check_position_alerts(self.chains, verdict)
+            except Exception as e:
+                print(f"[TRADE] check_position_alerts error: {e}")
 
-            # Clear stale pending entries (>5 min old or market closed)
-            pending = self.trade_manager._pending_entry
-            if pending:
-                age = time.time() - self.trade_manager._pending_entry_time
-                if age > 300:  # 5 min max pending age
-                    print(f"[TRADE] Pending expired ({age:.0f}s old) — clearing")
-                    self.trade_manager._pending_entry = None
+            # Clear stale pending entries per-index (>5 min old)
+            now_ts = time.time()
+            for pidx in list(self.trade_manager._pending_entry.keys()):
+                pt = self.trade_manager._pending_entry_time.get(pidx, 0)
+                if now_ts - pt > 300:
+                    print(f"[TRADE] Pending {pidx} expired ({now_ts - pt:.0f}s old) — clearing")
+                    self.trade_manager._pending_entry.pop(pidx, None)
+                    self.trade_manager._pending_entry_time.pop(pidx, None)
 
             # ── SCALPER MODE check (parallel to swing mode) ──
             try:
@@ -3712,6 +3723,7 @@ class MarketEngine:
                 print(f"[SCALPER] Error: {e}")
 
             for idx in ["NIFTY", "BANKNIFTY"]:
+              try:
                 key = idx.lower()
                 v = verdict.get(key, {})
                 if self.trade_manager.should_enter_trade(idx, v):
@@ -3732,7 +3744,8 @@ class MarketEngine:
                     else:
                         fresh_entry = atm_data.get("pe_ltp", 0)
 
-                    if fresh_entry < 5 or fresh_entry > 5000:
+                    # Lower floor ₹5 → ₹2 (expiry-week cheap options)
+                    if fresh_entry < 2 or fresh_entry > 5000:
                         print(f"[TRADE] SKIP: {action} {idx} {atm} — entry ₹{fresh_entry} out of range")
                         continue
 
@@ -3741,42 +3754,56 @@ class MarketEngine:
                         print(f"[TRADE] SKIP: ATM {atm} too far from spot {spot_ltp}")
                         continue
 
-                    # PRICE CONFIRMATION: Don't enter immediately.
-                    # PRICE-CHANGE CONFIRMATION (no 60s timer)
-                    # First signal → create pending with entry price
-                    # Fire trade when option LTP moves +0.5% in our favor (momentum confirmed)
-                    # Auto-cancel pending if 5 min elapsed without momentum
-                    pending = self.trade_manager._pending_entry
-                    if pending and pending["idx"] == idx and pending["action"] == action and pending["strike"] == int(atm):
-                        age = time.time() - self.trade_manager._pending_entry_time
-                        # Momentum confirmed if LTP moved +0.5% in our favor
-                        # (same direction as we're buying — option premium rising means trade working)
-                        momentum_confirmed = fresh_entry >= pending["entry_price"] * 1.005
-                        # Pending timeout: 5 min max
+                    # PRICE-MOMENTUM CONFIRMATION — per-index pending (lock strike)
+                    # FIX: Pending now per-idx dict; strike locked at signal time
+                    # so ATM drift doesn't reset the pending.
+                    pending = self.trade_manager._pending_entry.get(idx)
+
+                    if pending and pending["action"] == action:
+                        # Use LOCKED strike from pending (not current ATM — ATM can drift)
+                        pending_strike = pending["strike"]
+                        pending_strike_data = chain.get(pending_strike, {})
+                        if "CE" in action:
+                            locked_ltp = pending_strike_data.get("ce_ltp", 0)
+                        else:
+                            locked_ltp = pending_strike_data.get("pe_ltp", 0)
+
+                        if locked_ltp <= 0:
+                            # Strike no longer has data, cancel
+                            self.trade_manager._pending_entry.pop(idx, None)
+                            self.trade_manager._pending_entry_time.pop(idx, None)
+                            print(f"[TRADE] CANCELLED {idx}: strike {pending_strike} lost data")
+                            continue
+
+                        age = time.time() - self.trade_manager._pending_entry_time.get(idx, 0)
+                        momentum_confirmed = locked_ltp >= pending["entry_price"] * 1.005
+                        signal_reversed = locked_ltp < pending["entry_price"] * 0.98
                         pending_expired = age > 300
-                        # Cancel if LTP dropped 2% (bad signal)
-                        signal_reversed = fresh_entry < pending["entry_price"] * 0.98
 
                         if momentum_confirmed:
-                            # Fire trade with momentum!
                             whale_aligned = False
                             try:
                                 from smart_money import is_smart_money_aligned
                                 whale_aligned = is_smart_money_aligned(v.get("smartMoney", {}), action)
-                            except Exception:
-                                pass
-                            tid = self.trade_manager.log_trade(
-                                idx=idx, action=action, strike=int(atm),
-                                entry_price=fresh_entry,
-                                probability=v.get("winProbability", 0),
-                                source="verdict_momentum",
-                                expiry=str(self.nearest_expiry.get(idx, "")),
-                                straddle=straddle,
-                                whale_aligned=whale_aligned,
-                            )
-                            self.trade_manager._pending_entry = None
-                            pct_moved = ((fresh_entry - pending["entry_price"]) / pending["entry_price"]) * 100
-                            print(f"[TRADE] MOMENTUM FIRE: {action} {idx} {atm} @ ₹{fresh_entry} (+{pct_moved:.2f}% in {age:.0f}s)")
+                            except Exception as e:
+                                print(f"[TRADE] smart_money check error: {e}")
+                            tid = None
+                            try:
+                                tid = self.trade_manager.log_trade(
+                                    idx=idx, action=action, strike=int(pending_strike),
+                                    entry_price=locked_ltp,
+                                    probability=v.get("winProbability", 0),
+                                    source="verdict_momentum",
+                                    expiry=str(self.nearest_expiry.get(idx, "")),
+                                    straddle=straddle,
+                                    whale_aligned=whale_aligned,
+                                )
+                            except Exception as e:
+                                print(f"[TRADE] log_trade FAILED for {idx}: {e}")
+                            self.trade_manager._pending_entry.pop(idx, None)
+                            self.trade_manager._pending_entry_time.pop(idx, None)
+                            pct_moved = ((locked_ltp - pending["entry_price"]) / pending["entry_price"]) * 100
+                            print(f"[TRADE] MOMENTUM FIRE: {action} {idx} {pending_strike} @ ₹{locked_ltp} (+{pct_moved:.2f}% in {age:.0f}s)")
                             if tid:
                                 try:
                                     from trade_autopsy import capture_trade_snapshot
@@ -3784,24 +3811,31 @@ class MarketEngine:
                                 except Exception as e:
                                     print(f"[AUTOPSY] ENTRY capture failed: {e}")
                         elif signal_reversed:
-                            # LTP dropped 2%+ → signal was false
-                            self.trade_manager._pending_entry = None
-                            print(f"[TRADE] CANCELLED: {action} {idx} {atm} — LTP reversed to ₹{fresh_entry} (was ₹{pending['entry_price']})")
+                            self.trade_manager._pending_entry.pop(idx, None)
+                            self.trade_manager._pending_entry_time.pop(idx, None)
+                            print(f"[TRADE] CANCELLED: {action} {idx} {pending_strike} — LTP reversed to ₹{locked_ltp} (was ₹{pending['entry_price']})")
                         elif pending_expired:
-                            # 5 min no momentum → cancel
-                            self.trade_manager._pending_entry = None
-                            print(f"[TRADE] EXPIRED: {action} {idx} {atm} — 5 min no momentum (price stuck at ₹{fresh_entry})")
-                        # else: keep pending, wait for momentum
+                            self.trade_manager._pending_entry.pop(idx, None)
+                            self.trade_manager._pending_entry_time.pop(idx, None)
+                            print(f"[TRADE] EXPIRED: {action} {idx} {pending_strike} — 5 min no momentum")
+                        # else: keep waiting
                     else:
-                        # New signal → create pending (will fire on momentum)
-                        self.trade_manager._pending_entry = {
+                        # No pending (or action changed) → create fresh
+                        self.trade_manager._pending_entry[idx] = {
                             "idx": idx, "action": action, "strike": int(atm),
                             "entry_price": fresh_entry, "probability": v.get("winProbability", 0),
                         }
-                        self.trade_manager._pending_entry_time = time.time()
-                        print(f"[TRADE] PENDING: {action} {idx} {atm} @ ₹{fresh_entry} — waiting for +0.5% momentum...")
+                        self.trade_manager._pending_entry_time[idx] = time.time()
+                        print(f"[TRADE] PENDING: {action} {idx} {atm} @ ₹{fresh_entry} — waiting for +0.5% momentum on this strike...")
+              except Exception as e:
+                # Per-idx isolation: NIFTY error doesn't kill BANKNIFTY
+                print(f"[TRADE] {idx} per-idx error: {e}")
+                import traceback
+                traceback.print_exc()
         except Exception as e:
             print(f"[TRADE] Background verdict error: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _detect_market_open(self):
         """Detect how market opened: Gap Up / Gap Down / Flat. Called once after 9:16 AM."""
