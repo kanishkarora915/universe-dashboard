@@ -11,3 +11,7 @@ services:
         value: "3.11.0"
       - key: NODE_VERSION
         value: "20"
+    disk:
+      name: universe-data
+      mountPath: /data
+      sizeGB: 1
