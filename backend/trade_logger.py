@@ -144,15 +144,18 @@ def calc_position_size(idx, entry_price, sl_price=0, conviction=70, whale_aligne
     if entry_price <= 0:
         return 1, lot_size, lot_size
 
-    # Conviction multiplier on max risk
+    # Conviction multiplier on max risk — BUYER OPTIMIZED
+    # Higher conviction = bigger position (buyers need asymmetric R:R wins)
     if conviction >= 90:
-        conv_mult = 1.0
+        conv_mult = 1.5    # MAX — beast mode (was 1.0)
     elif conviction >= 80:
-        conv_mult = 0.75
+        conv_mult = 1.2    # Aggressive (was 0.75)
     elif conviction >= 70:
-        conv_mult = 0.50
+        conv_mult = 1.0    # Full (was 0.50)
+    elif conviction >= 60:
+        conv_mult = 0.6    # Moderate (was 0.25)
     else:
-        conv_mult = 0.25
+        conv_mult = 0.3    # Small starter
 
     running_capital = _get_running_capital()
     base_risk_pct = MAX_RISK_WHALE_ALIGNED_PCT if whale_aligned else MAX_RISK_PER_TRADE_PCT

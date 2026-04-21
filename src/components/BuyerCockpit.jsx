@@ -168,6 +168,46 @@ function MetricPill({ label, value, color }) {
 // ═══════════════════════════════════════════════════════
 
 export function EnhancedVerdictCard({ index, verdict, reasons }) {
+  // Live LTP fetcher for verdict strike
+  const [liveLtp, setLiveLtp] = useState(null);
+  const [verdictAge, setVerdictAge] = useState(0);
+
+  const trade = verdict?.trade || {};
+  const strike = trade.strike || verdict?.atm;
+  const action = verdict?.action || "NO TRADE";
+
+  useEffect(() => {
+    if (!strike || !action || action === "NO TRADE") return;
+    let cancelled = false;
+    const fetchLtp = async () => {
+      try {
+        const res = await fetch(`/api/option-chain/${index}`);
+        if (!res.ok) return;
+        const chain = await res.json();
+        const row = chain.find(r => Math.abs(r.strike - strike) < 0.01);
+        if (row && !cancelled) {
+          const ltp = action.includes("CE") ? row.ce_ltp : row.pe_ltp;
+          setLiveLtp(ltp);
+        }
+      } catch {}
+    };
+    fetchLtp();
+    const iv = setInterval(fetchLtp, 5000); // Refresh every 5 sec
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [index, strike, action]);
+
+  // Verdict age tracker
+  useEffect(() => {
+    if (!verdict?.timestamp) return;
+    const updateAge = () => {
+      // Verdict timestamp like "10:45:23 AM IST" — just track elapsed
+      setVerdictAge(prev => prev + 1);
+    };
+    setVerdictAge(0);
+    const iv = setInterval(updateAge, 1000);
+    return () => clearInterval(iv);
+  }, [verdict?.timestamp]);
+
   if (!verdict) {
     return (
       <div style={{ padding: SPACE.LG, background: "rgba(107,114,128,0.1)", borderRadius: RADIUS.LG, textAlign: "center", color: "#888" }}>
@@ -177,7 +217,6 @@ export function EnhancedVerdictCard({ index, verdict, reasons }) {
     );
   }
 
-  const action = verdict.action || "NO TRADE";
   const winProb = verdict.winProbability || 0;
   const isBuy = action.includes("BUY");
   const isCE = action.includes("CE");
@@ -199,12 +238,10 @@ export function EnhancedVerdictCard({ index, verdict, reasons }) {
     ? "rgba(239, 68, 68, 0.08)"
     : "rgba(107, 114, 128, 0.08)";
 
-  const trade = verdict.trade || {};
   const entry = trade.entry || 0;
   const sl = trade.sl || 0;
   const t1 = trade.t1 || 0;
   const t2 = trade.t2 || 0;
-  const strike = trade.strike || verdict.atm || 0;
 
   // Calculate P&L amounts (assume standard lot)
   const lotSize = index === "NIFTY" ? 25 : 15;
@@ -266,26 +303,77 @@ export function EnhancedVerdictCard({ index, verdict, reasons }) {
         </div>
       </div>
 
-      {/* Low conviction warning */}
+      {/* Low conviction — actionable wait state */}
       {tooLow && (
         <div
           style={{
-            padding: SPACE.SM,
+            padding: SPACE.MD,
             background: "rgba(245, 158, 11, 0.1)",
             borderLeft: `3px solid ${YELLOW}`,
             borderRadius: 4,
-            fontSize: 12,
-            color: YELLOW,
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
           }}
         >
-          ⚠️ Conviction {winProb}% is too low. Need 65%+ for entry. <b>DO NOT TRADE</b>.
-          Wait for stronger signal.
+          <div style={{ fontSize: 13, color: YELLOW, fontWeight: 700 }}>
+            ⚠️ Conviction {winProb}% — borderline (need 65%+)
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-secondary, #aaa)" }}>
+            <b>What's missing:</b> Need {65 - winProb} more pts for entry signal
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-secondary, #aaa)" }}>
+            <b>Direction lean:</b> {action} ({winProb}% confidence)
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-secondary, #aaa)" }}>
+            <b>Auto-recheck:</b> Every 60 sec — will signal when threshold crossed
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-secondary, #aaa)" }}>
+            <b>Watch for:</b> Whale sweep / Max pain shift / Momentum acceleration
+          </div>
+          <div
+            style={{
+              marginTop: 4,
+              padding: "4px 8px",
+              background: "rgba(255,255,255,0.06)",
+              borderRadius: 4,
+              fontSize: 11,
+              color: "var(--text-primary, #fff)",
+            }}
+          >
+            👉 Manual override: If you see clear chart pattern, take trade on Kite.
+            System is conservative — your judgment matters.
+          </div>
         </div>
       )}
 
       {/* Trade math (only show if valid setup) */}
       {!tooLow && entry > 0 && (
         <>
+          {/* Live LTP banner with delta from entry */}
+          {liveLtp !== null && liveLtp > 0 && (
+            <div style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              padding: `${SPACE.XS}px ${SPACE.SM}px`,
+              background: "rgba(255,255,255,0.04)",
+              borderRadius: RADIUS.SM,
+              fontSize: 12,
+            }}>
+              <span style={{ color: "var(--text-secondary, #999)" }}>
+                Live LTP <b style={{ fontFamily: FONT.MONO || "monospace", color: "var(--text-primary, #fff)" }}>₹{liveLtp.toFixed(2)}</b>
+              </span>
+              <span style={{
+                color: liveLtp >= entry ? GREEN : RED,
+                fontFamily: FONT.MONO || "monospace",
+                fontWeight: 700,
+              }}>
+                {liveLtp >= entry ? "+" : ""}{((liveLtp - entry) / entry * 100).toFixed(2)}% from entry
+              </span>
+            </div>
+          )}
+
           {/* Price row */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: SPACE.XS, marginTop: SPACE.XS }}>
             <PriceBox label="ENTRY" value={`₹${entry}`} color={color} highlight />
@@ -298,11 +386,16 @@ export function EnhancedVerdictCard({ index, verdict, reasons }) {
           <div style={{ display: "flex", gap: SPACE.SM, flexWrap: "wrap", fontSize: 11, color: "var(--text-secondary, #888)", marginTop: SPACE.XS }}>
             <span>Size: <b style={{ color: "var(--text-primary, #fff)" }}>{lots}L × {lotSize} = {qty}qty</b></span>
             <span>·</span>
-            <span>R:R <b style={{ color: "var(--text-primary, #fff)" }}>1:{rr}</b></span>
+            <span>R:R <b style={{ color: rr >= 2 ? GREEN : rr >= 1.5 ? YELLOW : RED }}>1:{rr}</b></span>
             <span>·</span>
             <span>Theta <b style={{ color: YELLOW }}>-₹{thetaHr}/hr</b></span>
             <span>·</span>
             <span>Momentum <b style={{ color: momentum.includes("UP") ? GREEN : momentum.includes("DOWN") ? RED : GRAY }}>{momentum}</b></span>
+          </div>
+
+          {/* Last updated timestamp */}
+          <div style={{ fontSize: 10, color: "var(--text-secondary, #777)", marginTop: 2 }}>
+            Updated {verdictAge}s ago · Refreshes every 60s · Live LTP every 5s
           </div>
         </>
       )}

@@ -2455,11 +2455,22 @@ class MarketEngine:
                     reasons.append(f"Slight bearish lean {bear_pct}% but not enough")
                     against = bull_reasons[:3]
 
-            # SL / Target based on entry premium
+            # SL / Target — BUYER OPTIMIZED for R:R 1:2 minimum
+            # Cheap premiums (<100): tighter SL (option can fall fast)
+            # Expensive premiums (>200): wider SL (more buffer needed)
             if entry > 0:
-                sl = round(entry * 0.70)       # 30% SL
-                t1 = round(entry * 1.25)       # 25% T1
-                t2 = round(entry * 1.50)       # 50% T2
+                if entry < 100:
+                    sl = round(entry * 0.80)   # 20% SL (cheap option)
+                    t1 = round(entry * 1.50)   # +50% T1 (R:R 1:2.5)
+                    t2 = round(entry * 2.00)   # +100% T2 (R:R 1:5)
+                elif entry < 300:
+                    sl = round(entry * 0.85)   # 15% SL
+                    t1 = round(entry * 1.40)   # +40% T1 (R:R 1:2.6)
+                    t2 = round(entry * 1.80)   # +80% T2 (R:R 1:5.3)
+                else:
+                    sl = round(entry * 0.85)   # 15% SL
+                    t1 = round(entry * 1.30)   # +30% T1 (R:R 1:2)
+                    t2 = round(entry * 1.60)   # +60% T2 (R:R 1:4)
                 rr = round((t1 - entry) / max(entry - sl, 1), 1)
             else:
                 sl = t1 = t2 = rr = 0
