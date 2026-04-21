@@ -3686,17 +3686,20 @@ class MarketEngine:
                 if scalper_mode.is_scalper_enabled():
                     # Monitor existing scalper trades
                     scalper_mode.check_scalper_exits(self.chains)
-                    # Try entries
+                    # Try entries — with whipsaw guards
                     for idx in ["NIFTY", "BANKNIFTY"]:
                         v = verdict.get(idx.lower(), {})
-                        if scalper_mode.should_enter_scalp(idx, v):
-                            cfg = INDEX_CONFIG[idx]
-                            spot_ltp = self.prices.get(self.spot_tokens.get(idx), {}).get("ltp", 0)
-                            if spot_ltp <= 0:
-                                continue
-                            atm = round(spot_ltp / cfg["strike_gap"]) * cfg["strike_gap"]
+                        action = v.get("action", "")
+                        if not action or action == "NO TRADE":
+                            continue
+                        cfg = INDEX_CONFIG[idx]
+                        spot_ltp = self.prices.get(self.spot_tokens.get(idx), {}).get("ltp", 0)
+                        if spot_ltp <= 0:
+                            continue
+                        atm = round(spot_ltp / cfg["strike_gap"]) * cfg["strike_gap"]
+                        # Pass ATM strike to should_enter_scalp for whipsaw guards
+                        if scalper_mode.should_enter_scalp(idx, v, scalper_enabled=True, atm_strike=atm):
                             atm_data = self.chains.get(idx, {}).get(atm, {})
-                            action = v.get("action", "")
                             entry_premium = atm_data.get("ce_ltp" if "CE" in action else "pe_ltp", 0)
                             if 5 < entry_premium < 5000:
                                 scalper_mode.log_scalp_trade(
