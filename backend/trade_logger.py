@@ -913,29 +913,19 @@ class TradeManager:
         if not market_open:
             return False
 
-        # ── TIME-OF-DAY FILTER (expiry-aware) ──
-        # Avoid lunch chop (11:30-13:00) unless very strong signal (80%+)
-        # Expiry days: 13:00-15:00 is EXPLOSIVE buyer window (2 yr trader data)
-        # Non-expiry days: avoid last 15 min (theta decay)
+        # ── NO HARDCODED TIME WINDOWS ──
+        # Market can cook anything at any time. Trader philosophy:
+        # "Market mein koi rule nahi ki aaj bullish rahega ya sideways"
+        # Let engines READ the market state:
+        #   - Chop filter detects actual chop (not assumed "lunch chop")
+        #   - Predictive momentum detects actual move (not assumed "trend day")
+        #   - Max pain drift detects actual pull (not assumed "expiry bias")
+        #   - OI + price movements are the ONLY truth
+        #
+        # Only sanity check: basic market hours (already handled above via market_open).
+        # 9:20-15:15 is the full trading window. Inside this window, any time is fair game
+        # IF the engines agree a setup is valid.
         win_pct = verdict_data.get("winProbability", 0)
-        hour_min = now.hour * 100 + now.minute
-
-        # Expiry day detection
-        is_expiry = now.weekday() == 1  # Tuesday = NIFTY expiry
-
-        if 1130 <= hour_min <= 1300 and win_pct < 80:
-            return False
-
-        if not is_expiry:
-            # Non-expiry: block last 15 min (theta explosive, no time to play out)
-            if hour_min >= 1515:
-                return False
-        else:
-            # Expiry day: allow trades until 15:15 (last 15 min for settlement only)
-            # 13:00-15:00 is PRIME TIME — most buyer profits made here
-            if hour_min >= 1515:
-                return False
-
         bull_pct = verdict_data.get("bullPct", 50)
         bear_pct = verdict_data.get("bearPct", 50)
         spread = abs(bull_pct - bear_pct)

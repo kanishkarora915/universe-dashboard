@@ -321,26 +321,30 @@ def score_premarket_gap_buyer(engine, idx):
 # ══════════════════════════════════════════════════════════════════════════
 
 def score_expiry_day_buyer(engine, idx):
-    """Special rules for expiry day (Tuesday NIFTY, last-Thursday BN).
+    """Expiry day CONTEXT engine (Tuesday NIFTY, last-Thursday BN).
 
-    REAL TRADER EXPERIENCE: Big moves happen 1:00-3:15 PM on expiry.
-    - Gamma explosion near ATM
-    - Pin escape moves (100-500 pts)
-    - Max pain pull intensifies
-    - Position unwinds trigger sharp directional moves
-    - THIS IS BUYER'S GOLD TIME — boost signals, don't ban them
+    PHILOSOPHY: No hardcoded time-based bias. Market can cook anything anytime.
+    The engines READ the market — they don't assume "1 PM = explosive" or
+    "11 AM = lunch chop". If moves happen, OI/price/momentum engines pick up.
 
-    Revised phases (per 2+ years trader experience):
-    - 9:15-11:00 EARLY     : Wait for setup, normal rules
-    - 11:00-13:00 BUILD    : Positions building, need 70%+ conviction
-    - 13:00-15:00 EXPLOSIVE: 🔥 BIG MOVE WINDOW — BUYER PARADISE (boost +8)
-    - 15:00-15:15 FINAL    : Quick scalps, tight SL
-    - 15:15-15:30 SETTLE   : No new entries (expiry settlement)
+    This engine ONLY detects:
+    - Is today an expiry day? (yes/no)
+    - What phase of day? (informational metadata — NOT a score bias)
+
+    Real scoring comes from:
+    - max_pain_drift (reads actual pin pull)
+    - sweep detection (reads actual whale activity)
+    - predictive momentum (reads actual velocity)
+    - chop filter (reads actual chop)
+    - oi_flow / fresh_vs_rolled (reads actual positioning)
+
+    Meta phase can be used by frontend to SHOW what phase we're in — but engine
+    won't add arbitrary time-based points anymore.
     """
     bull = 0
     bear = 0
     reasons = []
-    meta = {"is_expiry": False, "phase": "NORMAL"}
+    meta = {"is_expiry": False, "phase": "NONE"}
 
     now = ist_now()
     market_time = now.time()
@@ -352,7 +356,7 @@ def score_expiry_day_buyer(engine, idx):
     if not is_expiry:
         return {"bull": 0, "bear": 0, "reasons": [], "meta": meta}
 
-    # Phase classification (REVISED — matches real trader experience)
+    # Phase classification — INFORMATIONAL ONLY (no score bias)
     if market_time < dtime(11, 0):
         phase = "EARLY"
     elif market_time < dtime(13, 0):
@@ -365,47 +369,26 @@ def score_expiry_day_buyer(engine, idx):
         phase = "SETTLE"
     meta["phase"] = phase
 
-    # Get max pain signal
+    # Max pain info (for display/context only — max_pain_drift engine handles actual scoring)
     try:
-        from oi_intelligence import score_max_pain_drift_buyer
+        from oi_intelligence import compute_max_pain
         chain = engine.chains.get(idx, {})
         spot_tok = engine.spot_tokens.get(idx)
         spot = engine.prices.get(spot_tok, {}).get("ltp", 0) if spot_tok else 0
-        mp_result = score_max_pain_drift_buyer(chain, spot, idx, is_expiry_day=True)
-        meta["max_pain"] = mp_result.get("current", 0)
-        meta["mp_direction"] = mp_result.get("drift", "UNKNOWN")
-        mp_bull = mp_result.get("bull", 0)
-        mp_bear = mp_result.get("bear", 0)
+        mp = compute_max_pain(chain)
+        meta["max_pain"] = mp
+        meta["spot"] = spot
     except Exception:
-        mp_bull = 0
-        mp_bear = 0
+        pass
 
-    # Phase-specific scoring
-    if phase == "EARLY":
-        # Morning: normal rules, wait for setup
-        reasons.append(f"EXPIRY EARLY ({market_time.strftime('%H:%M')}) — wait for setup, normal rules")
-    elif phase == "BUILD":
-        # 11-13: Positions building, need high conviction
-        reasons.append(f"EXPIRY BUILD ({market_time.strftime('%H:%M')}) — require 70%+ conviction")
-    elif phase == "EXPLOSIVE":
-        # 🔥 13:00-15:00: BUYER GOLD WINDOW
-        # Max pain 1.5x weight, boost directional bias
-        bull = int(mp_bull * 1.5) + 5  # Flat +5 boost for buyer
-        bear = int(mp_bear * 1.5) + 5
-        reasons.append(f"🔥 EXPIRY EXPLOSIVE ({market_time.strftime('%H:%M')}) — BIG MOVE WINDOW, max pain 1.5x + buyer boost [+{bull + bear}pts]")
-    elif phase == "FINAL":
-        # 15:00-15:15: Last 15 min scalp
-        bull = int(mp_bull * 1.2) + 3
-        bear = int(mp_bear * 1.2) + 3
-        reasons.append(f"EXPIRY FINAL ({market_time.strftime('%H:%M')}) — tight SL scalp window, max pain dominant")
-    else:
-        # 15:15+: Settlement, no new entries
-        reasons.append(f"EXPIRY SETTLEMENT ({market_time.strftime('%H:%M')}) — no new entries, positions settling")
-        meta["block_new_entries"] = True
+    # Only informational reason (no points)
+    reasons.append(f"EXPIRY DAY {phase} phase ({market_time.strftime('%H:%M')}) — engines reading live market state")
 
+    # NO score bias added. Let market-reading engines (max_pain_drift, sweep,
+    # momentum, chop filter, OI flow) determine entry based on REAL conditions.
     return {
-        "bull": bull,
-        "bear": bear,
+        "bull": 0,
+        "bear": 0,
         "reasons": reasons,
         "meta": meta,
     }
