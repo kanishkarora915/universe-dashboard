@@ -659,6 +659,75 @@ async def smart_money_data(index: str):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Scalper Mode endpoints (aggressive paper trader) ──
+
+@app.get("/api/scalper/status")
+async def scalper_status():
+    try:
+        import scalper_mode
+        return {
+            "enabled": scalper_mode.is_scalper_enabled(),
+            "config": {
+                "threshold": scalper_mode.SCALPER_THRESHOLD,
+                "dailyCap": scalper_mode.SCALPER_DAILY_CAP,
+                "slPct": scalper_mode.SCALPER_SL_PCT * 100,
+                "t1Pct": scalper_mode.SCALPER_T1_PCT * 100,
+                "t2Pct": scalper_mode.SCALPER_T2_PCT * 100,
+                "riskPct": scalper_mode.SCALPER_RISK_PCT,
+                "maxHoldMin": scalper_mode.SCALPER_MAX_HOLD_MIN,
+            },
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/scalper/enable")
+async def scalper_enable():
+    try:
+        import scalper_mode
+        scalper_mode.enable_scalper()
+        return {"status": "enabled"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/scalper/disable")
+async def scalper_disable():
+    try:
+        import scalper_mode
+        scalper_mode.disable_scalper()
+        return {"status": "disabled"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/scalper/trades/open")
+async def scalper_open_trades():
+    try:
+        import scalper_mode
+        return scalper_mode.get_scalper_open_trades()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/scalper/trades/closed")
+async def scalper_closed_trades(days: int = 7):
+    try:
+        import scalper_mode
+        return scalper_mode.get_scalper_closed_trades(days)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/scalper/stats")
+async def scalper_stats():
+    try:
+        import scalper_mode
+        return scalper_mode.get_scalper_stats()
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ── Shadow Autopsy endpoints ──
 
 @app.get("/api/shadow/today")

@@ -3680,6 +3680,34 @@ class MarketEngine:
                     print(f"[TRADE] Pending expired ({age:.0f}s old) — clearing")
                     self.trade_manager._pending_entry = None
 
+            # ── SCALPER MODE check (parallel to swing mode) ──
+            try:
+                import scalper_mode
+                if scalper_mode.is_scalper_enabled():
+                    # Monitor existing scalper trades
+                    scalper_mode.check_scalper_exits(self.chains)
+                    # Try entries
+                    for idx in ["NIFTY", "BANKNIFTY"]:
+                        v = verdict.get(idx.lower(), {})
+                        if scalper_mode.should_enter_scalp(idx, v):
+                            cfg = INDEX_CONFIG[idx]
+                            spot_ltp = self.prices.get(self.spot_tokens.get(idx), {}).get("ltp", 0)
+                            if spot_ltp <= 0:
+                                continue
+                            atm = round(spot_ltp / cfg["strike_gap"]) * cfg["strike_gap"]
+                            atm_data = self.chains.get(idx, {}).get(atm, {})
+                            action = v.get("action", "")
+                            entry_premium = atm_data.get("ce_ltp" if "CE" in action else "pe_ltp", 0)
+                            if 5 < entry_premium < 5000:
+                                scalper_mode.log_scalp_trade(
+                                    idx=idx, action=action, strike=int(atm),
+                                    entry_price=entry_premium,
+                                    probability=v.get("winProbability", 0),
+                                    expiry=str(self.nearest_expiry.get(idx, "")),
+                                )
+            except Exception as e:
+                print(f"[SCALPER] Error: {e}")
+
             for idx in ["NIFTY", "BANKNIFTY"]:
                 key = idx.lower()
                 v = verdict.get(key, {})

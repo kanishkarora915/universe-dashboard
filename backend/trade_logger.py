@@ -16,10 +16,10 @@ IST = pytz.timezone("Asia/Kolkata")
 DB_PATH = None
 
 INITIAL_CAPITAL = 1000000  # ₹10 lakh starting capital
-MAX_RISK_PER_TRADE_PCT = 1.5  # Risk 1.5% of running capital per trade baseline
-MAX_RISK_WHALE_ALIGNED_PCT = 2.5  # Aggressive risk when smart money aligned (25% more)
-MAX_DAILY_LOSS_PCT = 5  # Stop trading after 5% daily loss
-MAX_SIMULTANEOUS_TRADES = 10  # No practical limit — take every valid signal. Per-(idx,action,strike) dup check below prevents same signal duplicates.
+MAX_RISK_PER_TRADE_PCT = 3.0  # Risk 3% of capital per trade (₹30k on ₹10L) — was 1.5%
+MAX_RISK_WHALE_ALIGNED_PCT = 5.0  # 5% on whale-aligned trades (₹50k risk) — was 2.5%
+MAX_DAILY_LOSS_PCT = 8  # Stop trading after 8% daily loss (was 5% — let trades breathe)
+MAX_SIMULTANEOUS_TRADES = 10  # No practical limit
 MAX_DAILY_TRADES = 6  # Real trades per day — prevents overtrading
 
 # NSE Holidays — Auto-fetched from Kite API, fallback to hardcoded
@@ -144,18 +144,18 @@ def calc_position_size(idx, entry_price, sl_price=0, conviction=70, whale_aligne
     if entry_price <= 0:
         return 1, lot_size, lot_size
 
-    # Conviction multiplier on max risk — BUYER OPTIMIZED
-    # Higher conviction = bigger position (buyers need asymmetric R:R wins)
+    # Conviction multiplier — AGGRESSIVE for ₹10L capital
+    # Goal: deploy 30-60% of capital per trade on high conviction
     if conviction >= 90:
-        conv_mult = 1.5    # MAX — beast mode (was 1.0)
+        conv_mult = 2.0    # MAX — beast mode (₹60k risk = 6%)
     elif conviction >= 80:
-        conv_mult = 1.2    # Aggressive (was 0.75)
+        conv_mult = 1.5    # Aggressive (₹45k risk = 4.5%)
     elif conviction >= 70:
-        conv_mult = 1.0    # Full (was 0.50)
+        conv_mult = 1.2    # Full (₹36k risk = 3.6%)
     elif conviction >= 60:
-        conv_mult = 0.6    # Moderate (was 0.25)
+        conv_mult = 1.0    # Standard (₹30k risk = 3%)
     else:
-        conv_mult = 0.3    # Small starter
+        conv_mult = 0.7    # Smaller (₹21k risk = 2.1%)
 
     running_capital = _get_running_capital()
     base_risk_pct = MAX_RISK_WHALE_ALIGNED_PCT if whale_aligned else MAX_RISK_PER_TRADE_PCT
@@ -170,10 +170,12 @@ def calc_position_size(idx, entry_price, sl_price=0, conviction=70, whale_aligne
     risk_per_unit = max(risk_per_unit, 1)
 
     max_qty_by_risk = int(max_risk / risk_per_unit)
-    max_qty_by_capital = int(running_capital * 0.5 / max(entry_price, 1))
+    # Capital deployment cap: 80% (was 50%) — allows bigger positions
+    max_qty_by_capital = int(running_capital * 0.8 / max(entry_price, 1))
     max_qty = min(max_qty_by_risk, max_qty_by_capital)
 
-    lots = max(1, min(max_qty // lot_size, 20))
+    # Max lots cap: 30 (was 20) — for high conviction trades
+    lots = max(1, min(max_qty // lot_size, 30))
     qty = lots * lot_size
 
     return lots, lot_size, qty
