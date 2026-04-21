@@ -323,13 +323,19 @@ def score_premarket_gap_buyer(engine, idx):
 def score_expiry_day_buyer(engine, idx):
     """Special rules for expiry day (Tuesday NIFTY, last-Thursday BN).
 
-    Theta decay explodes — different game.
-    Buyer must adapt:
-    - Pre-12 PM: directional trades OK, wider targets
-    - 12-13 PM: tighter targets, higher conviction needed
-    - Post-13 PM: ATM ONLY, no OTM
-    - Post-14 PM: avoid new entries (theta deadly)
-    - Max pain becomes dominant signal
+    REAL TRADER EXPERIENCE: Big moves happen 1:00-3:15 PM on expiry.
+    - Gamma explosion near ATM
+    - Pin escape moves (100-500 pts)
+    - Max pain pull intensifies
+    - Position unwinds trigger sharp directional moves
+    - THIS IS BUYER'S GOLD TIME — boost signals, don't ban them
+
+    Revised phases (per 2+ years trader experience):
+    - 9:15-11:00 EARLY     : Wait for setup, normal rules
+    - 11:00-13:00 BUILD    : Positions building, need 70%+ conviction
+    - 13:00-15:00 EXPLOSIVE: 🔥 BIG MOVE WINDOW — BUYER PARADISE (boost +8)
+    - 15:00-15:15 FINAL    : Quick scalps, tight SL
+    - 15:15-15:30 SETTLE   : No new entries (expiry settlement)
     """
     bull = 0
     bear = 0
@@ -346,15 +352,17 @@ def score_expiry_day_buyer(engine, idx):
     if not is_expiry:
         return {"bull": 0, "bear": 0, "reasons": [], "meta": meta}
 
-    # Phase classification
-    if market_time < dtime(12, 0):
+    # Phase classification (REVISED — matches real trader experience)
+    if market_time < dtime(11, 0):
         phase = "EARLY"
     elif market_time < dtime(13, 0):
-        phase = "MID"
-    elif market_time < dtime(14, 0):
-        phase = "LATE"
+        phase = "BUILD"
+    elif market_time < dtime(15, 0):
+        phase = "EXPLOSIVE"
+    elif market_time < dtime(15, 15):
+        phase = "FINAL"
     else:
-        phase = "DEATH_ZONE"
+        phase = "SETTLE"
     meta["phase"] = phase
 
     # Get max pain signal
@@ -366,25 +374,33 @@ def score_expiry_day_buyer(engine, idx):
         mp_result = score_max_pain_drift_buyer(chain, spot, idx, is_expiry_day=True)
         meta["max_pain"] = mp_result.get("current", 0)
         meta["mp_direction"] = mp_result.get("drift", "UNKNOWN")
+        mp_bull = mp_result.get("bull", 0)
+        mp_bear = mp_result.get("bear", 0)
     except Exception:
-        mp_result = {"bull": 0, "bear": 0}
+        mp_bull = 0
+        mp_bear = 0
 
     # Phase-specific scoring
     if phase == "EARLY":
-        # Morning: normal rules + slight boost to trending signals
-        reasons.append(f"EXPIRY EARLY ({market_time.strftime('%H:%M')}) — normal rules")
-    elif phase == "MID":
-        # Mid: require conviction
-        reasons.append(f"EXPIRY MID ({market_time.strftime('%H:%M')}) — require +15% over base conviction")
-    elif phase == "LATE":
-        # Late: max pain dominant
-        bull = int(mp_result.get("bull", 0) * 1.3)
-        bear = int(mp_result.get("bear", 0) * 1.3)
-        reasons.append(f"EXPIRY LATE ({market_time.strftime('%H:%M')}) — max pain dominant (1.3x weight)")
+        # Morning: normal rules, wait for setup
+        reasons.append(f"EXPIRY EARLY ({market_time.strftime('%H:%M')}) — wait for setup, normal rules")
+    elif phase == "BUILD":
+        # 11-13: Positions building, need high conviction
+        reasons.append(f"EXPIRY BUILD ({market_time.strftime('%H:%M')}) — require 70%+ conviction")
+    elif phase == "EXPLOSIVE":
+        # 🔥 13:00-15:00: BUYER GOLD WINDOW
+        # Max pain 1.5x weight, boost directional bias
+        bull = int(mp_bull * 1.5) + 5  # Flat +5 boost for buyer
+        bear = int(mp_bear * 1.5) + 5
+        reasons.append(f"🔥 EXPIRY EXPLOSIVE ({market_time.strftime('%H:%M')}) — BIG MOVE WINDOW, max pain 1.5x + buyer boost [+{bull + bear}pts]")
+    elif phase == "FINAL":
+        # 15:00-15:15: Last 15 min scalp
+        bull = int(mp_bull * 1.2) + 3
+        bear = int(mp_bear * 1.2) + 3
+        reasons.append(f"EXPIRY FINAL ({market_time.strftime('%H:%M')}) — tight SL scalp window, max pain dominant")
     else:
-        # Death zone: no new entries
-        reasons.append(f"EXPIRY DEATH ZONE ({market_time.strftime('%H:%M')}) — NO NEW ENTRIES, theta explosive")
-        # Block trades via negative implicit signal
+        # 15:15+: Settlement, no new entries
+        reasons.append(f"EXPIRY SETTLEMENT ({market_time.strftime('%H:%M')}) — no new entries, positions settling")
         meta["block_new_entries"] = True
 
     return {

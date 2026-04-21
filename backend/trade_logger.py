@@ -913,15 +913,28 @@ class TradeManager:
         if not market_open:
             return False
 
-        # ── TIME-OF-DAY FILTER ──
+        # ── TIME-OF-DAY FILTER (expiry-aware) ──
         # Avoid lunch chop (11:30-13:00) unless very strong signal (80%+)
-        # Avoid last 5 min (>15:10) — theta decay too fast
+        # Expiry days: 13:00-15:00 is EXPLOSIVE buyer window (2 yr trader data)
+        # Non-expiry days: avoid last 15 min (theta decay)
         win_pct = verdict_data.get("winProbability", 0)
         hour_min = now.hour * 100 + now.minute
+
+        # Expiry day detection
+        is_expiry = now.weekday() == 1  # Tuesday = NIFTY expiry
+
         if 1130 <= hour_min <= 1300 and win_pct < 80:
             return False
-        if hour_min >= 1510:
-            return False
+
+        if not is_expiry:
+            # Non-expiry: block last 15 min (theta explosive, no time to play out)
+            if hour_min >= 1515:
+                return False
+        else:
+            # Expiry day: allow trades until 15:15 (last 15 min for settlement only)
+            # 13:00-15:00 is PRIME TIME — most buyer profits made here
+            if hour_min >= 1515:
+                return False
 
         bull_pct = verdict_data.get("bullPct", 50)
         bear_pct = verdict_data.get("bearPct", 50)
