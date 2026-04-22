@@ -716,13 +716,27 @@ class TradeManager:
                 if not still_open or still_open[0] != "OPEN":
                     continue  # Already closed
 
-                # Use CURRENT qty from DB (may be reduced after partial T1 booking)
+                # Detect if T1 partial booking happened (qty < original lots*lot_size)
                 current_qty = still_open[2] or t["qty"]
-                already_booked_pnl = still_open[1] or 0  # P&L from partial booking
+                original_qty = t.get("lots", 1) * t.get("lot_size", current_qty)
+                t1_price = t.get("t1_price", 0) or 0
+                partial_booked = current_qty < original_qty
 
                 final_pnl_pts = round(exit_price - entry, 2)
-                remaining_pnl = round(final_pnl_pts * current_qty, 2)
-                total_pnl = round(already_booked_pnl + remaining_pnl, 2)  # Partial + remaining
+
+                if partial_booked and t1_price > 0:
+                    # T1 partial hit earlier — recompute actual booked amount
+                    booked_qty = original_qty - current_qty
+                    booked_pnl_realized = round((t1_price - entry) * booked_qty, 2)
+                    remaining_pnl = round(final_pnl_pts * current_qty, 2)
+                    total_pnl = round(booked_pnl_realized + remaining_pnl, 2)
+                    already_booked_pnl = booked_pnl_realized  # For log
+                    remaining_pnl_for_log = remaining_pnl
+                else:
+                    # No partial — simple close: full qty × (exit - entry)
+                    total_pnl = round(final_pnl_pts * current_qty, 2)
+                    already_booked_pnl = 0
+                    remaining_pnl_for_log = total_pnl
 
                 conn.execute("""
                     UPDATE trades SET current_ltp=?, peak_ltp=?, pnl_pts=?, pnl_rupees=?,
@@ -732,7 +746,7 @@ class TradeManager:
                 """, (current_ltp, peak, final_pnl_pts, total_pnl,
                       new_sl, breakeven_active, trailing_active, trail_level,
                       new_status, exit_price, ist_now().isoformat(), exit_reason, alerts_str, t["id"]))
-                print(f"[TRADE] CLOSED: {action} {idx} {strike} — {new_status} — PnL: ₹{total_pnl:+,.0f} (partial: ₹{already_booked_pnl:+,.0f} + exit: ₹{remaining_pnl:+,.0f})")
+                print(f"[TRADE] CLOSED: {action} {idx} {strike} — {new_status} — PnL: ₹{total_pnl:+,.0f} (partial: ₹{already_booked_pnl:+,.0f} + exit: ₹{remaining_pnl_for_log:+,.0f})")
 
                 # Autopsy: capture exit snapshot
                 if self._engine_ref:
