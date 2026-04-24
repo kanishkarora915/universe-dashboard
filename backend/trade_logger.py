@@ -286,8 +286,22 @@ def init_trades_db(db_path):
     _cleanup_invalid_trades()
 
 
+_wal_enabled = False
+
 def _conn():
-    return sqlite3.connect(DB_PATH)
+    """SQLite connection with WAL mode (concurrent reads + writes)."""
+    global _wal_enabled
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    if not _wal_enabled:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
+            conn.execute("PRAGMA busy_timeout=30000")  # 30s lock wait
+            _wal_enabled = True
+        except Exception as e:
+            print(f"[DB] WAL mode init: {e}")
+    return conn
 
 
 class TradeManager:

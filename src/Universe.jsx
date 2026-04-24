@@ -1,30 +1,34 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, lazy, Suspense } from "react";
 import { useMarketData } from "./useMarketData";
-import OIChangeTab from "./OIChangeTab";
-import PnLTracker from "./PnLTracker";
-import ReportsTab from "./ReportsTab";
-import TradingTimesTab from "./TradingTimesTab";
-import TradeAutopsyTab from "./TradeAutopsyTab";
-import LiveTicker from "./components/LiveTicker";
-import Notifications from "./components/Notifications";
-import SignalDashboard from "./components/SignalDashboard";
+
+// ── Always-loaded (critical path for home page) ──
 import BuyerCockpit from "./components/BuyerCockpit";
 import TopBar from "./components/TopBar";
 import Sidebar from "./components/Sidebar";
 import SectionNav from "./components/SectionNav";
-import StrikeSearch from "./components/StrikeSearch";
-import StrikeDetail from "./components/StrikeDetail";
 import AlertToastStack from "./components/AlertToast";
 import AlertDrawer from "./components/AlertDrawer";
-import HotkeyHelp from "./components/HotkeyHelp";
-import SettingsPanel from "./components/SettingsPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
-import ReplayMode from "./components/ReplayMode";
-import BattleStation from "./components/BattleStation";
-import EngineControl from "./components/EngineControl";
-import TrainingDashboard from "./components/TrainingDashboard";
-import AIAssistant from "./components/AIAssistant";
+import LiveTicker from "./components/LiveTicker";
+import Notifications from "./components/Notifications";
 import { VerdictHero } from "./components/DashboardHero";
+
+// ── Lazy-loaded (split into separate chunks) ──
+const OIChangeTab = lazy(() => import("./OIChangeTab"));
+const PnLTracker = lazy(() => import("./PnLTracker"));
+const ReportsTab = lazy(() => import("./ReportsTab"));
+const TradingTimesTab = lazy(() => import("./TradingTimesTab"));
+const TradeAutopsyTab = lazy(() => import("./TradeAutopsyTab"));
+const SignalDashboard = lazy(() => import("./components/SignalDashboard"));
+const StrikeSearch = lazy(() => import("./components/StrikeSearch"));
+const StrikeDetail = lazy(() => import("./components/StrikeDetail"));
+const HotkeyHelp = lazy(() => import("./components/HotkeyHelp"));
+const SettingsPanel = lazy(() => import("./components/SettingsPanel"));
+const ReplayMode = lazy(() => import("./components/ReplayMode"));
+const BattleStation = lazy(() => import("./components/BattleStation"));
+const EngineControl = lazy(() => import("./components/EngineControl"));
+const TrainingDashboard = lazy(() => import("./components/TrainingDashboard"));
+const AIAssistant = lazy(() => import("./components/AIAssistant"));
 import { useTheme } from "./ThemeContext";
 import { useHotkeys } from "./hooks/useHotkeys";
 import { useAlerts } from "./hooks/useAlerts";
@@ -3038,7 +3042,9 @@ export default function Universe({ onLogout }) {
           zIndex: 1,
         }}>
           <ErrorBoundary key={activeTab}>
-            {renderTab()}
+            <Suspense fallback={<div style={{ padding: 40, textAlign: "center", color: "#888" }}>Loading...</div>}>
+              {renderTab()}
+            </Suspense>
           </ErrorBoundary>
         </div>
       </div>
@@ -3080,41 +3086,46 @@ export default function Universe({ onLogout }) {
           setAlertsOpen(false);
         }}
       />
-      <HotkeyHelp isOpen={helpOpen} onClose={() => setHelpOpen(false)} />
-      <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      <EngineControl isOpen={engineControlOpen} onClose={() => setEngineControlOpen(false)} />
-      <TrainingDashboard isOpen={trainingDashOpen} onClose={() => setTrainingDashOpen(false)} />
+      {/* All modals + floating panels inside Suspense — only load when opened */}
+      <Suspense fallback={null}>
+        {helpOpen && <HotkeyHelp isOpen={helpOpen} onClose={() => setHelpOpen(false)} />}
+        {settingsOpen && <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />}
+        {engineControlOpen && <EngineControl isOpen={engineControlOpen} onClose={() => setEngineControlOpen(false)} />}
+        {trainingDashOpen && <TrainingDashboard isOpen={trainingDashOpen} onClose={() => setTrainingDashOpen(false)} />}
 
-      {/* Floating AI Assistant — always visible bottom-right */}
-      <AIAssistant
-        activeTab={activeTab}
-        pinnedStrikes={watchlist.pinned}
-        openTrade={null}
-      />
+        {/* Floating AI Assistant — always visible bottom-right (lazy-loaded once) */}
+        <AIAssistant
+          activeTab={activeTab}
+          pinnedStrikes={watchlist.pinned}
+          openTrade={null}
+        />
 
-      {/* Battle Station — god-mode strike comparison */}
-      <BattleStation
-        isOpen={battleOpen}
-        onClose={() => setBattleOpen(false)}
-        pinnedStrikes={watchlist.pinned}
-        onRemoveStrike={watchlist.togglePin}
-      />
+        {/* Battle Station — god-mode strike comparison */}
+        {battleOpen && (
+          <BattleStation
+            isOpen={battleOpen}
+            onClose={() => setBattleOpen(false)}
+            pinnedStrikes={watchlist.pinned}
+            onRemoveStrike={watchlist.togglePin}
+          />
+        )}
 
-      {/* Replay modal */}
-      {replayOpen && (
-        <div
-          onClick={() => setReplayOpen(false)}
-          style={{
-            position: "fixed", inset: 0, background: theme.OVERLAY, zIndex: 1000,
-            display: "flex", alignItems: "flex-start", justifyContent: "center",
-            paddingTop: "6vh", backdropFilter: "blur(4px)", overflowY: "auto",
-          }}
-        >
-          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(900px, 92vw)" }}>
-            <ReplayMode index="NIFTY" isOpen={true} onClose={() => setReplayOpen(false)} />
+        {/* Replay modal */}
+        {replayOpen && (
+          <div
+            onClick={() => setReplayOpen(false)}
+            style={{
+              position: "fixed", inset: 0, background: theme.OVERLAY, zIndex: 1000,
+              display: "flex", alignItems: "flex-start", justifyContent: "center",
+              paddingTop: "6vh", backdropFilter: "blur(4px)", overflowY: "auto",
+            }}
+          >
+            <div onClick={(e) => e.stopPropagation()} style={{ width: "min(900px, 92vw)" }}>
+              <ReplayMode index="NIFTY" isOpen={true} onClose={() => setReplayOpen(false)} />
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </Suspense>
       <AlertToastStack
         toasts={toasts}
         onDismiss={dismissToast}
