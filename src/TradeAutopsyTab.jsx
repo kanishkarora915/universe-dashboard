@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import AutopsyMindWidget from "./components/AutopsyMindWidget";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -240,17 +241,164 @@ function GapPrediction({ data }) {
 // MAIN TAB
 // ═════════════════════════════════════════════════
 
+async function fetchShadow(endpoint) {
+  try {
+    const res = await fetch(`/api/shadow/${endpoint}`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+function ShadowAutopsySection({ shadow, history, onTrigger }) {
+  const today = shadow || {};
+  const trades = Array.isArray(today.trades) ? today.trades : [];
+  const openCount = trades.filter((t) => t.status === "OPEN").length;
+  const closedTrades = trades.filter((t) => t.status === "CLOSED");
+  const wins = closedTrades.filter((t) => (t.pnl_pct || 0) > 0).length;
+  const losses = closedTrades.length - wins;
+  const bestTrade = closedTrades.slice().sort((a, b) => (b.pnl_pct || 0) - (a.pnl_pct || 0))[0];
+  const worstTrade = closedTrades.slice().sort((a, b) => (a.pnl_pct || 0) - (b.pnl_pct || 0))[0];
+
+  return (
+    <Card>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div>
+          <Label>SHADOW AUTOPSY — 9:20 AM ATM±6 Paper Trades</Label>
+          <div style={{ color: "#555", fontSize: 10 }}>
+            52 simulated trades daily · learn WHICH strike wins, not just direction
+          </div>
+        </div>
+        <button
+          onClick={onTrigger}
+          style={{
+            background: "transparent",
+            color: ACCENT,
+            border: `1px solid ${ACCENT}44`,
+            borderRadius: 6,
+            padding: "5px 10px",
+            fontSize: 11,
+            fontWeight: 700,
+            cursor: "pointer",
+          }}
+        >
+          Trigger Now
+        </button>
+      </div>
+
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        <Stat label="Total Today" value={trades.length} color={ACCENT} />
+        <Stat label="Open" value={openCount} color={YELLOW} />
+        <Stat label="Wins" value={wins} color={GREEN} />
+        <Stat label="Losses" value={losses} color={RED} />
+        <Stat
+          label="Win Rate"
+          value={closedTrades.length > 0 ? `${Math.round((wins / closedTrades.length) * 100)}%` : "—"}
+          color={wins > losses ? GREEN : wins < losses ? RED : "#888"}
+        />
+      </div>
+
+      {bestTrade && (
+        <div style={{ background: BG, borderRadius: 6, padding: "8px 10px", marginBottom: 6 }}>
+          <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>🏆 BEST TRADE TODAY</div>
+          <div style={{ color: GREEN, fontSize: 12, fontWeight: 700 }}>
+            {bestTrade.idx} {bestTrade.strike} {bestTrade.side} — +{(bestTrade.pnl_pct || 0).toFixed(1)}%
+            {bestTrade.pnl_rupees ? ` (₹${Math.round(bestTrade.pnl_rupees).toLocaleString("en-IN")})` : ""}
+          </div>
+        </div>
+      )}
+
+      {worstTrade && (worstTrade.pnl_pct || 0) < 0 && (
+        <div style={{ background: BG, borderRadius: 6, padding: "8px 10px", marginBottom: 12 }}>
+          <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>💀 WORST TRADE TODAY</div>
+          <div style={{ color: RED, fontSize: 12, fontWeight: 700 }}>
+            {worstTrade.idx} {worstTrade.strike} {worstTrade.side} — {(worstTrade.pnl_pct || 0).toFixed(1)}%
+            {worstTrade.pnl_rupees ? ` (₹${Math.round(worstTrade.pnl_rupees).toLocaleString("en-IN")})` : ""}
+          </div>
+        </div>
+      )}
+
+      {/* History */}
+      {history && Array.isArray(history.daily) && history.daily.length > 0 && (
+        <div>
+          <div style={{ color: "#555", fontSize: 10, fontWeight: 700, marginBottom: 6 }}>LAST 7 DAYS</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${BORDER}` }}>
+                  <th style={{ padding: "5px", color: "#555", textAlign: "left" }}>DATE</th>
+                  <th style={{ padding: "5px", color: "#555", textAlign: "left" }}>IDX</th>
+                  <th style={{ padding: "5px", color: "#555", textAlign: "center" }}>SIDE</th>
+                  <th style={{ padding: "5px", color: "#555", textAlign: "center" }}>TOTAL</th>
+                  <th style={{ padding: "5px", color: "#555", textAlign: "center" }}>WINS</th>
+                  <th style={{ padding: "5px", color: "#555", textAlign: "center" }}>AVG %</th>
+                  <th style={{ padding: "5px", color: "#555", textAlign: "right" }}>P&L</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.daily.slice(0, 14).map((r, i) => (
+                  <tr key={i} style={{ borderBottom: `1px solid ${BORDER}11` }}>
+                    <td style={{ padding: "4px 5px", color: "#ccc" }}>{String(r.date || "").slice(5)}</td>
+                    <td style={{ padding: "4px 5px", color: "#888" }}>{r.idx}</td>
+                    <td style={{ padding: "4px 5px", textAlign: "center", color: r.side === "CE" ? GREEN : RED, fontWeight: 700 }}>
+                      {r.side}
+                    </td>
+                    <td style={{ padding: "4px 5px", textAlign: "center", color: "#ccc" }}>{r.total}</td>
+                    <td style={{ padding: "4px 5px", textAlign: "center", color: GREEN, fontWeight: 700 }}>{r.wins}</td>
+                    <td style={{
+                      padding: "4px 5px",
+                      textAlign: "center",
+                      color: (r.avg_pnl_pct || 0) >= 0 ? GREEN : RED,
+                      fontWeight: 700,
+                    }}>
+                      {(r.avg_pnl_pct || 0) >= 0 ? "+" : ""}{(r.avg_pnl_pct || 0).toFixed(1)}%
+                    </td>
+                    <td style={{
+                      padding: "4px 5px",
+                      textAlign: "right",
+                      color: (r.total_pnl || 0) >= 0 ? GREEN : RED,
+                      fontWeight: 700,
+                    }}>
+                      {(r.total_pnl || 0) >= 0 ? "+" : ""}₹{Math.round(r.total_pnl || 0).toLocaleString("en-IN")}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {(!trades.length && !history?.daily?.length) && (
+        <div style={{ color: "#555", textAlign: "center", padding: 16, fontSize: 11 }}>
+          No shadow trades yet. Runs automatically at 9:20 AM IST on market days.
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function TradeAutopsyTab() {
   const [index, setIndex] = useState("NIFTY");
   const [patterns, setPatterns] = useState(null);
   const [gapPred, setGapPred] = useState(null);
+  const [shadowToday, setShadowToday] = useState(null);
+  const [shadowHistory, setShadowHistory] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(null);
 
   const loadData = useCallback(() => {
     fetchAPI("patterns").then(setPatterns);
     fetchAPI(`gap-prediction/${index}`).then(setGapPred);
+    fetchShadow("today").then(setShadowToday);
+    fetchShadow("history?days=14").then(setShadowHistory);
     setLastUpdate(new Date().toLocaleTimeString("en-IN"));
   }, [index]);
+
+  const triggerShadow = useCallback(async () => {
+    try {
+      await fetch("/api/shadow/trigger-open", { method: "POST" });
+      setTimeout(loadData, 1500);
+    } catch (e) { console.error(e); }
+  }, [loadData]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -280,6 +428,16 @@ export default function TradeAutopsyTab() {
         </div>
         {lastUpdate && <div style={{ color: "#333", fontSize: 10, marginTop: 4 }}>Last: {lastUpdate}</div>}
       </Card>
+
+      {/* Smart Autopsy Mind — pattern-based prediction for selected index */}
+      <AutopsyMindWidget index={index} />
+
+      {/* Shadow Autopsy — 9:20 AM paper trades + history */}
+      <ShadowAutopsySection
+        shadow={shadowToday}
+        history={shadowHistory}
+        onTrigger={triggerShadow}
+      />
 
       {/* Gap Prediction */}
       <GapPrediction data={gapPred} />
