@@ -297,6 +297,72 @@ function ShadowAutopsySection({ shadow, history, onTrigger }) {
         />
       </div>
 
+      {/* Investment + Live PnL aggregate */}
+      {(today.investment_total || today.live_pnl_total !== undefined) && (
+        <div style={{
+          display: "flex",
+          gap: 8,
+          marginBottom: 12,
+          padding: "12px 14px",
+          background: BG,
+          borderRadius: 8,
+          border: `1px solid ${BORDER}`,
+          flexWrap: "wrap",
+        }}>
+          <Stat
+            label="Total Invested"
+            value={`₹${Math.round(today.investment_total || 0).toLocaleString("en-IN")}`}
+            color="#fff"
+            sub="1625×NIFTY + 600×BN"
+          />
+          <Stat
+            label="Live P&L"
+            value={`${(today.live_pnl_total || 0) >= 0 ? "+" : ""}₹${Math.round(today.live_pnl_total || 0).toLocaleString("en-IN")}`}
+            color={(today.live_pnl_total || 0) >= 0 ? GREEN : RED}
+            sub={`${(today.pnl_pct_on_invest || 0) >= 0 ? "+" : ""}${(today.pnl_pct_on_invest || 0).toFixed(2)}%`}
+          />
+          <Stat
+            label="Realized"
+            value={`₹${Math.round(today.realized_pnl_total || 0).toLocaleString("en-IN")}`}
+            color={(today.realized_pnl_total || 0) >= 0 ? GREEN : RED}
+          />
+          <Stat
+            label="Unrealized"
+            value={`₹${Math.round(today.unrealized_pnl_total || 0).toLocaleString("en-IN")}`}
+            color={(today.unrealized_pnl_total || 0) >= 0 ? GREEN : RED}
+          />
+        </div>
+      )}
+
+      {/* Per-index breakdown */}
+      {today.by_index && Object.keys(today.by_index).length > 0 && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+          {Object.entries(today.by_index).map(([ix, v]) => (
+            <div key={ix} style={{
+              flex: 1,
+              minWidth: 140,
+              padding: "8px 12px",
+              background: BG,
+              borderRadius: 6,
+              border: `1px solid ${BORDER}`,
+            }}>
+              <div style={{ color: ACCENT, fontSize: 10, fontWeight: 700 }}>{ix} · {v.qty} qty</div>
+              <div style={{ color: "#888", fontSize: 10 }}>
+                Invest: ₹{Math.round(v.invest).toLocaleString("en-IN")} · {v.trades} trades
+              </div>
+              <div style={{
+                color: (v.live_pnl || 0) >= 0 ? GREEN : RED,
+                fontSize: 13,
+                fontWeight: 700,
+                marginTop: 2,
+              }}>
+                {(v.live_pnl || 0) >= 0 ? "+" : ""}₹{Math.round(v.live_pnl).toLocaleString("en-IN")} ({(v.pnl_pct || 0) >= 0 ? "+" : ""}{(v.pnl_pct || 0).toFixed(2)}%)
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {bestTrade && (
         <div style={{ background: BG, borderRadius: 6, padding: "8px 10px", marginBottom: 6 }}>
           <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>🏆 BEST TRADE TODAY</div>

@@ -329,6 +329,37 @@ def get_today_summary():
     best = sorted_by_pnl[:5]
     worst = sorted_by_pnl[-5:]
 
+    # Aggregate investment + live PnL (1625 qty NIFTY / 600 BANKNIFTY)
+    investment_total = 0.0
+    live_pnl_total = 0.0
+    realized_pnl_total = 0.0
+    unrealized_pnl_total = 0.0
+    by_index = {}
+    for r in rows:
+        qty = r.get("qty") or SHADOW_QTY.get(r.get("idx"), 0)
+        entry = r.get("entry_ltp") or 0
+        current = r.get("current_ltp") or entry
+        invest = entry * qty
+        investment_total += invest
+
+        if r.get("status") == "CLOSED":
+            realized_pnl_total += r.get("pnl_rupees") or 0
+            live_pnl_total += r.get("pnl_rupees") or 0
+        else:
+            unrealized = (current - entry) * qty
+            unrealized_pnl_total += unrealized
+            live_pnl_total += unrealized
+
+        ix = r.get("idx")
+        if ix not in by_index:
+            by_index[ix] = {"invest": 0, "live_pnl": 0, "trades": 0, "qty": qty}
+        by_index[ix]["invest"] += invest
+        by_index[ix]["live_pnl"] += (
+            (r.get("pnl_rupees") or 0) if r.get("status") == "CLOSED"
+            else (current - entry) * qty
+        )
+        by_index[ix]["trades"] += 1
+
     return {
         "date": today,
         "count": len(rows),
@@ -336,6 +367,18 @@ def get_today_summary():
         "losses": len(losses),
         "flat": len(flat),
         "winRate": round(len(wins) / max(len(rows), 1) * 100, 1),
+        "investment_total": round(investment_total, 2),
+        "live_pnl_total": round(live_pnl_total, 2),
+        "realized_pnl_total": round(realized_pnl_total, 2),
+        "unrealized_pnl_total": round(unrealized_pnl_total, 2),
+        "pnl_pct_on_invest": round((live_pnl_total / investment_total * 100), 2) if investment_total > 0 else 0,
+        "by_index": {k: {
+            "invest": round(v["invest"], 2),
+            "live_pnl": round(v["live_pnl"], 2),
+            "pnl_pct": round((v["live_pnl"] / v["invest"] * 100), 2) if v["invest"] > 0 else 0,
+            "trades": v["trades"],
+            "qty": v["qty"],
+        } for k, v in by_index.items()},
         "best": best,
         "worst": worst,
         "trades": rows,
