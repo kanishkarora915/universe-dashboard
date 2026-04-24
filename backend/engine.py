@@ -483,6 +483,13 @@ class MarketEngine:
                 save_eod_snapshot(self, idx)
         except Exception as e:
             print(f"[GAP] EOD save error: {e}")
+        # Smart Autopsy Mind — record day pattern for future similarity search
+        try:
+            from smart_autopsy_mind import record_day_pattern
+            for idx in ["NIFTY", "BANKNIFTY"]:
+                record_day_pattern(self, idx)
+        except Exception as e:
+            print(f"[MIND] day pattern save error: {e}")
 
     def _safe_shadow_call(self, method_name):
         """Safely invoke shadow_autopsy methods — isolated from tick loop."""

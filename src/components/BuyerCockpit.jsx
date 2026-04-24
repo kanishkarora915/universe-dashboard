@@ -12,6 +12,7 @@ import { SPACE, RADIUS, TEXT_SIZE, TEXT_WEIGHT, FONT } from "../theme";
 import NextDayPredictor from "./NextDayPredictor";
 import OIHeatmap from "./OIHeatmap";
 import ScalperMode from "./ScalperMode";
+import AutopsyMindWidget from "./AutopsyMindWidget";
 
 const GREEN = "#10b981";
 const RED = "#ef4444";
@@ -601,6 +602,12 @@ export default function BuyerCockpit({ live, verdicts, reasonsMap, openPositions
 
       {/* 6. Next Day Predictor */}
       <NextDayPredictor />
+
+      {/* 7. Smart Autopsy Mind — pattern-based predictive alerts */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+        <AutopsyMindWidget index="NIFTY" />
+        <AutopsyMindWidget index="BANKNIFTY" />
+      </div>
     </div>
   );
 }

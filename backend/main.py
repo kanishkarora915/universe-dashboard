@@ -728,6 +728,84 @@ async def scalper_stats():
         return {"error": str(e)}
 
 
+# ── Smart Autopsy Mind endpoints ──
+
+@app.get("/api/mind/predict/{index}")
+async def mind_predict(index: str):
+    """Today's pattern matched against history → predictive outcome."""
+    global engine
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from smart_autopsy_mind import predict_today
+        return predict_today(engine, index.upper())
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/mind/similar/{index}")
+async def mind_similar(index: str, top_n: int = 5):
+    """Find past days similar to today."""
+    global engine
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from smart_autopsy_mind import find_similar_days
+        return {"matches": find_similar_days(engine, index.upper(), top_n=top_n)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/mind/narrate/{index}")
+async def mind_narrate(index: str):
+    """Explain WHY market moved today."""
+    global engine
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from smart_autopsy_mind import explain_move
+        return explain_move(engine, index.upper())
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/mind/summary/{index}")
+async def mind_summary(index: str):
+    """All mind insights combined (prediction + similar + narrative)."""
+    global engine
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from smart_autopsy_mind import get_mind_summary
+        return get_mind_summary(engine, index.upper())
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/mind/recorded-days")
+async def mind_recorded_days():
+    """List all days the mind has learned from."""
+    try:
+        from smart_autopsy_mind import get_recorded_days
+        return {"days": get_recorded_days()}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/mind/record-now/{index}")
+async def mind_record_now(index: str):
+    """Manual trigger to record today's pattern (for testing)."""
+    global engine
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from smart_autopsy_mind import record_day_pattern
+        result = record_day_pattern(engine, index.upper())
+        return {"status": "success" if result else "failed", "date": datetime.now().strftime("%Y-%m-%d")}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Shadow Autopsy endpoints ──
 
 @app.get("/api/shadow/today")
