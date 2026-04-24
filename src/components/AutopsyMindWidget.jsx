@@ -37,15 +37,25 @@ function dirIcon(dir) {
 
 export default function AutopsyMindWidget({ index = "NIFTY", apiBase = "" }) {
   const [data, setData] = useState(null);
+  const [daysCount, setDaysCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
 
   const fetchSummary = async () => {
     try {
-      const r = await fetch(`${apiBase}/api/mind/summary/${index}`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const j = await r.json();
+      const [sumR, daysR] = await Promise.all([
+        fetch(`${apiBase}/api/mind/summary/${index}`),
+        fetch(`${apiBase}/api/mind/recorded-days`),
+      ]);
+      if (!sumR.ok) throw new Error(`HTTP ${sumR.status}`);
+      const j = await sumR.json();
       setData(j);
+      if (daysR.ok) {
+        const d = await daysR.json();
+        const list = Array.isArray(d) ? d : d?.days || [];
+        const forIdx = list.filter((r) => (r.idx || "").toUpperCase() === index.toUpperCase());
+        setDaysCount(forIdx.length);
+      }
       setErr(null);
     } catch (e) {
       setErr(e.message);
@@ -80,20 +90,32 @@ export default function AutopsyMindWidget({ index = "NIFTY", apiBase = "" }) {
   if (err) {
     return (
       <div style={wrapStyle}>
-        <div style={{ color: RED, fontSize: 12 }}>🧠 Mind error: {err}</div>
+        <div style={{ color: RED, fontSize: 12 }}>🧠 Mind error: {String(err)}</div>
       </div>
     );
   }
 
-  const prediction = data?.prediction || {};
-  const similar = data?.similar || [];
-  const narrative = data?.narrative || "";
-  const stats = data?.stats || {};
-  const daysLearned = stats.days_recorded || 0;
+  const prediction = (data && data.prediction) || {};
+  const similar = Array.isArray(prediction.similar_days) ? prediction.similar_days : [];
 
-  const predDir = prediction.predicted_direction || "UNKNOWN";
-  const predConf = prediction.confidence_pct || 0;
-  const predNarr = prediction.narrative || "Not enough historical data to predict.";
+  // narrative from explain_move is an object: {narrative, change_pct, pcr, max_pain, timestamp}
+  const narrObj = data && data.narrative;
+  const narrativeText =
+    narrObj && typeof narrObj === "object"
+      ? narrObj.narrative || narrObj.error || ""
+      : typeof narrObj === "string"
+      ? narrObj
+      : "";
+
+  const predDir = prediction.likely_direction || prediction.predicted_direction || "UNKNOWN";
+  const predConf = Number(prediction.confidence_pct || 0);
+  const predStatus = prediction.status || "";
+  const predNarrRaw =
+    typeof prediction.narrative === "string"
+      ? prediction.narrative
+      : prediction.message || "Not enough historical data to predict.";
+
+  const showNeedData = predStatus === "NEED_MORE_DATA" || daysCount === 0;
 
   return (
     <div style={wrapStyle}>
@@ -104,7 +126,7 @@ export default function AutopsyMindWidget({ index = "NIFTY", apiBase = "" }) {
           <div>
             <div style={titleStyle}>Smart Autopsy Mind</div>
             <div style={{ fontSize: 11, color: GRAY, marginTop: 2 }}>
-              {index} · Learned from {daysLearned} past days
+              {index} · Learned from {daysCount} past days
             </div>
           </div>
         </div>
@@ -119,35 +141,52 @@ export default function AutopsyMindWidget({ index = "NIFTY", apiBase = "" }) {
           <div style={{ fontSize: 11, color: GRAY, textTransform: "uppercase", letterSpacing: 0.5 }}>
             Today's Prediction
           </div>
+          {predStatus === "PREDICTION_READY" && (
+            <div
+              style={{
+                fontSize: 10,
+                padding: "2px 8px",
+                borderRadius: 10,
+                background: `${dirColor(predDir)}22`,
+                color: dirColor(predDir),
+                fontWeight: 600,
+              }}
+            >
+              {predConf.toFixed(0)}% confidence
+            </div>
+          )}
+        </div>
+
+        {predStatus === "PREDICTION_READY" ? (
           <div
             style={{
-              fontSize: 10,
-              padding: "2px 8px",
-              borderRadius: 10,
-              background: `${dirColor(predDir)}22`,
+              marginTop: 6,
+              fontSize: 20,
+              fontWeight: 700,
               color: dirColor(predDir),
-              fontWeight: 600,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
             }}
           >
-            {predConf.toFixed(0)}% confidence
+            <span>{dirIcon(predDir)}</span>
+            <span>{String(predDir).replace(/_/g, " ")}</span>
           </div>
-        </div>
-        <div
-          style={{
-            marginTop: 6,
-            fontSize: 20,
-            fontWeight: 700,
-            color: dirColor(predDir),
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-          }}
-        >
-          <span>{dirIcon(predDir)}</span>
-          <span>{predDir.replace("_", " ")}</span>
-        </div>
+        ) : (
+          <div
+            style={{
+              marginTop: 6,
+              fontSize: 14,
+              fontWeight: 600,
+              color: YELLOW,
+            }}
+          >
+            {predStatus || "Analyzing…"}
+          </div>
+        )}
+
         <div style={{ marginTop: 6, fontSize: 12, color: "#d1d5db", lineHeight: 1.5 }}>
-          {predNarr}
+          {String(predNarrRaw)}
         </div>
       </div>
 
@@ -166,47 +205,51 @@ export default function AutopsyMindWidget({ index = "NIFTY", apiBase = "" }) {
             Most Similar Past Days
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {similar.slice(0, 5).map((s, i) => (
-              <div key={i} style={simRowStyle}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
-                  <span
-                    style={{
-                      fontSize: 10,
-                      padding: "2px 6px",
-                      borderRadius: 4,
-                      background: `${dirColor(s.direction)}22`,
-                      color: dirColor(s.direction),
-                      fontWeight: 600,
-                      flexShrink: 0,
-                    }}
-                  >
-                    {dirIcon(s.direction)} {s.direction}
-                  </span>
-                  <span style={{ fontSize: 12, color: "#e5e7eb", fontWeight: 500 }}>
-                    {s.date}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: 11,
-                      color: (s.day_change_pct || 0) >= 0 ? GREEN : RED,
-                      fontWeight: 600,
-                    }}
-                  >
-                    {(s.day_change_pct || 0) >= 0 ? "+" : ""}
-                    {(s.day_change_pct || 0).toFixed(2)}%
-                  </span>
+            {similar.slice(0, 5).map((s, i) => {
+              const simPct = Number(s.similarity || s.similarity_pct || 0);
+              const chg = Number(s.day_change_pct || 0);
+              return (
+                <div key={`${s.date}-${i}`} style={simRowStyle}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
+                    <span
+                      style={{
+                        fontSize: 10,
+                        padding: "2px 6px",
+                        borderRadius: 4,
+                        background: `${dirColor(s.direction)}22`,
+                        color: dirColor(s.direction),
+                        fontWeight: 600,
+                        flexShrink: 0,
+                      }}
+                    >
+                      {dirIcon(s.direction)} {String(s.direction || "—")}
+                    </span>
+                    <span style={{ fontSize: 12, color: "#e5e7eb", fontWeight: 500 }}>
+                      {String(s.date || "")}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 11,
+                        color: chg >= 0 ? GREEN : RED,
+                        fontWeight: 600,
+                      }}
+                    >
+                      {chg >= 0 ? "+" : ""}
+                      {chg.toFixed(2)}%
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 11, color: YELLOW, fontWeight: 600, flexShrink: 0 }}>
+                    {simPct.toFixed(0)}% match
+                  </div>
                 </div>
-                <div style={{ fontSize: 11, color: YELLOW, fontWeight: 600, flexShrink: 0 }}>
-                  {(s.similarity_pct || 0).toFixed(0)}% match
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
 
-      {/* Narrative */}
-      {narrative && (
+      {/* Narrative (from explain_move) */}
+      {narrativeText && (
         <div
           style={{
             marginTop: 12,
@@ -220,11 +263,11 @@ export default function AutopsyMindWidget({ index = "NIFTY", apiBase = "" }) {
             lineHeight: 1.5,
           }}
         >
-          💡 {narrative}
+          💡 {String(narrativeText)}
         </div>
       )}
 
-      {daysLearned === 0 && (
+      {showNeedData && (
         <div
           style={{
             marginTop: 12,
