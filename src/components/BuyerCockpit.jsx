@@ -11,7 +11,6 @@ import React, { useMemo, useState, useEffect } from "react";
 import { SPACE, RADIUS, TEXT_SIZE, TEXT_WEIGHT, FONT } from "../theme";
 import NextDayPredictor from "./NextDayPredictor";
 import OIHeatmap from "./OIHeatmap";
-import ScalperMode from "./ScalperMode";
 import AutopsyMindWidget from "./AutopsyMindWidget";
 
 const GREEN = "#10b981";
@@ -593,9 +592,6 @@ export default function BuyerCockpit({ live, verdicts, reasonsMap, openPositions
 
       {/* 3. Open Positions (swing) */}
       <OpenPositionsQuick positions={openPositions} />
-
-      {/* 4. Scalper Mode toggle + stats */}
-      <ScalperMode />
 
       {/* 5. Live OI Heatmap (with running spot line) */}
       <OIHeatmap live={live} />

@@ -16,6 +16,7 @@ import { VerdictHero } from "./components/DashboardHero";
 // ── Lazy-loaded (split into separate chunks) ──
 const OIChangeTab = lazy(() => import("./OIChangeTab"));
 const PnLTracker = lazy(() => import("./PnLTracker"));
+const ScalperTab = lazy(() => import("./ScalperTab"));
 const ReportsTab = lazy(() => import("./ReportsTab"));
 const TradingTimesTab = lazy(() => import("./TradingTimesTab"));
 const TradeAutopsyTab = lazy(() => import("./TradeAutopsyTab"));
@@ -69,6 +70,7 @@ const TAB_GROUPS = [
   ]},
   { group: "Trading", tabs: [
     { id: "pnl",     icon: "\uD83D\uDCB0", label: "PnL" },
+    { id: "scalper", icon: "\u26A1",        label: "Scalper" },
     { id: "intraday",icon: "\uD83D\uDCCA", label: "Intraday" },
     { id: "nextday", icon: "\uD83D\uDD2D", label: "Next Day" },
     { id: "weekly",  icon: "\uD83D\uDCC5", label: "Weekly" },
@@ -2861,6 +2863,7 @@ export default function Universe({ onLogout }) {
       case "priceact":return <PriceActionTab />;
       case "oichange":return <OIChangeTab oiData={oiSummary} />;
       case "pnl":     return <PnLTracker />;
+      case "scalper": return <ScalperTab />;
       case "ttimes":  return <TradingTimesTab />;
       case "autopsy": return <TradeAutopsyTab />;
       case "reports": return <ReportsTab />;

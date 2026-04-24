@@ -77,8 +77,76 @@ def init_scalper_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_scalper_status ON scalper_trades(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_scalper_date ON scalper_trades(entry_time)")
+
+    # User-configurable scalper settings
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scalper_config (
+            id INTEGER PRIMARY KEY CHECK (id=1),
+            capital REAL DEFAULT 1000000,
+            nifty_qty INTEGER DEFAULT 0,
+            banknifty_qty INTEGER DEFAULT 0,
+            sl_pct REAL DEFAULT 0.12,
+            t1_pct REAL DEFAULT 0.20,
+            t2_pct REAL DEFAULT 0.40,
+            threshold INTEGER DEFAULT 55,
+            daily_cap INTEGER DEFAULT 15,
+            updated_at TEXT
+        )
+    """)
+    conn.execute(
+        "INSERT OR IGNORE INTO scalper_config (id, capital, nifty_qty, banknifty_qty, updated_at) "
+        "VALUES (1, 1000000, 0, 0, ?)",
+        (ist_now().isoformat(),)
+    )
     conn.commit()
     conn.close()
+
+
+def get_scalper_config():
+    """Return user-configurable scalper settings."""
+    init_scalper_db()
+    conn = _conn()
+    row = conn.execute("SELECT * FROM scalper_config WHERE id=1").fetchone()
+    conn.close()
+    if not row:
+        return {
+            "capital": 1000000, "nifty_qty": 0, "banknifty_qty": 0,
+            "sl_pct": SCALPER_SL_PCT, "t1_pct": SCALPER_T1_PCT, "t2_pct": SCALPER_T2_PCT,
+            "threshold": SCALPER_THRESHOLD, "daily_cap": SCALPER_DAILY_CAP,
+        }
+    return dict(row)
+
+
+def set_scalper_config(capital=None, nifty_qty=None, banknifty_qty=None,
+                      sl_pct=None, t1_pct=None, t2_pct=None,
+                      threshold=None, daily_cap=None):
+    """Update user-configurable scalper settings (only provided fields)."""
+    init_scalper_db()
+    cur = get_scalper_config()
+    updated = {
+        "capital": capital if capital is not None else cur.get("capital", 1000000),
+        "nifty_qty": nifty_qty if nifty_qty is not None else cur.get("nifty_qty", 0),
+        "banknifty_qty": banknifty_qty if banknifty_qty is not None else cur.get("banknifty_qty", 0),
+        "sl_pct": sl_pct if sl_pct is not None else cur.get("sl_pct", SCALPER_SL_PCT),
+        "t1_pct": t1_pct if t1_pct is not None else cur.get("t1_pct", SCALPER_T1_PCT),
+        "t2_pct": t2_pct if t2_pct is not None else cur.get("t2_pct", SCALPER_T2_PCT),
+        "threshold": threshold if threshold is not None else cur.get("threshold", SCALPER_THRESHOLD),
+        "daily_cap": daily_cap if daily_cap is not None else cur.get("daily_cap", SCALPER_DAILY_CAP),
+    }
+    conn = _conn()
+    conn.execute("""
+        UPDATE scalper_config
+        SET capital=?, nifty_qty=?, banknifty_qty=?, sl_pct=?, t1_pct=?, t2_pct=?,
+            threshold=?, daily_cap=?, updated_at=?
+        WHERE id=1
+    """, (
+        updated["capital"], updated["nifty_qty"], updated["banknifty_qty"],
+        updated["sl_pct"], updated["t1_pct"], updated["t2_pct"],
+        updated["threshold"], updated["daily_cap"], ist_now().isoformat(),
+    ))
+    conn.commit()
+    conn.close()
+    return updated
 
 
 def _conn():
@@ -116,9 +184,13 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None)
     if not market_open:
         return False
 
-    # Threshold
+    # Threshold (user-configurable)
+    cfg = get_scalper_config()
+    threshold = cfg.get("threshold") or SCALPER_THRESHOLD
+    daily_cap = cfg.get("daily_cap") or SCALPER_DAILY_CAP
+
     win_pct = verdict_data.get("winProbability", 0)
-    if win_pct < SCALPER_THRESHOLD:
+    if win_pct < threshold:
         return False
 
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
@@ -129,7 +201,7 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None)
         "SELECT COUNT(*) FROM scalper_trades WHERE entry_time > ?",
         (today_start,)
     ).fetchone()[0]
-    if today_count >= SCALPER_DAILY_CAP:
+    if today_count >= daily_cap:
         conn.close()
         return False
 
@@ -199,20 +271,35 @@ def calc_scalper_size(entry_price, sl_price, running_capital=1000000):
 
 
 def log_scalp_trade(idx, action, strike, entry_price, probability, expiry=""):
-    """Create new scalper trade with tight SL/T1/T2."""
+    """Create new scalper trade with user-configured capital + qty."""
     if entry_price <= 0:
         return None
 
-    sl_price = round(entry_price * (1 - SCALPER_SL_PCT))
-    t1_price = round(entry_price * (1 + SCALPER_T1_PCT))
-    t2_price = round(entry_price * (1 + SCALPER_T2_PCT))
+    cfg = get_scalper_config()
+    sl_pct = cfg.get("sl_pct") or SCALPER_SL_PCT
+    t1_pct = cfg.get("t1_pct") or SCALPER_T1_PCT
+    t2_pct = cfg.get("t2_pct") or SCALPER_T2_PCT
+    capital = cfg.get("capital") or 1000000
 
-    # Lot size lookup
+    sl_price = round(entry_price * (1 - sl_pct))
+    t1_price = round(entry_price * (1 + t1_pct))
+    t2_price = round(entry_price * (1 + t2_pct))
+
+    # Lot size lookup (exchange-fixed)
     lot_sizes = {"NIFTY": 25, "BANKNIFTY": 15}
     lot_size = lot_sizes.get(idx, 25)
-    max_qty = calc_scalper_size(entry_price, sl_price)
-    lots = max(1, max_qty // lot_size)
-    qty = lots * lot_size
+
+    # Quantity priority:
+    #   1. User-set override (nifty_qty / banknifty_qty) — if > 0, use exact
+    #   2. Fallback: compute from capital × risk %
+    user_qty = cfg.get("nifty_qty") if idx == "NIFTY" else cfg.get("banknifty_qty")
+    if user_qty and user_qty > 0:
+        qty = int(user_qty)
+        lots = max(1, qty // lot_size)
+    else:
+        max_qty = calc_scalper_size(entry_price, sl_price, running_capital=capital)
+        lots = max(1, max_qty // lot_size)
+        qty = lots * lot_size
 
     now = ist_now()
     conn = _conn()
@@ -230,7 +317,7 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry=""):
     conn.commit()
     conn.close()
 
-    print(f"[SCALPER] OPENED #{trade_id}: {action} {idx} {strike} @ ₹{entry_price} | qty {qty} | SL ₹{sl_price} T1 ₹{t1_price}")
+    print(f"[SCALPER] OPENED #{trade_id}: {action} {idx} {strike} @ ₹{entry_price} | qty {qty} (capital ₹{capital:,.0f}) | SL ₹{sl_price} T1 ₹{t1_price}")
     return trade_id
 
 

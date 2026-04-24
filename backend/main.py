@@ -728,6 +728,38 @@ async def scalper_stats():
         return {"error": str(e)}
 
 
+@app.get("/api/scalper/config")
+async def scalper_config_get():
+    """Get user-configurable scalper settings (capital, qty, SL/T1/T2, threshold)."""
+    try:
+        import scalper_mode
+        return scalper_mode.get_scalper_config()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/scalper/config")
+async def scalper_config_set(body: dict):
+    """Update scalper settings. Body can contain any of:
+      capital (₹), nifty_qty, banknifty_qty, sl_pct, t1_pct, t2_pct, threshold, daily_cap.
+    Only provided fields are updated."""
+    try:
+        import scalper_mode
+        updated = scalper_mode.set_scalper_config(
+            capital=body.get("capital"),
+            nifty_qty=body.get("nifty_qty"),
+            banknifty_qty=body.get("banknifty_qty"),
+            sl_pct=body.get("sl_pct"),
+            t1_pct=body.get("t1_pct"),
+            t2_pct=body.get("t2_pct"),
+            threshold=body.get("threshold"),
+            daily_cap=body.get("daily_cap"),
+        )
+        return {"ok": True, "config": updated}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Smart Autopsy Mind endpoints ──
 
 @app.get("/api/mind/predict/{index}")
