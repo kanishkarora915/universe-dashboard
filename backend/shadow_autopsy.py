@@ -342,20 +342,58 @@ def get_today_summary():
     }
 
 
-def get_history(days=7):
-    """Historical summary across N days."""
+def close_stuck_trades(engine=None):
+    """Auto-close any OPEN trades from previous days (engine restart / weekend)."""
     init_db()
+    today = ist_now().strftime("%Y-%m-%d")
+    conn = _conn()
+    stuck = conn.execute(
+        "SELECT COUNT(*) FROM shadow_trades WHERE status='OPEN' AND date < ?",
+        (today,)
+    ).fetchone()[0]
+    if stuck > 0:
+        # Close all stuck OPEN from previous days using last-known current_ltp
+        conn.execute("""
+            UPDATE shadow_trades SET
+                status='CLOSED',
+                exit_ltp = COALESCE(current_ltp, entry_ltp),
+                exit_time = date || ' 15:30:00',
+                pnl_rupees = round((COALESCE(current_ltp, entry_ltp) - entry_ltp) * qty, 2),
+                pnl_pct = round((COALESCE(current_ltp, entry_ltp) - entry_ltp) / entry_ltp * 100, 2),
+                result = CASE
+                    WHEN COALESCE(current_ltp, entry_ltp) > entry_ltp * 1.10 THEN 'WIN'
+                    WHEN COALESCE(current_ltp, entry_ltp) < entry_ltp * 0.90 THEN 'LOSS'
+                    ELSE 'FLAT' END
+            WHERE status='OPEN' AND date < ?
+        """, (today,))
+        conn.commit()
+        print(f"[SHADOW] Auto-closed {stuck} stuck trades from previous days")
+    conn.close()
+    return stuck
+
+
+def get_history(days=7):
+    """Historical summary across N days (includes all statuses)."""
+    init_db()
+    # Auto-close any stuck trades first
+    try:
+        close_stuck_trades()
+    except Exception as e:
+        print(f"[SHADOW] close_stuck error: {e}")
+
     cutoff = (ist_now() - timedelta(days=days)).strftime("%Y-%m-%d")
     conn = _conn()
 
+    # Include all trades (OPEN + CLOSED) so today's in-progress still shows up
     daily = conn.execute("""
         SELECT date, idx, side,
                COUNT(*) as total,
                SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins,
                AVG(pnl_pct) as avg_pnl_pct,
-               SUM(pnl_rupees) as total_pnl
+               SUM(pnl_rupees) as total_pnl,
+               SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) as still_open
         FROM shadow_trades
-        WHERE date >= ? AND status='CLOSED'
+        WHERE date >= ?
         GROUP BY date, idx, side
         ORDER BY date DESC
     """, (cutoff,)).fetchall()

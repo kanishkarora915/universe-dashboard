@@ -3605,13 +3605,16 @@ class MarketEngine:
             self._shadow_opened_today = False
             self._shadow_closed_today = False
 
-        # 9:20 AM → open shadow trades (52 paper trades on ATM±6 CE+PE)
-        if not self._shadow_opened_today and now_ist.hour == 9 and now_ist.minute >= 20 and now_ist.minute < 30:
+        # Shadow opens any time 9:20 AM - 2:00 PM if not yet opened today
+        # WIDENED: was 9:20-9:29 only (too narrow — missed on engine restart)
+        hour_min = now_ist.hour * 100 + now_ist.minute
+        if not self._shadow_opened_today and 920 <= hour_min <= 1400:
             self._shadow_opened_today = True
             threading.Thread(
                 target=lambda: self._safe_shadow_call("take_snapshot_open"),
                 daemon=True, name="shadow-open"
             ).start()
+            print(f"[SHADOW] Auto-opened at {now_ist.strftime('%H:%M')} (widened window 9:20-14:00)")
 
         # Every 60s during market hours → update all open shadow trades
         market_active = (now_ist.hour == 9 and now_ist.minute >= 20) or (10 <= now_ist.hour <= 14) or (now_ist.hour == 15 and now_ist.minute <= 15)
@@ -3806,12 +3809,7 @@ class MarketEngine:
                             self.trade_manager._pending_entry_time.pop(idx, None)
                             pct_moved = ((locked_ltp - pending["entry_price"]) / pending["entry_price"]) * 100
                             print(f"[TRADE] MOMENTUM FIRE: {action} {idx} {pending_strike} @ ₹{locked_ltp} (+{pct_moved:.2f}% in {age:.0f}s)")
-                            if tid:
-                                try:
-                                    from trade_autopsy import capture_trade_snapshot
-                                    capture_trade_snapshot(self, tid, idx, "ENTRY")
-                                except Exception as e:
-                                    print(f"[AUTOPSY] ENTRY capture failed: {e}")
+                            # Note: ENTRY snapshot captured automatically in log_trade()
                         elif signal_reversed:
                             self.trade_manager._pending_entry.pop(idx, None)
                             self.trade_manager._pending_entry_time.pop(idx, None)

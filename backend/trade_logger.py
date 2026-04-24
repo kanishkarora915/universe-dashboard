@@ -467,6 +467,16 @@ class TradeManager:
         self._trade_alerts.append(alert)
         self._trade_alerts = self._trade_alerts[-50:]  # Keep last 50
 
+        # Auto-capture ENTRY snapshot (ensures no trade missed)
+        # Previously capture was called by engine in specific paths — some
+        # paths missed it → 27% of trades had no snapshots. Now centralized.
+        if self._engine_ref and trade_id:
+            try:
+                from trade_autopsy import capture_trade_snapshot
+                capture_trade_snapshot(self._engine_ref, trade_id, idx, "ENTRY")
+            except Exception as e:
+                print(f"[AUTOPSY] ENTRY snapshot failed for trade #{trade_id}: {e}")
+
         return trade_id
 
     def check_and_update(self, chains, prices, spot_tokens, token_to_info):
