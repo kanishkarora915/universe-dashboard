@@ -249,6 +249,151 @@ async function fetchShadow(endpoint) {
   } catch { return null; }
 }
 
+function LiveTradesTable({ trades }) {
+  const [filter, setFilter] = useState("ALL"); // ALL | NIFTY | BANKNIFTY | OPEN | WINS | LOSSES
+  const [side, setSide] = useState("ALL"); // ALL | CE | PE
+
+  let filtered = [...trades];
+  if (filter === "NIFTY") filtered = filtered.filter((t) => t.idx === "NIFTY");
+  if (filter === "BANKNIFTY") filtered = filtered.filter((t) => t.idx === "BANKNIFTY");
+  if (filter === "OPEN") filtered = filtered.filter((t) => t.status === "OPEN");
+  if (filter === "WINS") filtered = filtered.filter((t) => (t.pnl_pct || 0) > 0);
+  if (filter === "LOSSES") filtered = filtered.filter((t) => (t.pnl_pct || 0) < 0);
+  if (side !== "ALL") filtered = filtered.filter((t) => t.side === side);
+
+  // Sort: NIFTY first, then by offset (ATM center out)
+  filtered.sort((a, b) => {
+    if (a.idx !== b.idx) return a.idx === "NIFTY" ? -1 : 1;
+    if (a.side !== b.side) return a.side === "CE" ? -1 : 1;
+    return (a.offset || 0) - (b.offset || 0);
+  });
+
+  const btn = (label, active, onClick) => (
+    <button
+      onClick={onClick}
+      style={{
+        background: active ? ACCENT : "transparent",
+        color: active ? "#fff" : "#888",
+        border: `1px solid ${active ? ACCENT : BORDER}`,
+        borderRadius: 6,
+        padding: "3px 10px",
+        fontSize: 10,
+        fontWeight: 700,
+        cursor: "pointer",
+        marginRight: 4,
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div style={{ marginTop: 14, marginBottom: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
+        <Label>LIVE SHADOW TRADES — updating every 60s</Label>
+        <div style={{ color: "#555", fontSize: 10 }}>
+          {filtered.length} of {trades.length} trades
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div style={{ marginBottom: 8 }}>
+        {["ALL", "NIFTY", "BANKNIFTY", "OPEN", "WINS", "LOSSES"].map((f) => btn(f, filter === f, () => setFilter(f)))}
+        <span style={{ margin: "0 6px", color: "#333" }}>·</span>
+        {["ALL", "CE", "PE"].map((s) => btn(s, side === s, () => setSide(s)))}
+      </div>
+
+      {/* Table */}
+      <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto", border: `1px solid ${BORDER}`, borderRadius: 8 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+          <thead style={{ position: "sticky", top: 0, background: CARD, zIndex: 1 }}>
+            <tr style={{ borderBottom: `1px solid ${BORDER}` }}>
+              <th style={th}>IDX</th>
+              <th style={th}>STRIKE</th>
+              <th style={th}>SIDE</th>
+              <th style={{ ...th, textAlign: "right" }}>ENTRY</th>
+              <th style={{ ...th, textAlign: "right" }}>LIVE</th>
+              <th style={{ ...th, textAlign: "right" }}>PEAK</th>
+              <th style={{ ...th, textAlign: "right" }}>TROUGH</th>
+              <th style={{ ...th, textAlign: "right" }}>QTY</th>
+              <th style={{ ...th, textAlign: "right" }}>P&L ₹</th>
+              <th style={{ ...th, textAlign: "right" }}>P&L %</th>
+              <th style={{ ...th, textAlign: "right" }}>OI Δ</th>
+              <th style={{ ...th, textAlign: "center" }}>STATUS</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((t) => {
+              const entry = Number(t.entry_ltp || 0);
+              const cur = Number(t.current_ltp || entry);
+              const peak = Number(t.peak_ltp || cur);
+              const trough = Number(t.trough_ltp || cur);
+              const qty = Number(t.qty || 0);
+              const pnlR = t.status === "CLOSED"
+                ? Number(t.pnl_rupees || 0)
+                : (cur - entry) * qty;
+              const pnlP = entry > 0 ? ((cur - entry) / entry) * 100 : 0;
+              const oiCh = Number(t.oi_change || 0);
+              const pnlColor = pnlR >= 0 ? GREEN : RED;
+              const isOpen = t.status === "OPEN";
+
+              return (
+                <tr key={t.id} style={{ borderBottom: `1px solid ${BORDER}22` }}>
+                  <td style={td}>
+                    <span style={{ color: t.idx === "NIFTY" ? ACCENT : PURPLE, fontWeight: 700 }}>
+                      {t.idx === "NIFTY" ? "N" : "BN"}
+                    </span>
+                  </td>
+                  <td style={{ ...td, fontWeight: 600 }}>
+                    {t.strike}
+                    {t.offset === 0 && <span style={{ color: YELLOW, fontSize: 9, marginLeft: 4 }}>ATM</span>}
+                  </td>
+                  <td style={td}>
+                    <span style={{ color: t.side === "CE" ? GREEN : RED, fontWeight: 700 }}>{t.side}</span>
+                  </td>
+                  <td style={{ ...td, textAlign: "right", color: "#999" }}>{entry.toFixed(2)}</td>
+                  <td style={{ ...td, textAlign: "right", color: "#fff", fontWeight: 700 }}>{cur.toFixed(2)}</td>
+                  <td style={{ ...td, textAlign: "right", color: GREEN }}>{peak.toFixed(2)}</td>
+                  <td style={{ ...td, textAlign: "right", color: RED }}>{trough.toFixed(2)}</td>
+                  <td style={{ ...td, textAlign: "right", color: "#888" }}>{qty.toLocaleString("en-IN")}</td>
+                  <td style={{ ...td, textAlign: "right", color: pnlColor, fontWeight: 700 }}>
+                    {pnlR >= 0 ? "+" : ""}₹{Math.round(pnlR).toLocaleString("en-IN")}
+                  </td>
+                  <td style={{ ...td, textAlign: "right", color: pnlColor, fontWeight: 700 }}>
+                    {pnlP >= 0 ? "+" : ""}{pnlP.toFixed(2)}%
+                  </td>
+                  <td style={{ ...td, textAlign: "right", color: oiCh >= 0 ? GREEN : RED, fontSize: 10 }}>
+                    {oiCh >= 0 ? "+" : ""}{fmtL(oiCh)}
+                  </td>
+                  <td style={{ ...td, textAlign: "center" }}>
+                    {isOpen ? (
+                      <span style={{ color: YELLOW, fontSize: 9, fontWeight: 700 }}>● LIVE</span>
+                    ) : (
+                      <span style={{ color: t.result === "WIN" || t.result === "BIG_WIN" ? GREEN : t.result === "FLAT" ? "#888" : RED, fontSize: 9, fontWeight: 700 }}>
+                        {t.result || "CLOSED"}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+            {filtered.length === 0 && (
+              <tr>
+                <td colSpan={12} style={{ textAlign: "center", padding: 20, color: "#555", fontSize: 11 }}>
+                  No trades matching filter.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+const th = { padding: "7px 8px", color: "#555", textAlign: "left", fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 };
+const td = { padding: "6px 8px", color: "#ccc" };
+
 function ShadowAutopsySection({ shadow, history, onTrigger }) {
   const today = shadow || {};
   const trades = Array.isArray(today.trades) ? today.trades : [];
@@ -383,6 +528,9 @@ function ShadowAutopsySection({ shadow, history, onTrigger }) {
         </div>
       )}
 
+      {/* Live Trades Table — all 52 trades with live LTP, P&L, peak/trough */}
+      {trades.length > 0 && <LiveTradesTable trades={trades} />}
+
       {/* History */}
       {history && Array.isArray(history.daily) && history.daily.length > 0 && (
         <div>
@@ -466,7 +614,11 @@ export default function TradeAutopsyTab() {
     } catch (e) { console.error(e); }
   }, [loadData]);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => {
+    loadData();
+    const iv = setInterval(loadData, 15_000); // live refresh every 15s
+    return () => clearInterval(iv);
+  }, [loadData]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>

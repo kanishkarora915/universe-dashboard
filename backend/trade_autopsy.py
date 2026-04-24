@@ -447,6 +447,70 @@ def check_gap_outcome(engine, index):
     print(f"[GAP] {index} gap outcome: {gap_type} {gap_pct:+.2f}% ({gap_pts:+.0f} pts)")
 
 
+def _compute_live_eod(engine, index):
+    """Compute EOD-equivalent metrics from current live engine state.
+    Used to power gap prediction BEFORE the 3:25 PM save_eod_snapshot runs.
+    Returns same shape as a gap_tracker row (dict) or None if data unavailable."""
+    try:
+        from engine import INDEX_CONFIG, compute_max_pain, find_big_walls
+        cfg = INDEX_CONFIG[index]
+        chain = engine.chains.get(index, {})
+        spot_token = engine.spot_tokens.get(index)
+        spot = engine.prices.get(spot_token, {}).get("ltp", 0)
+        if spot <= 0:
+            spot = getattr(engine, "prev_close", {}).get(index, 0) or engine.market_open_price.get(index, 0)
+        if spot <= 0 or not chain:
+            return None
+
+        atm = round(spot / cfg["strike_gap"]) * cfg["strike_gap"]
+        max_pain = compute_max_pain(chain, spot)
+        ce_wall, pe_wall = find_big_walls(chain)
+        total_ce = sum(d.get("ce_oi", 0) for d in chain.values())
+        total_pe = sum(d.get("pe_oi", 0) for d in chain.values())
+        pcr = round(total_pe / max(total_ce, 1), 2)
+
+        net_ce_chg = 0
+        net_pe_chg = 0
+        ce_writing = 0
+        pe_writing = 0
+        for s in range(atm - 6 * cfg["strike_gap"], atm + 7 * cfg["strike_gap"], cfg["strike_gap"]):
+            d = chain.get(s, {})
+            ce_oi = d.get("ce_oi", 0)
+            pe_oi = d.get("pe_oi", 0)
+            ce_chg = 0
+            pe_chg = 0
+            for tok, info in engine.token_to_info.items():
+                if info["index"] == index and info["strike"] == s:
+                    if info["opt_type"] == "CE":
+                        ce_chg = ce_oi - engine.initial_oi.get(tok, ce_oi)
+                    elif info["opt_type"] == "PE":
+                        pe_chg = pe_oi - engine.initial_oi.get(tok, pe_oi)
+            net_ce_chg += ce_chg
+            net_pe_chg += pe_chg
+            if ce_chg > 0:
+                ce_writing += ce_chg
+            if pe_chg > 0:
+                pe_writing += pe_chg
+
+        return {
+            "eod_spot": spot,
+            "eod_pcr": pcr,
+            "eod_max_pain": max_pain,
+            "eod_ce_wall": ce_wall,
+            "eod_pe_wall": pe_wall,
+            "eod_total_ce_oi": total_ce,
+            "eod_total_pe_oi": total_pe,
+            "eod_net_ce_change": net_ce_chg,
+            "eod_net_pe_change": net_pe_chg,
+            "eod_ce_writing": ce_writing,
+            "eod_pe_writing": pe_writing,
+            "_live": True,  # Flag: computed live, not from stored snapshot
+        }
+    except Exception as e:
+        print(f"[GAP] live EOD compute error {index}: {e}")
+        return None
+
+
 def get_gap_prediction(engine, index):
     """Predict next day gap based on historical EOD patterns."""
     init_db()
@@ -460,18 +524,29 @@ def get_gap_prediction(engine, index):
 
     # Get today's EOD snapshot (if available)
     today = ist_now().strftime("%Y-%m-%d")
-    today_eod = conn.execute(
+    today_eod_row = conn.execute(
         "SELECT * FROM gap_tracker WHERE idx=? AND date=?", (index, today)
     ).fetchone()
     conn.close()
 
+    # If no saved EOD yet (before 3:25 PM), compute live equivalent so prediction works anytime
+    today_eod = dict(today_eod_row) if today_eod_row else None
+    if not today_eod:
+        live_eod = _compute_live_eod(engine, index)
+        if live_eod:
+            today_eod = live_eod
+
     if not rows:
+        # Still show live EOD + try single-day prediction from today's state alone
+        early_pred = _score_gap_from_eod(today_eod) if today_eod else None
         return {
-            "prediction": "NEED DATA",
-            "confidence": 0,
-            "message": "Need at least 10 days of gap data for predictions",
+            "prediction": early_pred["prediction"] if early_pred else "NEED DATA",
+            "confidence": early_pred["confidence"] if early_pred else 0,
+            "reasons": early_pred["reasons"] if early_pred else [],
+            "message": "Historical correlations build over time (10+ days). Showing today-only read.",
             "dataPoints": 0,
-            "todayEOD": dict(today_eod) if today_eod else None,
+            "todayEOD": today_eod,
+            "live": bool(today_eod and today_eod.get("_live")),
         }
 
     completed = [dict(r) for r in rows]
@@ -524,60 +599,13 @@ def get_gap_prediction(engine, index):
             "count": len(heavy_ce),
         })
 
-    # Today's prediction (if EOD data available)
-    prediction = "NEED MORE DATA"
-    confidence = 0
-    reasons = []
-
-    if today_eod:
-        te = dict(today_eod)
-        bull_score = 0
-        bear_score = 0
-
-        if te["eod_pcr"] > 1.2:
-            bull_score += 25
-            reasons.append(f"PCR {te['eod_pcr']} > 1.2 = bullish")
-        elif te["eod_pcr"] < 0.85:
-            bear_score += 25
-            reasons.append(f"PCR {te['eod_pcr']} < 0.85 = bearish")
-
-        if te["eod_pe_writing"] > te["eod_ce_writing"] * 1.3:
-            bull_score += 20
-            reasons.append(f"PE writing dominant ({te['eod_pe_writing']//100000}L vs CE {te['eod_ce_writing']//100000}L)")
-        elif te["eod_ce_writing"] > te["eod_pe_writing"] * 1.3:
-            bear_score += 20
-            reasons.append(f"CE writing dominant ({te['eod_ce_writing']//100000}L vs PE {te['eod_pe_writing']//100000}L)")
-
-        if te["eod_net_pe_change"] > 300000:
-            bull_score += 15
-            reasons.append(f"Net PE OI added {te['eod_net_pe_change']//100000}L = support building")
-        if te["eod_net_ce_change"] > 300000:
-            bear_score += 15
-            reasons.append(f"Net CE OI added {te['eod_net_ce_change']//100000}L = resistance building")
-
-        if te["eod_spot"] > te["eod_max_pain"]:
-            bull_score += 10
-            reasons.append(f"Closed above max pain {te['eod_max_pain']}")
-        elif te["eod_spot"] < te["eod_max_pain"]:
-            bear_score += 10
-            reasons.append(f"Closed below max pain {te['eod_max_pain']}")
-
-        total_score = bull_score + bear_score
-        if total_score > 0:
-            if bull_score > bear_score:
-                prediction = "GAP UP"
-                confidence = min(85, round(bull_score / max(total_score, 1) * 100))
-            elif bear_score > bull_score:
-                prediction = "GAP DOWN"
-                confidence = min(85, round(bear_score / max(total_score, 1) * 100))
-            else:
-                prediction = "FLAT"
-                confidence = 40
+    # Today's prediction (if EOD data available — live or saved)
+    scored = _score_gap_from_eod(today_eod) if today_eod else {"prediction": "NEED MORE DATA", "confidence": 0, "reasons": []}
 
     return {
-        "prediction": prediction,
-        "confidence": confidence,
-        "reasons": reasons,
+        "prediction": scored["prediction"],
+        "confidence": scored["confidence"],
+        "reasons": scored["reasons"],
         "dataPoints": total,
         "history": {
             "gapUps": len(gap_ups),
@@ -589,8 +617,62 @@ def get_gap_prediction(engine, index):
         "correlations": correlations,
         "recentGaps": [{"date": r["date"], "gapPct": r["gap_pct"], "gapType": r["gap_type"],
                         "eodPCR": r["eod_pcr"]} for r in completed[:10]],
-        "todayEOD": dict(today_eod) if today_eod else None,
+        "todayEOD": today_eod,
+        "live": bool(today_eod and today_eod.get("_live")),
     }
+
+
+def _score_gap_from_eod(te):
+    """Score a gap prediction from an EOD snapshot dict (live or saved)."""
+    if not te:
+        return {"prediction": "NEED MORE DATA", "confidence": 0, "reasons": []}
+    bull_score = 0
+    bear_score = 0
+    reasons = []
+
+    pcr = te.get("eod_pcr") or 0
+    if pcr > 1.2:
+        bull_score += 25
+        reasons.append(f"PCR {pcr} > 1.2 = bullish")
+    elif pcr < 0.85 and pcr > 0:
+        bear_score += 25
+        reasons.append(f"PCR {pcr} < 0.85 = bearish")
+
+    pew = te.get("eod_pe_writing") or 0
+    cew = te.get("eod_ce_writing") or 0
+    if pew > cew * 1.3 and pew > 0:
+        bull_score += 20
+        reasons.append(f"PE writing dominant ({pew//100000}L vs CE {cew//100000}L)")
+    elif cew > pew * 1.3 and cew > 0:
+        bear_score += 20
+        reasons.append(f"CE writing dominant ({cew//100000}L vs PE {pew//100000}L)")
+
+    npe = te.get("eod_net_pe_change") or 0
+    nce = te.get("eod_net_ce_change") or 0
+    if npe > 300000:
+        bull_score += 15
+        reasons.append(f"Net PE OI added {npe//100000}L = support building")
+    if nce > 300000:
+        bear_score += 15
+        reasons.append(f"Net CE OI added {nce//100000}L = resistance building")
+
+    spot = te.get("eod_spot") or 0
+    mp = te.get("eod_max_pain") or 0
+    if spot > mp > 0:
+        bull_score += 10
+        reasons.append(f"Spot above max pain {mp}")
+    elif mp > spot > 0:
+        bear_score += 10
+        reasons.append(f"Spot below max pain {mp}")
+
+    total_score = bull_score + bear_score
+    if total_score == 0:
+        return {"prediction": "NEED MORE DATA", "confidence": 0, "reasons": reasons}
+    if bull_score > bear_score:
+        return {"prediction": "GAP UP", "confidence": min(85, round(bull_score / total_score * 100)), "reasons": reasons}
+    if bear_score > bull_score:
+        return {"prediction": "GAP DOWN", "confidence": min(85, round(bear_score / total_score * 100)), "reasons": reasons}
+    return {"prediction": "FLAT", "confidence": 40, "reasons": reasons}
 
 
 def get_gap_history(index, limit=30):
