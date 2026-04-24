@@ -128,32 +128,77 @@ export default function PnLTracker() {
   };
 
   const refresh = useCallback(async () => {
-    const [o, c, s, h, d, a] = await Promise.all([
+    const [o, c, s, h, d, a, scO, scC] = await Promise.all([
       safeFetch("/api/trades/open", []),
       safeFetch("/api/trades/closed", []),
       safeFetch("/api/trades/stats", null),
       safeFetch("/api/trades/stop-hunts", []),
       safeFetch("/api/trades/dates", []),
       safeFetch("/api/trades/alerts", []),
+      safeFetch("/api/scalper/trades/open", []),
+      safeFetch("/api/scalper/trades/closed", []),
     ]);
-    if (Array.isArray(o)) setOpenTrades(o);
+
+    // Merge regular + scalper trades (tag source so we can show badge)
+    const tag = (arr, src) => (Array.isArray(arr) ? arr.map(t => ({ ...t, _source: t._source || src || t.mode || "MAIN" })) : []);
+    const mergedOpen = [...tag(o, "MAIN"), ...tag(scO, "SCALPER")];
+    const mergedClosed = [...tag(c, "MAIN"), ...tag(scC, "SCALPER")];
+
+    // Sort open by entry_time desc, closed by exit_time desc
+    mergedOpen.sort((x, y) => new Date(y.entry_time || 0) - new Date(x.entry_time || 0));
+    mergedClosed.sort((x, y) => new Date(y.exit_time || y.entry_time || 0) - new Date(x.exit_time || x.entry_time || 0));
+
+    setOpenTrades(mergedOpen);
+    setClosedTrades(mergedClosed);
     if (Array.isArray(a)) setPosAlerts(a);
-    if (Array.isArray(c)) setClosedTrades(c);
-    if (s && s.total !== undefined) setStats(s);
     if (Array.isArray(h)) setStopHunts(h);
-    if (Array.isArray(d)) setDates(d);
+
+    // Combined stats (main + scalper)
+    const closedAll = mergedClosed;
+    const wins = closedAll.filter(t => t.status === "T1_HIT" || t.status === "T2_HIT");
+    const losses = closedAll.filter(t => t.status === "SL_HIT");
+    const stopHuntsCount = closedAll.filter(t => t.status === "STOP_HUNTED").length;
+    const totalPnl = closedAll.reduce((sum, t) => sum + (t.pnl_rupees || 0), 0);
+    const combinedStats = {
+      total: closedAll.length + mergedOpen.length,
+      open: mergedOpen.length,
+      wins: wins.length,
+      losses: losses.length,
+      stopHunts: stopHuntsCount,
+      winRate: closedAll.length > 0 ? Math.round((wins.length / closedAll.length) * 100) : 0,
+      totalPnl,
+      avgWin: wins.length > 0 ? wins.reduce((sum, t) => sum + (t.pnl_rupees || 0), 0) / wins.length : 0,
+      avgLoss: losses.length > 0 ? losses.reduce((sum, t) => sum + (t.pnl_rupees || 0), 0) / losses.length : 0,
+      mainCount: tag(c, "MAIN").length,
+      scalperCount: tag(scC, "SCALPER").length,
+    };
+    setStats(combinedStats);
+
+    // Build combined dates from all closed+open trades
+    const dateSet = new Set(Array.isArray(d) ? d : []);
+    [...mergedOpen, ...mergedClosed].forEach(t => {
+      const dt = (t.entry_time || "").slice(0, 10);
+      if (dt) dateSet.add(dt);
+    });
+    setDates([...dateSet].sort().reverse());
   }, []);
 
   useEffect(() => { refresh(); const iv = setInterval(refresh, 5000); return () => clearInterval(iv); }, [refresh]);
 
-  // Fetch trades for selected date
+  // Fetch trades for selected date (merge main + scalper)
   useEffect(() => {
     if (selectedDate) {
-      fetch(`/api/trades/date/${selectedDate}`).then(r => r.json()).then(d => {
-        if (Array.isArray(d)) setDateTrades(d);
-      }).catch(() => {});
+      // Filter all known trades by that date instead of hitting separate endpoint
+      const dateOpen = openTrades.filter(t => (t.entry_time || "").startsWith(selectedDate));
+      const dateClosed = closedTrades.filter(t => (t.entry_time || "").startsWith(selectedDate));
+      const merged = [...dateOpen, ...dateClosed].sort(
+        (a, b) => new Date(a.entry_time || 0) - new Date(b.entry_time || 0)
+      );
+      setDateTrades(merged);
+    } else {
+      setDateTrades([]);
     }
-  }, [selectedDate]);
+  }, [selectedDate, openTrades, closedTrades]);
 
   // Fetch monthly report
   useEffect(() => {
@@ -468,6 +513,11 @@ function TradeCard({ t, onExit }) {
           <span style={{ background: ac + "22", color: ac, padding: "3px 10px", borderRadius: 4, fontSize: 12, fontWeight: 900 }}>{t.action}</span>
           <span style={{ color: "#ccc", fontWeight: 700 }}>{t.strike}</span>
           <span style={{ background: sc + "22", color: sc, padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>{statusLbl[t.status] || t.status}</span>
+          {(t._source === "SCALPER" || t.mode === "SCALPER") && (
+            <span style={{ background: ORANGE + "22", color: ORANGE, padding: "2px 6px", borderRadius: 3, fontSize: 9, fontWeight: 800, letterSpacing: 0.5 }}>
+              SCALPER
+            </span>
+          )}
           {t.status === "OPEN" && t.breakeven_active ? (
             <span style={{ background: ACCENT + "22", color: ACCENT, padding: "2px 6px", borderRadius: 3, fontSize: 9, fontWeight: 700 }}>
               {t.trail_level === "TRAIL_75" ? "TRAIL 75%" : t.trail_level === "TRAIL_60" ? "TRAIL 60%" : "BREAKEVEN"}
