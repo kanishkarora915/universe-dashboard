@@ -332,6 +332,156 @@ async def oi_summary():
     return _get_or_cache("oi_summary", lambda: engine.get_oi_change_summary())
 
 
+@app.get("/api/oi-insight/{index}")
+async def oi_insight(index: str):
+    """Combined Today's OI Change + Total OI with buyer interpretation.
+    Single endpoint = easy fetch for UI."""
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        idx = index.upper()
+        summary = engine.get_oi_change_summary()
+        idx_data = summary.get(idx.lower(), {})
+        strikes = idx_data.get("strikes", [])
+        ltp = idx_data.get("ltp", 0)
+        atm = idx_data.get("atm", 0)
+
+        # ─── TODAY'S NET OI CHANGE (aaj 9:15 AM se ab tak) ───
+        ce_added = sum(s["ceOIChange"] for s in strikes if s["ceOIChange"] > 0)
+        ce_removed = sum(s["ceOIChange"] for s in strikes if s["ceOIChange"] < 0)
+        pe_added = sum(s["peOIChange"] for s in strikes if s["peOIChange"] > 0)
+        pe_removed = sum(s["peOIChange"] for s in strikes if s["peOIChange"] < 0)
+
+        ce_net = ce_added + ce_removed   # net build-up
+        pe_net = pe_added + pe_removed
+
+        # PCR Change (today's flow)
+        pcr_change = round(pe_net / ce_net, 2) if ce_net not in (0,) else 0
+        if ce_net == 0 and pe_net != 0:
+            pcr_change = 99.0 if pe_net > 0 else -99.0
+
+        # Top strikes where OI built up TODAY
+        top_ce_writing = sorted(strikes, key=lambda s: s["ceOIChange"], reverse=True)[:3]
+        top_pe_writing = sorted(strikes, key=lambda s: s["peOIChange"], reverse=True)[:3]
+        top_ce_covering = sorted(strikes, key=lambda s: s["ceOIChange"])[:3]
+        top_pe_covering = sorted(strikes, key=lambda s: s["peOIChange"])[:3]
+
+        # ─── TODAY'S INTERPRETATION (BUYER PERSPECTIVE) ───
+        # CE writing > PE writing = bearish (sellers expect price down → BUY PE)
+        # PE writing > CE writing = bullish (sellers expect price up/support → BUY CE)
+        # Both writing heavy = range
+        # Both covering = squeeze building
+        today_signal = "WAIT"
+        today_reason = "OI activity neutral"
+        today_bias = "NEUTRAL"
+
+        if ce_net > 0 and pe_net > 0:
+            ratio = pe_net / max(ce_net, 1)
+            if ratio > 1.5:
+                today_signal = "BUY CE"
+                today_bias = "BULLISH"
+                today_reason = f"PE writers dominant ({pe_net/100000:.1f}L PE vs {ce_net/100000:.1f}L CE) — support building, expect upside"
+            elif ratio < 0.66:
+                today_signal = "BUY PE"
+                today_bias = "BEARISH"
+                today_reason = f"CE writers dominant ({ce_net/100000:.1f}L CE vs {pe_net/100000:.1f}L PE) — resistance building, expect downside"
+            else:
+                today_signal = "RANGE"
+                today_bias = "NEUTRAL"
+                today_reason = f"Both sides writing equally ({ce_net/100000:.1f}L CE / {pe_net/100000:.1f}L PE) — range bound"
+        elif ce_net < 0 and pe_net > 0:
+            today_signal = "BUY CE"
+            today_bias = "BULLISH"
+            today_reason = f"CE covering ({abs(ce_net)/100000:.1f}L) + PE writing ({pe_net/100000:.1f}L) — strong bullish setup"
+        elif pe_net < 0 and ce_net > 0:
+            today_signal = "BUY PE"
+            today_bias = "BEARISH"
+            today_reason = f"PE covering ({abs(pe_net)/100000:.1f}L) + CE writing ({ce_net/100000:.1f}L) — strong bearish setup"
+        elif ce_net < 0 and pe_net < 0:
+            today_signal = "WAIT"
+            today_bias = "UNCERTAIN"
+            today_reason = f"Both unwinding ({abs(ce_net)/100000:.1f}L CE / {abs(pe_net)/100000:.1f}L PE) — uncertainty, wait"
+
+        # ─── TOTAL OI (cumulative — old + new combined) ───
+        total_ce_oi = sum(s["ceOI"] for s in strikes)
+        total_pe_oi = sum(s["peOI"] for s in strikes)
+        total_pcr = round(total_pe_oi / max(total_ce_oi, 1), 2)
+
+        # Walls (highest cumulative OI strikes)
+        top_ce_wall = max(strikes, key=lambda s: s["ceOI"]) if strikes else None
+        top_pe_wall = max(strikes, key=lambda s: s["peOI"]) if strikes else None
+
+        # Total OI interpretation (where positions ALREADY parked)
+        total_signal = "RANGE"
+        total_reason = "Positions evenly distributed"
+        if total_pcr > 1.3:
+            total_signal = "BULL BIAS"
+            total_reason = f"PCR {total_pcr} — heavy PE positions = strong support, market expects upside"
+        elif total_pcr < 0.75:
+            total_signal = "BEAR BIAS"
+            total_reason = f"PCR {total_pcr} — heavy CE positions = strong resistance, market expects downside"
+        else:
+            total_signal = "RANGE"
+            total_reason = f"PCR {total_pcr} — balanced positions"
+
+        if top_ce_wall and top_pe_wall:
+            total_reason += f" · Range {top_pe_wall['strike']}–{top_ce_wall['strike']}"
+
+        return {
+            "index": idx,
+            "ltp": ltp,
+            "atm": atm,
+            # ─── TODAY (PRIMARY — what's happening NOW) ───
+            "today": {
+                "ce_oi_added": int(ce_added),
+                "ce_oi_removed": int(ce_removed),
+                "ce_oi_net": int(ce_net),
+                "pe_oi_added": int(pe_added),
+                "pe_oi_removed": int(pe_removed),
+                "pe_oi_net": int(pe_net),
+                "pcr_change": pcr_change,
+                "signal": today_signal,
+                "bias": today_bias,
+                "reason": today_reason,
+                "explain": {
+                    "ce_oi_net": "CE OI added today (writers entering = resistance)",
+                    "pe_oi_net": "PE OI added today (writers entering = support)",
+                    "logic": "PE writing > CE writing = BULLISH (support stronger). CE writing > PE writing = BEARISH (resistance stronger).",
+                },
+                "top_ce_writing": [{"strike": s["strike"], "added": int(s["ceOIChange"])} for s in top_ce_writing if s["ceOIChange"] > 0],
+                "top_pe_writing": [{"strike": s["strike"], "added": int(s["peOIChange"])} for s in top_pe_writing if s["peOIChange"] > 0],
+                "top_ce_covering": [{"strike": s["strike"], "removed": int(s["ceOIChange"])} for s in top_ce_covering if s["ceOIChange"] < 0],
+                "top_pe_covering": [{"strike": s["strike"], "removed": int(s["peOIChange"])} for s in top_pe_covering if s["peOIChange"] < 0],
+            },
+            # ─── TOTAL (SECONDARY — historical context) ───
+            "total": {
+                "ce_oi": int(total_ce_oi),
+                "pe_oi": int(total_pe_oi),
+                "pcr": total_pcr,
+                "ce_wall_strike": top_ce_wall["strike"] if top_ce_wall else 0,
+                "ce_wall_oi": int(top_ce_wall["ceOI"]) if top_ce_wall else 0,
+                "pe_wall_strike": top_pe_wall["strike"] if top_pe_wall else 0,
+                "pe_wall_oi": int(top_pe_wall["peOI"]) if top_pe_wall else 0,
+                "signal": total_signal,
+                "reason": total_reason,
+                "explain": {
+                    "ce_oi": "Total CE positions parked (cumulative — old + new)",
+                    "pe_oi": "Total PE positions parked (cumulative)",
+                    "pcr": "Put-Call Ratio = PE OI / CE OI. >1.3 = bullish lean, <0.75 = bearish.",
+                    "walls": "Highest OI strikes act as support (PE wall) / resistance (CE wall)",
+                },
+            },
+            # ─── PRIMARY VERDICT (combined view) ───
+            "primary_signal": today_signal,
+            "primary_reason": today_reason,
+            "data_source": "today_oi_change",
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/backtest-stats")
 async def backtest_stats():
     if not engine or not hasattr(engine, 'backtest_tracker') or not engine.backtest_tracker:

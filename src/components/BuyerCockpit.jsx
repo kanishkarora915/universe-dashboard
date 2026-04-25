@@ -12,6 +12,7 @@ import { SPACE, RADIUS, TEXT_SIZE, TEXT_WEIGHT, FONT } from "../theme";
 import NextDayPredictor from "./NextDayPredictor";
 import OIHeatmap from "./OIHeatmap";
 import AutopsyMindWidget from "./AutopsyMindWidget";
+import OIInsightPanel from "./OIInsightPanel";
 
 const GREEN = "#10b981";
 const RED = "#ef4444";
@@ -592,6 +593,12 @@ export default function BuyerCockpit({ live, verdicts, reasonsMap, openPositions
 
       {/* 3. Open Positions (swing) */}
       <OpenPositionsQuick positions={openPositions} />
+
+      {/* OI Insight — TODAY's OI Change vs TOTAL OI with buyer interpretation */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+        <OIInsightPanel index="NIFTY" />
+        <OIInsightPanel index="BANKNIFTY" />
+      </div>
 
       {/* 5. Live OI Heatmap (with running spot line) */}
       <OIHeatmap live={live} />
