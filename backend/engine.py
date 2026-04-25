@@ -490,6 +490,12 @@ class MarketEngine:
                 record_day_pattern(self, idx)
         except Exception as e:
             print(f"[MIND] day pattern save error: {e}")
+        # Rejection Zone — capture day H/L for next day's zone analysis
+        try:
+            import rejection_engine
+            rejection_engine.capture_eod_levels(self)
+        except Exception as e:
+            print(f"[REJECTION] EOD capture error: {e}")
 
     def _safe_shadow_call(self, method_name):
         """Safely invoke shadow_autopsy methods — isolated from tick loop."""
@@ -3639,6 +3645,20 @@ class MarketEngine:
                 target=lambda: self._safe_shadow_call("close_all"),
                 daemon=True, name="shadow-close"
             ).start()
+
+        # ── Rejection Zone Engine — 5-min snapshots ──
+        if not hasattr(self, "_rejection_last_capture"):
+            self._rejection_last_capture = 0
+        if market_active and now - self._rejection_last_capture >= 300:  # every 5 min
+            self._rejection_last_capture = now
+            def _capture_rejection():
+                try:
+                    import rejection_engine
+                    rejection_engine.capture_price_sample(self)
+                    rejection_engine.capture_oi_snapshot(self)
+                except Exception as e:
+                    print(f"[REJECTION] capture error: {e}")
+            threading.Thread(target=_capture_rejection, daemon=True, name="rejection-capture").start()
 
         # Auto-trade: SL/target check every 5s (lightweight), verdict every 60s (heavy, background)
         if hasattr(self, 'trade_manager') and self.trade_manager and now - self.trade_manager._last_sl_check >= 5:
