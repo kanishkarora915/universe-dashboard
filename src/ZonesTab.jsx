@@ -43,11 +43,14 @@ async function safeFetch(url, fb) {
 function ZoneChart({ chartData, idx }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
-  const lineRefs = useRef([]);
+  const seriesRef = useRef(null);
+  const linesRef = useRef([]);
+  const disposedRef = useRef(false);
 
+  // Create chart ONCE per idx — not per chartData refresh (prevents double-dispose race)
   useEffect(() => {
-    if (!containerRef.current || !chartData) return;
-    if (chartRef.current) { chartRef.current.remove(); chartRef.current = null; }
+    if (!containerRef.current) return;
+    disposedRef.current = false;
 
     const chart = createChart(containerRef.current, {
       layout: { background: { color: BG }, textColor: "#888", fontSize: 11 },
@@ -65,62 +68,67 @@ function ZoneChart({ chartData, idx }) {
       lineWidth: 2,
       priceLineVisible: true,
     });
-
-    if (Array.isArray(chartData.series) && chartData.series.length > 0) {
-      // Sort and dedupe
-      const seen = new Set();
-      const data = [];
-      chartData.series
-        .sort((a, b) => a.time - b.time)
-        .forEach((p) => {
-          if (!seen.has(p.time)) {
-            seen.add(p.time);
-            data.push(p);
-          }
-        });
-      series.setData(data);
-    }
-
-    // Add horizontal price lines for each zone
-    const lines = [];
-    (chartData.upside_levels || []).forEach((z) => {
-      const line = series.createPriceLine({
-        price: z.price,
-        color: strengthColor[z.strength] || RED,
-        lineWidth: z.strength === "MEGA" ? 3 : z.strength === "STRONG" ? 2 : 1,
-        lineStyle: 2,
-        axisLabelVisible: true,
-        title: `↑ ${z.strike} (${z.strength})`,
-      });
-      lines.push(line);
-    });
-    (chartData.downside_levels || []).forEach((z) => {
-      const line = series.createPriceLine({
-        price: z.price,
-        color: strengthColor[z.strength] || GREEN,
-        lineWidth: z.strength === "MEGA" ? 3 : z.strength === "STRONG" ? 2 : 1,
-        lineStyle: 2,
-        axisLabelVisible: true,
-        title: `↓ ${z.strike} (${z.strength})`,
-      });
-      lines.push(line);
-    });
-    lineRefs.current = lines;
-
-    chart.timeScale().fitContent();
+    seriesRef.current = series;
 
     const ro = new ResizeObserver(() => {
-      if (chart && containerRef.current) {
-        chart.applyOptions({ width: containerRef.current.clientWidth });
-      }
+      if (disposedRef.current || !containerRef.current) return;
+      try { chart.applyOptions({ width: containerRef.current.clientWidth }); } catch {}
     });
     ro.observe(containerRef.current);
 
     return () => {
-      ro.disconnect();
-      chart.remove();
+      disposedRef.current = true;
+      try { ro.disconnect(); } catch {}
+      try { chart.remove(); } catch {}
+      chartRef.current = null;
+      seriesRef.current = null;
+      linesRef.current = [];
     };
-  }, [chartData, idx]);
+  }, [idx]);
+
+  // Update data + zone lines when chartData refreshes (no chart re-creation)
+  useEffect(() => {
+    if (disposedRef.current || !chartRef.current || !seriesRef.current || !chartData) return;
+    const series = seriesRef.current;
+    const chart = chartRef.current;
+
+    // Update price series
+    if (Array.isArray(chartData.series) && chartData.series.length > 0) {
+      const seen = new Set();
+      const data = [];
+      [...chartData.series].sort((a, b) => a.time - b.time).forEach((p) => {
+        if (!seen.has(p.time)) { seen.add(p.time); data.push(p); }
+      });
+      try { series.setData(data); } catch {}
+    } else {
+      try { series.setData([]); } catch {}
+    }
+
+    // Remove old zone lines safely
+    linesRef.current.forEach((ln) => {
+      try { series.removePriceLine(ln); } catch {}
+    });
+    linesRef.current = [];
+
+    // Add new zone lines
+    const addLine = (z, isUp) => {
+      try {
+        const line = series.createPriceLine({
+          price: z.price,
+          color: strengthColor[z.strength] || (isUp ? RED : GREEN),
+          lineWidth: z.strength === "MEGA" ? 3 : z.strength === "STRONG" ? 2 : 1,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: `${isUp ? "↑" : "↓"} ${z.strike} (${z.strength})`,
+        });
+        linesRef.current.push(line);
+      } catch {}
+    };
+    (chartData.upside_levels || []).forEach((z) => addLine(z, true));
+    (chartData.downside_levels || []).forEach((z) => addLine(z, false));
+
+    try { chart.timeScale().fitContent(); } catch {}
+  }, [chartData]);
 
   return (
     <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 12 }}>
