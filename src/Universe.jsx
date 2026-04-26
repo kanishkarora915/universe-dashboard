@@ -18,6 +18,7 @@ const OIChangeTab = lazy(() => import("./OIChangeTab"));
 const PnLTracker = lazy(() => import("./PnLTracker"));
 const ScalperTab = lazy(() => import("./ScalperTab"));
 const ZonesTab = lazy(() => import("./ZonesTab"));
+const TrinityTab = lazy(() => import("./TrinityTab"));
 const ReportsTab = lazy(() => import("./ReportsTab"));
 const TradingTimesTab = lazy(() => import("./TradingTimesTab"));
 const TradeAutopsyTab = lazy(() => import("./TradeAutopsyTab"));
@@ -52,6 +53,7 @@ const ORANGE = "#FF9F0A";
 const TAB_GROUPS = [
   { group: "Home", tabs: [
     { id: "dashboard", icon: "\uD83D\uDCE1", label: "Dashboard" },
+    { id: "trinity",   icon: "\u269B\uFE0F", label: "Trinity" },
     { id: "zones",     icon: "\uD83C\uDFAF", label: "Zones" },
   ]},
   { group: "Market", tabs: [
@@ -2867,6 +2869,7 @@ export default function Universe({ onLogout }) {
       case "pnl":     return <PnLTracker />;
       case "scalper": return <ScalperTab />;
       case "zones":   return <ZonesTab />;
+      case "trinity": return <TrinityTab />;
       case "ttimes":  return <TradingTimesTab />;
       case "autopsy": return <TradeAutopsyTab />;
       case "reports": return <ReportsTab />;

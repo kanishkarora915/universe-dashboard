@@ -113,6 +113,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Trinity Engine routes
+try:
+    from trinity import api_routes as trinity_routes
+    app.include_router(trinity_routes.router)
+    app.include_router(trinity_routes.ws_router)
+    print("[TRINITY] API routes mounted")
+except Exception as _e:
+    print(f"[TRINITY] route mount failed: {_e}")
+
 
 def get_frontend_url(request: Request) -> str:
     """Get frontend URL — same origin in prod, localhost in dev."""
@@ -196,6 +205,11 @@ async def auto_login(request: Request):
 
         engine = MarketEngine(api_key=api_key, access_token=access_token, loop=event_loop)
         engine.start()
+        try:
+            from trinity import api_routes as _tr
+            _tr.attach_engine(engine)
+        except Exception as _e:
+            print(f"[TRINITY] attach_engine failed: {_e}")
 
         print(f"[AUTO-LOGIN] Engine started with access_token {access_token[:8]}...")
         return {"status": "success", "message": "Auto-login successful, engine started"}
@@ -239,6 +253,11 @@ async def callback(request: Request, request_token: str = Query(...), status: st
             loop=event_loop,
         )
         engine.start()
+        try:
+            from trinity import api_routes as _tr
+            _tr.attach_engine(engine)
+        except Exception as _e:
+            print(f"[TRINITY] attach_engine failed: {_e}")
 
         return RedirectResponse(f"{fe_url}/?auth=success")
 

@@ -3646,6 +3646,33 @@ class MarketEngine:
                 daemon=True, name="shadow-close"
             ).start()
 
+        # ── Trinity Engine — 1-second tick (spot/future/synthetic triangulation) ──
+        if not hasattr(self, "_trinity_last_step"):
+            self._trinity_last_step = 0
+        if market_active and now - self._trinity_last_step >= 1.0:
+            self._trinity_last_step = now
+            def _trinity_step():
+                try:
+                    from trinity import orchestrator as _to
+                    _to.step(self)
+                except Exception as e:
+                    print(f"[TRINITY] step error: {e}")
+            threading.Thread(target=_trinity_step, daemon=True, name="trinity-step").start()
+
+        # Trinity nightly prune (10 PM IST)
+        if not hasattr(self, "_trinity_last_prune"):
+            self._trinity_last_prune = 0
+        if now_ist.hour == 22 and now - self._trinity_last_prune > 3600:
+            self._trinity_last_prune = now
+            def _trinity_prune():
+                try:
+                    from trinity import storage as _ts
+                    _ts.prune_old_data(days=7)
+                    print("[TRINITY] Nightly prune complete")
+                except Exception as e:
+                    print(f"[TRINITY] prune error: {e}")
+            threading.Thread(target=_trinity_prune, daemon=True, name="trinity-prune").start()
+
         # ── Rejection Zone Engine — 5-min snapshots ──
         if not hasattr(self, "_rejection_last_capture"):
             self._rejection_last_capture = 0
