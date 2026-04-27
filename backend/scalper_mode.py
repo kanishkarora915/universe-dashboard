@@ -220,6 +220,7 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None)
     cfg = get_scalper_config()
     threshold = cfg.get("threshold") or SCALPER_THRESHOLD
     daily_cap = cfg.get("daily_cap") or SCALPER_DAILY_CAP
+    capital = cfg.get("capital") or 1000000
 
     win_pct = verdict_data.get("winProbability", 0)
     if win_pct < threshold:
@@ -235,6 +236,35 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None)
     ).fetchone()[0]
     if today_count >= daily_cap:
         conn.close()
+        return False
+
+    # ── CAPITAL CHECK — total committed across all OPEN trades must not exceed capital ──
+    committed_row = conn.execute("""
+        SELECT COALESCE(SUM(COALESCE(capital_used, entry_price * qty)), 0) as committed
+        FROM scalper_trades WHERE status='OPEN'
+    """).fetchone()
+    committed = committed_row["committed"] or 0
+    available = capital - committed
+
+    if available <= 0:
+        conn.close()
+        print(f"[SCALPER] REJECT entry: capital ₹{capital:,.0f} fully committed across {today_count} open trades (₹{committed:,.0f}). Available: ₹{available:,.0f}")
+        return False
+
+    # Estimate new trade cost from user qty config or 10% of capital fallback
+    user_qty_field = "nifty_qty" if idx == "NIFTY" else "banknifty_qty"
+    user_qty = cfg.get(user_qty_field, 0) or 0
+    # Use a conservative premium estimate — most scalper entries are ₹50-300
+    est_premium = 200
+    if user_qty > 0:
+        est_cost = user_qty * est_premium
+    else:
+        # Auto-sizing: 1% risk × capital, with 12% SL → max qty cost ≈ ~10% of capital
+        est_cost = capital * 0.10
+
+    if est_cost > available:
+        conn.close()
+        print(f"[SCALPER] REJECT entry: estimated cost ₹{est_cost:,.0f} > available ₹{available:,.0f} (capital ₹{capital:,.0f}, committed ₹{committed:,.0f})")
         return False
 
     # No duplicate open
@@ -332,6 +362,34 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
         max_qty = calc_scalper_size(entry_price, sl_price, running_capital=capital)
         lots = max(1, max_qty // lot_size)
         qty = lots * lot_size
+
+    # ── HARD CAPITAL ENFORCEMENT ──
+    # Total committed (open trades) + this trade MUST NOT exceed user's capital.
+    # If it would, shrink THIS trade's qty to fit. If even 1 lot won't fit, REJECT.
+    init_scalper_db()
+    _conn_check = _conn()
+    committed_row = _conn_check.execute("""
+        SELECT COALESCE(SUM(COALESCE(capital_used, entry_price * qty)), 0) as committed
+        FROM scalper_trades WHERE status='OPEN'
+    """).fetchone()
+    _conn_check.close()
+    committed = committed_row["committed"] or 0
+    available = capital - committed
+    needed = entry_price * qty
+
+    if needed > available:
+        # Try to shrink qty to fit available capital (round down to lot multiple)
+        max_affordable_qty = int(available // entry_price)
+        max_affordable_qty = (max_affordable_qty // lot_size) * lot_size  # round to lot
+        if max_affordable_qty < lot_size:
+            # Can't even fit 1 lot — reject
+            print(f"[SCALPER] REJECT log: needed ₹{needed:,.0f} > available ₹{available:,.0f} (capital ₹{capital:,.0f}, committed ₹{committed:,.0f}). Cannot fit even 1 lot.")
+            return None
+        # Shrink to fit
+        old_qty = qty
+        qty = max_affordable_qty
+        lots = qty // lot_size
+        print(f"[SCALPER] SHRUNK qty {old_qty}→{qty} ({lots} lots) to fit available ₹{available:,.0f} (was needing ₹{needed:,.0f})")
 
     capital_used = entry_price * qty
 

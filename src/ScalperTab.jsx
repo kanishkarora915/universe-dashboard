@@ -325,6 +325,23 @@ function CapitalUsagePanel({ usage, config, todayPnl, openLivePnl }) {
             transition: "width 0.3s",
           }} />
         </div>
+        {/* Capital safety warnings */}
+        {committedPct >= 95 && (
+          <div style={{
+            marginTop: 8, padding: 8, background: RED + "22", border: `1px solid ${RED}66`,
+            borderRadius: 6, fontSize: 11, color: RED, fontWeight: 600,
+          }}>
+            🛑 CAPITAL FULL — No new trades will be placed until existing positions close
+          </div>
+        )}
+        {committedPct >= 80 && committedPct < 95 && (
+          <div style={{
+            marginTop: 8, padding: 8, background: ORANGE + "22", border: `1px solid ${ORANGE}66`,
+            borderRadius: 6, fontSize: 11, color: ORANGE, fontWeight: 600,
+          }}>
+            ⚠️ Capital {committedPct.toFixed(0)}% used · only {rupeesL(available)} left for new trades
+          </div>
+        )}
       </div>
     </div>
   );
