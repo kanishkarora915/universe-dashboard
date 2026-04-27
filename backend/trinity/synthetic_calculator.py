@@ -37,7 +37,11 @@ def synthetic_at_strike(K, ce_ltp, pe_ltp):
 
 def compute_per_strike_synthetics(engine, atm, strike_gap=50, min_volume=100):
     """For each of 9 strikes, compute synthetic.
-    Skips strikes with low liquidity (vol<100 lots/5min — per spec §10.3).
+    Validity rule (any of):
+      - Volume >= min_volume*2 (intraday active liquidity), OR
+      - OI >= 1000 contracts on both sides (positions exist, valid synthetic).
+    Per spec §10.3 we skip truly illiquid strikes; OI fallback handles
+    pre-market / post-close / spread-only periods where volume momentarily 0.
     Returns: {strike: {"synthetic": float, "ce_ltp", "pe_ltp", "ce_oi", "pe_oi", "valid": bool}}"""
     chain = engine.chains.get("NIFTY", {})
     out = {}
@@ -48,15 +52,21 @@ def compute_per_strike_synthetics(engine, atm, strike_gap=50, min_volume=100):
         pe_ltp = d.get("pe_ltp", 0) or 0
         ce_vol = d.get("ce_volume", 0) or 0
         pe_vol = d.get("pe_volume", 0) or 0
+        ce_oi = d.get("ce_oi", 0) or 0
+        pe_oi = d.get("pe_oi", 0) or 0
 
         syn = synthetic_at_strike(strike, ce_ltp, pe_ltp)
-        valid = syn is not None and (ce_vol + pe_vol) >= min_volume * 2
+        # Validity: synthetic computable AND (volume liquid OR OI present both sides)
+        liquid_vol = (ce_vol + pe_vol) >= min_volume * 2
+        liquid_oi = ce_oi >= 1000 and pe_oi >= 1000
+        valid = syn is not None and (liquid_vol or liquid_oi)
+
         out[strike] = {
             "strike": strike,
             "offset_pts": offset_pts,
             "synthetic": syn,
             "ce_ltp": ce_ltp, "pe_ltp": pe_ltp,
-            "ce_oi": d.get("ce_oi", 0), "pe_oi": d.get("pe_oi", 0),
+            "ce_oi": ce_oi, "pe_oi": pe_oi,
             "ce_volume": ce_vol, "pe_volume": pe_vol,
             "valid": valid,
             "weight": WEIGHTS[offset_pts],

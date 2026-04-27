@@ -930,38 +930,15 @@ async def scalper_config_set(body: dict):
 
 
 # ── Rejection Zone Engine endpoints ──
-
-@app.get("/api/zones/{index}")
-async def zones_analysis(index: str):
-    """Rejection zones (upside + downside) with deep OI + hidden activity + verdict."""
-    if not engine:
-        return JSONResponse({"error": "Engine not running"}, status_code=400)
-    try:
-        import rejection_engine
-        return rejection_engine.get_zones_analysis(engine, index.upper())
-    except Exception as e:
-        import traceback; traceback.print_exc()
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.get("/api/zones/chart/{index}")
-async def zones_chart(index: str, days: int = 5):
-    """Light chart data: price series + zone overlay levels."""
-    if not engine:
-        return JSONResponse({"error": "Engine not running"}, status_code=400)
-    try:
-        import rejection_engine
-        return rejection_engine.get_chart_data(engine, index.upper(), days=days)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
+# IMPORTANT: specific routes MUST come before /api/zones/{index} catch-all
 
 @app.get("/api/zones/hidden-events")
 async def zones_hidden_events(idx: str = None, hours: int = 2, limit: int = 30):
     """Recent hidden activity feed (mass buys, stealth builds, smart exits)."""
     try:
         import rejection_engine
-        return rejection_engine.get_recent_hidden_events(idx=idx, hours=hours, limit=limit)
+        events = rejection_engine.get_recent_hidden_events(idx=idx, hours=hours, limit=limit)
+        return events  # always a list
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -977,6 +954,34 @@ async def zones_capture_now():
         rejection_engine.capture_oi_snapshot(engine)
         return {"ok": True, "captured_at": datetime.now().isoformat()}
     except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/zones/chart/{index}")
+async def zones_chart(index: str, days: int = 5):
+    """Light chart data: price series + zone overlay levels."""
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        import rejection_engine
+        return rejection_engine.get_chart_data(engine, index.upper(), days=days)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/zones/{index}")
+async def zones_analysis(index: str):
+    """Rejection zones (upside + downside) with deep OI + hidden activity + verdict."""
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    # Reject reserved paths that should have matched specific routes
+    if index.lower() in ("hidden-events", "capture-now", "chart"):
+        return JSONResponse({"error": f"Invalid index: {index}"}, status_code=400)
+    try:
+        import rejection_engine
+        return rejection_engine.get_zones_analysis(engine, index.upper())
+    except Exception as e:
+        import traceback; traceback.print_exc()
         return JSONResponse({"error": str(e)}, status_code=500)
 
 

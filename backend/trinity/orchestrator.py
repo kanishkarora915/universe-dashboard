@@ -169,8 +169,19 @@ def step(engine):
     actionable_regimes = ("REAL_RALLY", "REAL_CRASH", "BULL_TRAP", "BEAR_TRAP")
     if (not signal_paused and cooldown_ok and regime in actionable_regimes
             and confidence >= 65 and not state.degraded and not tp.is_first_5min()):
-        # Only emit at regime ENTRY (first 1-2 sec after transition)
-        if state.regime_duration_secs() < 5:
+        # Track signal emission per regime instance (prevents double-fire)
+        if state.regime_started_at != getattr(state, "_signal_regime_anchor", 0):
+            state._signal_regime_anchor = state.regime_started_at
+            state._signal_emitted_this_regime = False
+
+        # REAL regimes: emit at entry (first 5s, fast confirmation).
+        # TRAP regimes: emit any time conf crosses 65% (confidence builds with duration).
+        is_trap = regime in ("BULL_TRAP", "BEAR_TRAP")
+        already_emitted = getattr(state, "_signal_emitted_this_regime", False)
+        in_entry_window = state.regime_duration_secs() < 5
+
+        emit_now = not already_emitted and (is_trap or in_entry_window)
+        if emit_now:
             try:
                 signal = sr.build_signal(
                     engine, regime, confidence, atm, spot,
@@ -188,6 +199,7 @@ def step(engine):
                     new_signal = signal
                     _last_signal_ts = now
                     state.last_signal_at = now
+                    state._signal_emitted_this_regime = True
                     print(f"[TRINITY] NEW SIGNAL: {signal['signal_type']} {signal.get('strike')} "
                           f"@ ₹{signal.get('premium')} conf={confidence:.1f}%")
             except Exception as e:
