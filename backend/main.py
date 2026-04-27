@@ -985,6 +985,67 @@ async def zones_analysis(index: str):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── BUYER MODE endpoints ──
+
+@app.get("/api/buyer-mode")
+async def buyer_mode_get():
+    """Current mode (HEDGER/BUYER) + active thresholds + comparison."""
+    try:
+        import buyer_mode
+        return buyer_mode.get_summary()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/buyer-mode/toggle")
+async def buyer_mode_toggle():
+    """Flip between HEDGER and BUYER modes (one-click toggle)."""
+    try:
+        import buyer_mode
+        cur = buyer_mode.get_mode()
+        new_mode = "BUYER" if cur == "HEDGER" else "HEDGER"
+        buyer_mode.set_mode(new_mode)
+        return {"ok": True, "mode": new_mode, "thresholds": buyer_mode.get_thresholds()}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/buyer-mode/set")
+async def buyer_mode_set(body: dict):
+    """Explicitly set mode to HEDGER or BUYER."""
+    try:
+        import buyer_mode
+        mode = (body.get("mode") or "").upper()
+        if mode not in ("HEDGER", "BUYER"):
+            return JSONResponse({"error": "mode must be HEDGER or BUYER"}, status_code=400)
+        buyer_mode.set_mode(mode)
+        return {"ok": True, "mode": mode, "thresholds": buyer_mode.get_thresholds()}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/buyer-mode/overrides")
+async def buyer_mode_overrides_set(body: dict):
+    """Set custom threshold overrides (advanced users)."""
+    try:
+        import buyer_mode
+        overrides = body.get("overrides", {})
+        buyer_mode.set_overrides(overrides)
+        return {"ok": True, "thresholds": buyer_mode.get_thresholds()}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/buyer-mode/overrides/reset")
+async def buyer_mode_overrides_reset():
+    try:
+        import buyer_mode
+        buyer_mode.reset_overrides()
+        return {"ok": True, "thresholds": buyer_mode.get_thresholds()}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Smart Autopsy Mind endpoints ──
 
 @app.get("/api/mind/predict/{index}")

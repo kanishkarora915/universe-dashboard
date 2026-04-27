@@ -595,59 +595,81 @@ class TradeManager:
             # SMART SL MANAGEMENT
             # ══════════════════════════════════════════════
 
+            # ── BUYER MODE thresholds (per-cycle) ──
+            try:
+                from buyer_mode import get_thresholds
+                _bm = get_thresholds()
+            except Exception:
+                _bm = {
+                    "mode": "HEDGER", "breakeven_pct": 2.0, "trail_giveback_pct": 50.0,
+                    "tight_trail_giveback_pct": 25.0, "tight_trail_trigger_pct": 35.0,
+                    "reversal_exit_pct": -3.0, "reversal_exit_min_hold_sec": 600,
+                    "conviction_exit_enabled": True, "conviction_exit_threshold": 50,
+                    "conviction_exit_min_profit": 5,
+                }
+
             # STAGE 0: CONVICTION DROP + PROFIT → Early breakeven
-            # If engines no longer support AND we're profitable → protect profit NOW
+            # (BUYER MODE disables this — pure price-based management)
             cached_verdict = self._cached_verdict.get(idx.lower(), {})
             our_side = "bullPct" if "CE" in action else "bearPct"
             current_conviction = cached_verdict.get(our_side, 50)
 
-            if not breakeven_active and profit_pct > 5 and current_conviction < 50:
-                # Conviction dropped below 50% but we have profit → move SL to entry
+            if (_bm.get("conviction_exit_enabled", True)
+                    and not breakeven_active
+                    and profit_pct > _bm.get("conviction_exit_min_profit", 5)
+                    and current_conviction < _bm.get("conviction_exit_threshold", 50)):
                 breakeven_active = 1
                 new_sl = entry
                 trail_level = "CONVICTION_BE"
-                alerts_list.append(f"EARLY BREAKEVEN: Conviction dropped to {current_conviction}% but profit +{profit_pct:.0f}%. SL moved to entry ₹{entry}. Zero loss protected.")
+                alerts_list.append(f"EARLY BREAKEVEN [{_bm['mode']}]: Conviction dropped to {current_conviction}% but profit +{profit_pct:.0f}%. SL moved to entry ₹{entry}.")
                 print(f"[TRADE] EARLY BREAKEVEN (conviction): {action} {idx} {strike} — conviction {current_conviction}%, profit +{profit_pct:.0f}%")
 
-            # STAGE 1: BREAKEVEN — activate at +2% profit (quick lock, no greed)
-            if not breakeven_active and profit_pct >= 2:
+            # STAGE 1: BREAKEVEN — HEDGER: +2% / BUYER: +20%
+            be_threshold = _bm.get("breakeven_pct", 2.0)
+            if not breakeven_active and profit_pct >= be_threshold:
                 breakeven_active = 1
                 new_sl = entry
                 trail_level = "BREAKEVEN"
-                alerts_list.append(f"BREAKEVEN activated at +{profit_pct:.1f}% — SL moved to entry ₹{entry}")
-                print(f"[TRADE] BREAKEVEN: {action} {idx} {strike} — SL moved to entry ₹{entry} (was ₹{sl})")
+                alerts_list.append(f"BREAKEVEN [{_bm['mode']}] activated at +{profit_pct:.1f}% (threshold {be_threshold}%) — SL moved to entry ₹{entry}")
+                print(f"[TRADE] BREAKEVEN [{_bm['mode']}]: {action} {idx} {strike} — SL moved to entry ₹{entry} (was ₹{sl})")
 
-            # STAGE 1.5: REVERSAL EXIT — if -3% after 10 min hold, accept small loss
-            # Prevents 15% SL catastrophe when trade clearly going wrong
+            # STAGE 1.5: REVERSAL EXIT — HEDGER: -3% / BUYER: -8%
             try:
                 entry_time = datetime.fromisoformat(t["entry_time"])
                 hold_sec = (ist_now() - entry_time).total_seconds()
             except Exception:
                 hold_sec = 0
 
-            if not breakeven_active and hold_sec >= 600 and profit_pct <= -3:
+            rev_pct = _bm.get("reversal_exit_pct", -3.0)
+            rev_min_hold = _bm.get("reversal_exit_min_hold_sec", 600)
+            if not breakeven_active and hold_sec >= rev_min_hold and profit_pct <= rev_pct:
                 new_status = "REVERSAL_EXIT"
                 exit_price = current_ltp
-                exit_reason = f"Reversal exit at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — held {int(hold_sec/60)}min, no recovery. Small loss accepted, 15% SL avoided."
-                print(f"[TRADE] REVERSAL EXIT: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}% after {int(hold_sec/60)}min)")
+                exit_reason = f"Reversal exit [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — held {int(hold_sec/60)}min, no recovery."
+                print(f"[TRADE] REVERSAL EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}% after {int(hold_sec/60)}min)")
 
-            # STAGE 2: TRAILING SL — after breakeven, lock 50% of peak gain (user preference)
+            # STAGE 2: TRAILING SL — HEDGER: 50%/25% give-back / BUYER: 25%/15% give-back
             if breakeven_active and new_status == "OPEN":
-                # Lock 50% of peak profit (more aggressive protection)
-                trail_from_peak = round(peak - (peak - entry) * 0.50)
+                base_trail_pct = _bm.get("trail_giveback_pct", 50.0) / 100.0
+                tight_trail_pct = _bm.get("tight_trail_giveback_pct", 25.0) / 100.0
+                tight_trigger = _bm.get("tight_trail_trigger_pct", 35.0)
+
+                # Base trail
+                trail_from_peak = round(peak - (peak - entry) * base_trail_pct)
                 if trail_from_peak > new_sl and trail_from_peak > entry:
                     new_sl = trail_from_peak
                     trailing_active = 1
 
-                # Tighter trail levels
-                if profit_pct >= 35:
-                    tight_trail = round(peak - (peak - entry) * 0.25)  # Lock 75% at 35%+ profit
+                # Tight trail (when in big profit)
+                if profit_pct >= tight_trigger:
+                    tight_trail = round(peak - (peak - entry) * tight_trail_pct)
                     if tight_trail > new_sl:
                         new_sl = tight_trail
-                        trail_level = "TRAIL_75"
-                        alerts_list.append(f"Tight trail: locking 75% profit, SL at ₹{new_sl}")
+                        lock_pct = round((1 - tight_trail_pct) * 100)
+                        trail_level = f"TRAIL_{lock_pct}"
+                        alerts_list.append(f"Tight trail [{_bm['mode']}]: locking {lock_pct}% profit, SL at ₹{new_sl}")
                 elif profit_pct >= 25:
-                    trail_level = "TRAIL_60"
+                    trail_level = "TRAIL_BASE"
 
             # ══════════════════════════════════════════════
             # EXIT CONDITIONS (with engine override)
@@ -690,35 +712,48 @@ class TradeManager:
                 else:
                     alerts_list.append(f"WARNING: Price ₹{current_ltp:.1f} approaching SL ₹{new_sl}. Engines NOT supporting — prepare for SL exit.")
 
-            # Check T1 — PARTIAL PROFIT BOOKING (50% qty booked, rest trails to T2)
+            # Check T1 — PARTIAL PROFIT BOOKING (HEDGER only)
+            # BUYER MODE: skip partial book, just activate BE and ride full position to T2
             elif current_ltp >= t1 and not breakeven_active:
                 breakeven_active = 1
                 new_sl = entry  # Move SL to entry (zero loss on remaining)
 
-                # Calculate partial profit (50% of qty)
-                booked_qty = t["qty"] // 2
-                booked_pnl = round((t1 - entry) * booked_qty, 2)
-                remaining_qty = t["qty"] - booked_qty
+                if _bm.get("t1_partial_booking", True):
+                    # HEDGER: book 50% qty at T1
+                    partial_pct = _bm.get("t1_partial_pct", 50) / 100.0
+                    booked_qty = int(t["qty"] * partial_pct)
+                    booked_pnl = round((t1 - entry) * booked_qty, 2)
+                    remaining_qty = t["qty"] - booked_qty
 
-                trail_level = "T1_PARTIAL"
-                alerts_list.append(f"T1 HIT ₹{t1} — BOOKED 50% ({booked_qty} qty) profit ₹{booked_pnl:+,.0f}. Trailing {remaining_qty} qty to T2 ₹{t2}. SL at entry ₹{entry}.")
-                print(f"[TRADE] T1 PARTIAL: {action} {idx} {strike} — booked {booked_qty} qty @ ₹{t1}, profit ₹{booked_pnl:+,.0f}, trailing {remaining_qty}")
+                    trail_level = "T1_PARTIAL"
+                    alerts_list.append(f"T1 HIT [{_bm['mode']}] ₹{t1} — BOOKED {int(partial_pct*100)}% ({booked_qty} qty) profit ₹{booked_pnl:+,.0f}. Trailing {remaining_qty} qty to T2.")
+                    print(f"[TRADE] T1 PARTIAL [{_bm['mode']}]: {action} {idx} {strike} — booked {booked_qty} qty @ ₹{t1}, trailing {remaining_qty}")
 
-                # Update qty in DB to remaining amount, add partial P&L
-                conn2 = _conn()
-                conn2.execute("UPDATE trades SET qty=?, pnl_rupees=pnl_rupees+? WHERE id=?",
-                              (remaining_qty, booked_pnl, t["id"]))
-                conn2.commit()
-                conn2.close()
+                    conn2 = _conn()
+                    conn2.execute("UPDATE trades SET qty=?, pnl_rupees=pnl_rupees+? WHERE id=?",
+                                  (remaining_qty, booked_pnl, t["id"]))
+                    conn2.commit()
+                    conn2.close()
 
-                # Alert
-                self._trade_alerts.append({
-                    "type": "PARTIAL_BOOK",
-                    "time": ist_now().strftime("%I:%M:%S %p"),
-                    "message": f"💰 T1 HIT: Booked 50% profit on {action} {idx} {strike}",
-                    "details": f"Booked ₹{booked_pnl:+,.0f} ({booked_qty} qty @ ₹{t1}). Trailing {remaining_qty} qty to T2 ₹{t2}",
-                })
-                self._trade_alerts = self._trade_alerts[-50:]
+                    self._trade_alerts.append({
+                        "type": "PARTIAL_BOOK",
+                        "time": ist_now().strftime("%I:%M:%S %p"),
+                        "message": f"💰 T1 HIT [{_bm['mode']}]: Booked {int(partial_pct*100)}% profit on {action} {idx} {strike}",
+                        "details": f"Booked ₹{booked_pnl:+,.0f} ({booked_qty} qty @ ₹{t1}). Trailing {remaining_qty} qty to T2 ₹{t2}",
+                    })
+                    self._trade_alerts = self._trade_alerts[-50:]
+                else:
+                    # BUYER MODE: NO partial booking — full ride to T2
+                    trail_level = "T1_RIDE"
+                    alerts_list.append(f"T1 HIT [{_bm['mode']}] ₹{t1} (+{round((t1/entry-1)*100)}%) — RIDING FULL POSITION to T2 ₹{t2}. SL at entry. No partial book.")
+                    print(f"[TRADE] T1 RIDE [BUYER]: {action} {idx} {strike} — at T1 ₹{t1}, full {t['qty']} qty riding to T2 ₹{t2}")
+                    self._trade_alerts.append({
+                        "type": "T1_RIDE",
+                        "time": ist_now().strftime("%I:%M:%S %p"),
+                        "message": f"🚀 T1 HIT [BUYER]: {action} {idx} {strike} riding full position to T2",
+                        "details": f"At ₹{t1} (+{round((t1/entry-1)*100)}%). Full {t['qty']} qty trailing. T2 = ₹{t2}",
+                    })
+                    self._trade_alerts = self._trade_alerts[-50:]
 
             # Check T2 (full target on remaining qty)
             elif current_ltp >= t2:

@@ -221,7 +221,16 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None)
         return False
 
     # Guard 1: Cooldown after ANY exit on same strike
-    cooldown_cutoff = (now - timedelta(minutes=COOLDOWN_SAME_STRIKE_MIN)).isoformat()
+    # ── BUYER MODE override (longer hold, shorter cooldowns) ──
+    try:
+        from buyer_mode import get_thresholds as _bm_thresholds
+        _bm = _bm_thresholds()
+        _cooldown_same = _bm.get("scalper_cooldown_same_strike_min", COOLDOWN_SAME_STRIKE_MIN)
+        _cooldown_flip = _bm.get("scalper_cooldown_flip_min", COOLDOWN_FLIP_DIRECTION_MIN)
+    except Exception:
+        _cooldown_same = COOLDOWN_SAME_STRIKE_MIN
+        _cooldown_flip = COOLDOWN_FLIP_DIRECTION_MIN
+    cooldown_cutoff = (now - timedelta(minutes=_cooldown_same)).isoformat()
     recent_same_strike = conn.execute(
         """SELECT COUNT(*) FROM scalper_trades
            WHERE idx=? AND strike=? AND status!='OPEN' AND exit_time > ?""",
@@ -232,7 +241,7 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None)
         return False
 
     # Guard 2: Flip direction block (CE→PE or PE→CE on same strike)
-    flip_cutoff = (now - timedelta(minutes=COOLDOWN_FLIP_DIRECTION_MIN)).isoformat()
+    flip_cutoff = (now - timedelta(minutes=_cooldown_flip)).isoformat()
     opposite = "BUY PE" if "CE" in action_str else "BUY CE"
     recent_opposite = conn.execute(
         """SELECT COUNT(*) FROM scalper_trades
@@ -374,11 +383,17 @@ def check_scalper_exits(chains):
             new_status = "T1_HIT"
             exit_price = t1
             exit_reason = f"T1 hit at ₹{t1} (+12%)"
-        elif hold_sec >= SCALPER_MAX_HOLD_MIN * 60:
-            # Max hold timeout
-            new_status = "TIMEOUT_EXIT"
-            exit_price = current_ltp
-            exit_reason = f"Max hold {SCALPER_MAX_HOLD_MIN}min reached, exit @ ₹{current_ltp}"
+        else:
+            # Max hold check (BUYER MODE: 180 min / HEDGER: 30 min)
+            try:
+                from buyer_mode import get_thresholds as _bm_t
+                _max_hold_min = _bm_t().get("scalper_max_hold_min", SCALPER_MAX_HOLD_MIN)
+            except Exception:
+                _max_hold_min = SCALPER_MAX_HOLD_MIN
+            if hold_sec >= _max_hold_min * 60:
+                new_status = "TIMEOUT_EXIT"
+                exit_price = current_ltp
+                exit_reason = f"Max hold {_max_hold_min}min reached, exit @ ₹{current_ltp}"
 
         # Update or close
         pnl_pts = round(current_ltp - entry, 2)

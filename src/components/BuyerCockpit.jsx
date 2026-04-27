@@ -13,6 +13,7 @@ import NextDayPredictor from "./NextDayPredictor";
 import OIHeatmap from "./OIHeatmap";
 import AutopsyMindWidget from "./AutopsyMindWidget";
 import OIInsightPanel from "./OIInsightPanel";
+import BuyerModeToggle from "./BuyerModeToggle";
 
 const GREEN = "#10b981";
 const RED = "#ef4444";
@@ -590,6 +591,9 @@ export default function BuyerCockpit({ live, verdicts, reasonsMap, openPositions
         <EnhancedVerdictCard index="NIFTY" verdict={nifty} reasons={reasonsMap?.nifty || nifty?.reasons} />
         <EnhancedVerdictCard index="BANKNIFTY" verdict={bn} reasons={reasonsMap?.banknifty || bn?.reasons} />
       </div>
+
+      {/* BUYER MODE Toggle — philosophy switch (HEDGER ↔ BUYER) */}
+      <BuyerModeToggle />
 
       {/* 3. Open Positions (swing) */}
       <OpenPositionsQuick positions={openPositions} />
