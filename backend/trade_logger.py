@@ -91,8 +91,8 @@ def save_nse_holidays_from_kite(kite):
     return _NSE_HOLIDAYS_FALLBACK
 
 LOT_CONFIG = {
-    "NIFTY": {"lot_size": 65},
-    "BANKNIFTY": {"lot_size": 30},
+    "NIFTY": {"lot_size": 75},      # updated Jan 2025 (was 25 → 50 → 75)
+    "BANKNIFTY": {"lot_size": 35},  # updated Apr 2025 (was 15 → 25 → 35)
 }
 
 

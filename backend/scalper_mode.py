@@ -285,9 +285,9 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry=""):
     t1_price = round(entry_price * (1 + t1_pct))
     t2_price = round(entry_price * (1 + t2_pct))
 
-    # Lot size lookup (exchange-fixed)
-    lot_sizes = {"NIFTY": 25, "BANKNIFTY": 15}
-    lot_size = lot_sizes.get(idx, 25)
+    # Lot size lookup (exchange-fixed) — current as of 2025
+    lot_sizes = {"NIFTY": 75, "BANKNIFTY": 35}
+    lot_size = lot_sizes.get(idx, 75)
 
     # Quantity priority:
     #   1. User-set override (nifty_qty / banknifty_qty) — if > 0, use exact

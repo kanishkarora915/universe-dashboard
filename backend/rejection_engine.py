@@ -26,8 +26,8 @@ IST = pytz.timezone("Asia/Kolkata")
 _data_dir = Path("/data") if Path("/data").is_dir() else Path(__file__).parent
 DB_PATH = _data_dir / "rejection_zones.db"
 
-# Lot sizes (used for hidden activity threshold)
-LOT_SIZE = {"NIFTY": 25, "BANKNIFTY": 15}
+# Lot sizes (used for hidden activity threshold) — current as of 2025
+LOT_SIZE = {"NIFTY": 75, "BANKNIFTY": 35}
 HIDDEN_LOT_THRESHOLD = 100   # 100+ lots in 5-min window = institutional
 STEALTH_OI_THRESHOLD_PCT = 20  # 20%+ OI move with flat price = stealth
 
