@@ -3659,6 +3659,21 @@ class MarketEngine:
                     print(f"[TRINITY] step error: {e}")
             threading.Thread(target=_trinity_step, daemon=True, name="trinity-step").start()
 
+        # ── Scalper FAST TICK loop (5s) — INDEPENDENT of slow verdict cycle ──
+        # Updates open scalper trade current_ltp + records ticks for chart accuracy.
+        # No DB lag for PnL calculations.
+        if not hasattr(self, "_scalper_tick_last"):
+            self._scalper_tick_last = 0
+        if market_active and now - self._scalper_tick_last >= 5.0:
+            self._scalper_tick_last = now
+            def _scalper_tick_update():
+                try:
+                    import scalper_mode as _sm
+                    _sm.check_scalper_exits(self.chains)  # also captures tick history
+                except Exception as e:
+                    print(f"[SCALPER-TICK] error: {e}")
+            threading.Thread(target=_scalper_tick_update, daemon=True, name="scalper-tick").start()
+
         # Trinity nightly prune (10 PM IST)
         if not hasattr(self, "_trinity_last_prune"):
             self._trinity_last_prune = 0
@@ -3772,11 +3787,18 @@ class MarketEngine:
                             atm_data = self.chains.get(idx, {}).get(atm, {})
                             entry_premium = atm_data.get("ce_ltp" if "CE" in action else "pe_ltp", 0)
                             if 5 < entry_premium < 5000:
+                                # Pass full entry context: top reasons + bull/bear% + spot
+                                top_reasons = v.get("reasons", [])[:3]
+                                reason_text = " · ".join(top_reasons) if top_reasons else "Verdict signal"
                                 scalper_mode.log_scalp_trade(
                                     idx=idx, action=action, strike=int(atm),
                                     entry_price=entry_premium,
                                     probability=v.get("winProbability", 0),
                                     expiry=str(self.nearest_expiry.get(idx, "")),
+                                    entry_reasoning=reason_text,
+                                    entry_bull_pct=v.get("bullPct", 0),
+                                    entry_bear_pct=v.get("bearPct", 0),
+                                    entry_spot=spot_ltp,
                                 )
             except Exception as e:
                 print(f"[SCALPER] Error: {e}")

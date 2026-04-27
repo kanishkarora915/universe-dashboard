@@ -72,11 +72,43 @@ def init_scalper_db():
             exit_reason TEXT,
             probability INTEGER,
             hold_seconds INTEGER DEFAULT 0,
-            mode TEXT DEFAULT 'SCALPER'
+            mode TEXT DEFAULT 'SCALPER',
+            entry_reasoning TEXT,
+            entry_bull_pct REAL,
+            entry_bear_pct REAL,
+            entry_spot REAL,
+            capital_used REAL
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_scalper_status ON scalper_trades(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_scalper_date ON scalper_trades(entry_time)")
+
+    # Migrate older DB: add new columns if missing
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(scalper_trades)").fetchall()]
+    for col, sql in [
+        ("entry_reasoning", "ALTER TABLE scalper_trades ADD COLUMN entry_reasoning TEXT"),
+        ("entry_bull_pct", "ALTER TABLE scalper_trades ADD COLUMN entry_bull_pct REAL"),
+        ("entry_bear_pct", "ALTER TABLE scalper_trades ADD COLUMN entry_bear_pct REAL"),
+        ("entry_spot", "ALTER TABLE scalper_trades ADD COLUMN entry_spot REAL"),
+        ("capital_used", "ALTER TABLE scalper_trades ADD COLUMN capital_used REAL"),
+    ]:
+        if col not in cols:
+            try: conn.execute(sql)
+            except Exception: pass
+
+    # Tick history (live LTP samples per trade)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scalper_ticks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_id INTEGER NOT NULL,
+            ts INTEGER NOT NULL,
+            ltp REAL,
+            spot REAL,
+            pnl_rupees REAL,
+            pnl_pct REAL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_scalp_ticks ON scalper_ticks(trade_id, ts DESC)")
 
     # User-configurable scalper settings
     conn.execute("""
@@ -221,16 +253,8 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None)
         return False
 
     # Guard 1: Cooldown after ANY exit on same strike
-    # ── BUYER MODE override (longer hold, shorter cooldowns) ──
-    try:
-        from buyer_mode import get_thresholds as _bm_thresholds
-        _bm = _bm_thresholds()
-        _cooldown_same = _bm.get("scalper_cooldown_same_strike_min", COOLDOWN_SAME_STRIKE_MIN)
-        _cooldown_flip = _bm.get("scalper_cooldown_flip_min", COOLDOWN_FLIP_DIRECTION_MIN)
-    except Exception:
-        _cooldown_same = COOLDOWN_SAME_STRIKE_MIN
-        _cooldown_flip = COOLDOWN_FLIP_DIRECTION_MIN
-    cooldown_cutoff = (now - timedelta(minutes=_cooldown_same)).isoformat()
+    # Scalper INDEPENDENT — uses its own config, not buyer_mode (which is for main trades)
+    cooldown_cutoff = (now - timedelta(minutes=COOLDOWN_SAME_STRIKE_MIN)).isoformat()
     recent_same_strike = conn.execute(
         """SELECT COUNT(*) FROM scalper_trades
            WHERE idx=? AND strike=? AND status!='OPEN' AND exit_time > ?""",
@@ -241,7 +265,7 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None)
         return False
 
     # Guard 2: Flip direction block (CE→PE or PE→CE on same strike)
-    flip_cutoff = (now - timedelta(minutes=_cooldown_flip)).isoformat()
+    flip_cutoff = (now - timedelta(minutes=COOLDOWN_FLIP_DIRECTION_MIN)).isoformat()
     opposite = "BUY PE" if "CE" in action_str else "BUY CE"
     recent_opposite = conn.execute(
         """SELECT COUNT(*) FROM scalper_trades
@@ -279,8 +303,10 @@ def calc_scalper_size(entry_price, sl_price, running_capital=1000000):
     return max_qty
 
 
-def log_scalp_trade(idx, action, strike, entry_price, probability, expiry=""):
-    """Create new scalper trade with user-configured capital + qty."""
+def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
+                    entry_reasoning=None, entry_bull_pct=None, entry_bear_pct=None,
+                    entry_spot=None):
+    """Create new scalper trade with user-configured capital + qty + entry context."""
     if entry_price <= 0:
         return None
 
@@ -298,9 +324,6 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry=""):
     lot_sizes = {"NIFTY": 75, "BANKNIFTY": 35}
     lot_size = lot_sizes.get(idx, 75)
 
-    # Quantity priority:
-    #   1. User-set override (nifty_qty / banknifty_qty) — if > 0, use exact
-    #   2. Fallback: compute from capital × risk %
     user_qty = cfg.get("nifty_qty") if idx == "NIFTY" else cfg.get("banknifty_qty")
     if user_qty and user_qty > 0:
         qty = int(user_qty)
@@ -310,24 +333,170 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry=""):
         lots = max(1, max_qty // lot_size)
         qty = lots * lot_size
 
+    capital_used = entry_price * qty
+
     now = ist_now()
     conn = _conn()
     cursor = conn.execute("""
         INSERT INTO scalper_trades (entry_time, idx, action, strike, expiry,
             entry_price, sl_price, t1_price, t2_price,
             current_ltp, peak_ltp, lots, lot_size, qty,
-            status, probability)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?)
+            status, probability,
+            entry_reasoning, entry_bull_pct, entry_bear_pct, entry_spot, capital_used)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?,?,?,?,?,?)
     """, (now.isoformat(), idx, action, strike, expiry,
           entry_price, sl_price, t1_price, t2_price,
           entry_price, entry_price, lots, lot_size, qty,
-          probability))
+          probability, entry_reasoning, entry_bull_pct, entry_bear_pct,
+          entry_spot, capital_used))
     trade_id = cursor.lastrowid
     conn.commit()
     conn.close()
 
-    print(f"[SCALPER] OPENED #{trade_id}: {action} {idx} {strike} @ ₹{entry_price} | qty {qty} (capital ₹{capital:,.0f}) | SL ₹{sl_price} T1 ₹{t1_price}")
+    print(f"[SCALPER] OPENED #{trade_id}: {action} {idx} {strike} @ ₹{entry_price} | qty {qty} | capital used ₹{capital_used:,.0f} (of ₹{capital:,.0f}) | SL ₹{sl_price} T1 ₹{t1_price}")
     return trade_id
+
+
+def record_tick(trade_id, ltp, spot=None):
+    """Sample tick for an open scalper trade. Call from check_scalper_exits loop."""
+    init_scalper_db()
+    import time
+    conn = _conn()
+    try:
+        # Get entry context for pnl calc
+        row = conn.execute("SELECT entry_price, qty FROM scalper_trades WHERE id=?", (trade_id,)).fetchone()
+        if not row:
+            return
+        entry = row["entry_price"]
+        qty = row["qty"]
+        pnl_rupees = round((ltp - entry) * qty, 2)
+        pnl_pct = round((ltp - entry) / entry * 100, 2) if entry > 0 else 0
+        conn.execute("""
+            INSERT INTO scalper_ticks (trade_id, ts, ltp, spot, pnl_rupees, pnl_pct)
+            VALUES (?,?,?,?,?,?)
+        """, (trade_id, int(time.time() * 1000), ltp, spot, pnl_rupees, pnl_pct))
+        conn.commit()
+    except Exception as e:
+        print(f"[SCALPER] tick record error: {e}")
+    finally:
+        conn.close()
+
+
+def get_trade_ticks(trade_id, limit=500):
+    """Return tick history for one trade (chart data)."""
+    init_scalper_db()
+    conn = _conn()
+    try:
+        rows = conn.execute("""
+            SELECT ts, ltp, spot, pnl_rupees, pnl_pct
+            FROM scalper_ticks WHERE trade_id=?
+            ORDER BY ts ASC LIMIT ?
+        """, (trade_id, limit)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def manual_exit(trade_id, current_ltp, reason="MANUAL_EXIT"):
+    """User-triggered manual exit of an open scalper trade."""
+    init_scalper_db()
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM scalper_trades WHERE id=? AND status='OPEN'", (trade_id,)
+        ).fetchone()
+        if not row:
+            return {"error": "Trade not found or already closed"}
+
+        entry_price = row["entry_price"]
+        qty = row["qty"]
+        exit_price = current_ltp if current_ltp > 0 else (row["current_ltp"] or entry_price)
+        pnl_rupees = round((exit_price - entry_price) * qty, 2)
+        pnl_pts = round(exit_price - entry_price, 2)
+
+        try:
+            entry_dt = datetime.fromisoformat(row["entry_time"])
+            hold_sec = int((ist_now() - entry_dt).total_seconds())
+        except Exception:
+            hold_sec = 0
+
+        result_status = "MANUAL_EXIT"
+        exit_reason_str = f"Manual exit by user @ ₹{exit_price:.2f} (PnL ₹{pnl_rupees:+,.0f}, +{round((exit_price/entry_price-1)*100,1)}%, held {hold_sec//60}m{hold_sec%60}s)"
+
+        conn.execute("""
+            UPDATE scalper_trades SET
+                status=?, exit_time=?, exit_price=?, pnl_rupees=?, pnl_pts=?,
+                hold_seconds=?, exit_reason=?
+            WHERE id=?
+        """, (result_status, ist_now().isoformat(), exit_price, pnl_rupees, pnl_pts,
+              hold_sec, exit_reason_str, trade_id))
+        conn.commit()
+
+        print(f"[SCALPER] MANUAL EXIT #{trade_id}: ₹{exit_price} | PnL ₹{pnl_rupees:+,.0f}")
+        return {
+            "ok": True, "trade_id": trade_id, "exit_price": exit_price,
+            "pnl_rupees": pnl_rupees, "pnl_pts": pnl_pts, "hold_seconds": hold_sec,
+            "reason": exit_reason_str,
+        }
+    finally:
+        conn.close()
+
+
+def get_capital_usage():
+    """Return current capital usage breakdown for scalper."""
+    init_scalper_db()
+    cfg = get_scalper_config()
+    capital = cfg.get("capital", 1000000)
+    conn = _conn()
+    try:
+        # Currently committed (open trades)
+        open_rows = conn.execute("""
+            SELECT id, entry_price, current_ltp, qty, capital_used, idx, strike, action
+            FROM scalper_trades WHERE status='OPEN'
+        """).fetchall()
+        committed = 0.0
+        live_value = 0.0
+        unrealized = 0.0
+        open_list = []
+        for r in open_rows:
+            row = dict(r)
+            cap_used = row.get("capital_used") or (row["entry_price"] * row["qty"])
+            committed += cap_used
+            cur_ltp = row.get("current_ltp") or row["entry_price"]
+            live_val = cur_ltp * row["qty"]
+            live_value += live_val
+            unrealized += (cur_ltp - row["entry_price"]) * row["qty"]
+            open_list.append({
+                "id": row["id"], "idx": row["idx"], "strike": row["strike"],
+                "action": row["action"],
+                "entry": row["entry_price"], "current": cur_ltp, "qty": row["qty"],
+                "capital_used": round(cap_used, 2),
+                "live_value": round(live_val, 2),
+                "unrealized": round((cur_ltp - row["entry_price"]) * row["qty"], 2),
+            })
+
+        # Today's realized P&L
+        today = ist_now().strftime("%Y-%m-%d")
+        realized = conn.execute("""
+            SELECT COALESCE(SUM(pnl_rupees), 0) FROM scalper_trades
+            WHERE status!='OPEN' AND date(entry_time)=?
+        """, (today,)).fetchone()[0]
+
+        available = capital - committed
+        return {
+            "capital": capital,
+            "committed": round(committed, 2),
+            "available": round(available, 2),
+            "committed_pct": round((committed / capital * 100), 2) if capital > 0 else 0,
+            "live_value": round(live_value, 2),
+            "unrealized_pnl": round(unrealized, 2),
+            "realized_today": round(realized, 2),
+            "total_today_pnl": round(realized + unrealized, 2),
+            "open_count": len(open_list),
+            "open_trades": open_list,
+        }
+    finally:
+        conn.close()
 
 
 def check_scalper_exits(chains):
@@ -383,17 +552,11 @@ def check_scalper_exits(chains):
             new_status = "T1_HIT"
             exit_price = t1
             exit_reason = f"T1 hit at ₹{t1} (+12%)"
-        else:
-            # Max hold check (BUYER MODE: 180 min / HEDGER: 30 min)
-            try:
-                from buyer_mode import get_thresholds as _bm_t
-                _max_hold_min = _bm_t().get("scalper_max_hold_min", SCALPER_MAX_HOLD_MIN)
-            except Exception:
-                _max_hold_min = SCALPER_MAX_HOLD_MIN
-            if hold_sec >= _max_hold_min * 60:
-                new_status = "TIMEOUT_EXIT"
-                exit_price = current_ltp
-                exit_reason = f"Max hold {_max_hold_min}min reached, exit @ ₹{current_ltp}"
+        elif hold_sec >= SCALPER_MAX_HOLD_MIN * 60:
+            # Max hold (scalper independent — own 30 min limit)
+            new_status = "TIMEOUT_EXIT"
+            exit_price = current_ltp
+            exit_reason = f"Max hold {SCALPER_MAX_HOLD_MIN}min reached, exit @ ₹{current_ltp}"
 
         # Update or close
         pnl_pts = round(current_ltp - entry, 2)
@@ -416,6 +579,16 @@ def check_scalper_exits(chains):
                     current_ltp=?, peak_ltp=?, pnl_pts=?, pnl_rupees=?, hold_seconds=?
                 WHERE id=?
             """, (current_ltp, peak, pnl_pts, pnl_rupees, int(hold_sec), t["id"]))
+            # Record tick sample (live LTP history per trade)
+            try:
+                import time as _time
+                conn2.execute("""
+                    INSERT INTO scalper_ticks (trade_id, ts, ltp, spot, pnl_rupees, pnl_pct)
+                    VALUES (?,?,?,?,?,?)
+                """, (t["id"], int(_time.time() * 1000), current_ltp, None, pnl_rupees,
+                      round((current_ltp - entry) / entry * 100, 2) if entry > 0 else 0))
+            except Exception:
+                pass
 
         conn2.commit()
         conn2.close()
@@ -478,7 +651,7 @@ def get_scalper_stats():
 
 
 # Module-level toggle (in-memory, can be controlled via API)
-_scalper_enabled = False  # OFF by default
+_scalper_enabled = True  # ALWAYS ON — user wants live tick accuracy preserved
 
 
 def is_scalper_enabled():

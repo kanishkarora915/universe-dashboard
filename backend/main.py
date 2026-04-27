@@ -897,6 +897,108 @@ async def scalper_stats():
         return {"error": str(e)}
 
 
+@app.get("/api/scalper/capital-usage")
+async def scalper_capital_usage():
+    """Live capital usage breakdown — committed, available, unrealized P&L.
+    Reads CURRENT chain LTP for zero-latency live values (no DB lag)."""
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        import scalper_mode
+        usage = scalper_mode.get_capital_usage()
+        # Patch open trades with REAL-TIME chain LTP (engine.prices in-memory)
+        for ot in usage.get("open_trades", []):
+            chain = engine.chains.get(ot["idx"], {})
+            strike_data = chain.get(ot["strike"], {})
+            side_key = "ce_ltp" if "CE" in ot.get("action", "") else "pe_ltp"
+            live_ltp = strike_data.get(side_key) or 0
+            if live_ltp > 0:
+                ot["current"] = live_ltp
+                ot["live_value"] = round(live_ltp * ot["qty"], 2)
+                ot["unrealized"] = round((live_ltp - ot["entry"]) * ot["qty"], 2)
+        # Recompute aggregates
+        usage["live_value"] = round(sum(ot["live_value"] for ot in usage["open_trades"]), 2)
+        usage["unrealized_pnl"] = round(sum(ot["unrealized"] for ot in usage["open_trades"]), 2)
+        usage["total_today_pnl"] = round(usage.get("realized_today", 0) + usage["unrealized_pnl"], 2)
+        return usage
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/scalper/live-prices")
+async def scalper_live_prices():
+    """Zero-latency live LTP per open scalper trade. Pulls direct from engine.chains
+    (in-memory, no DB hit). Returns just {trade_id: ltp, pnl_rupees, pnl_pct}.
+    Frontend should poll this every 1s for real-trading-app feel."""
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        import scalper_mode
+        conn = scalper_mode._conn()
+        rows = conn.execute(
+            "SELECT id, idx, strike, action, entry_price, qty FROM scalper_trades WHERE status='OPEN'"
+        ).fetchall()
+        conn.close()
+        out = []
+        import time as _time
+        ts = int(_time.time() * 1000)
+        for r in rows:
+            chain = engine.chains.get(r["idx"], {})
+            strike_data = chain.get(r["strike"], {})
+            side_key = "ce_ltp" if "CE" in r["action"] else "pe_ltp"
+            ltp = strike_data.get(side_key) or 0
+            entry = r["entry_price"]
+            qty = r["qty"]
+            pnl_rupees = round((ltp - entry) * qty, 2) if ltp > 0 else 0
+            pnl_pct = round((ltp - entry) / entry * 100, 2) if ltp > 0 and entry > 0 else 0
+            out.append({
+                "id": r["id"], "ltp": ltp, "entry": entry, "qty": qty,
+                "pnl_rupees": pnl_rupees, "pnl_pct": pnl_pct, "ts": ts,
+            })
+        return {"prices": out, "ts": ts}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/scalper/trades/{trade_id}/ticks")
+async def scalper_trade_ticks(trade_id: int, limit: int = 500):
+    """Tick history for one scalper trade (live LTP samples)."""
+    try:
+        import scalper_mode
+        return {"trade_id": trade_id, "ticks": scalper_mode.get_trade_ticks(trade_id, limit=limit)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/scalper/trades/{trade_id}/exit")
+async def scalper_manual_exit(trade_id: int, body: dict = None):
+    """Manually exit an open scalper trade at current/given LTP."""
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        import scalper_mode
+        body = body or {}
+        # Resolve current LTP from chain if not provided
+        ltp = body.get("ltp")
+        if not ltp or ltp <= 0:
+            # Look up trade to find strike + side
+            conn = scalper_mode._conn()
+            row = conn.execute(
+                "SELECT idx, strike, action, current_ltp FROM scalper_trades WHERE id=?",
+                (trade_id,)
+            ).fetchone()
+            conn.close()
+            if not row:
+                return JSONResponse({"error": "Trade not found"}, status_code=404)
+            chain = engine.chains.get(row["idx"], {})
+            strike_data = chain.get(row["strike"], {})
+            side_key = "ce_ltp" if "CE" in row["action"] else "pe_ltp"
+            ltp = strike_data.get(side_key) or row["current_ltp"] or 0
+        return scalper_mode.manual_exit(trade_id, current_ltp=float(ltp))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/scalper/config")
 async def scalper_config_get():
     """Get user-configurable scalper settings (capital, qty, SL/T1/T2, threshold)."""
