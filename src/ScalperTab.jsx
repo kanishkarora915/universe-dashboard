@@ -15,6 +15,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createChart, LineSeries } from "lightweight-charts";
+import SmartSLLadder from "./components/SmartSLLadder";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -138,6 +139,23 @@ export default function ScalperTab() {
     await fullLoad();
   };
 
+  // Smart SL toggle state
+  const [smartSL, setSmartSL] = useState(null);
+  useEffect(() => {
+    const fetchSL = async () => {
+      const r = await safeFetch("/api/scalper/smart-sl", null);
+      if (r && !r.error) setSmartSL(r);
+    };
+    fetchSL();
+    const iv = setInterval(fetchSL, 10000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const toggleSmartSL = async () => {
+    const r = await postJSON("/api/scalper/smart-sl/toggle", {});
+    if (r && r.config) setSmartSL(prev => ({ ...prev, ...r.config }));
+  };
+
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
   const closedToday = closedTrades.filter(t => (t.entry_time || "").startsWith(today));
   const todayPnl = closedToday.reduce((s, t) => s + (t.pnl_rupees || 0), 0);
@@ -153,10 +171,19 @@ export default function ScalperTab() {
           <div>
             <div style={{ color: ORANGE, fontSize: 15, fontWeight: 900 }}>⚡ SCALPER MODE — Independent</div>
             <div style={{ color: "#777", fontSize: 11, marginTop: 2 }}>
-              Own capital, own qty, own P&L · Live tick LTP (1s refresh) · Manual exit available
+              Own capital · Live tick LTP (1s) · Manual exit · Smart SL toggle
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            {/* Smart SL Toggle */}
+            <button onClick={toggleSmartSL} style={{
+              background: smartSL?.enabled ? GREEN + "22" : "#222",
+              color: smartSL?.enabled ? GREEN : "#888",
+              border: `1px solid ${smartSL?.enabled ? GREEN : BORDER}`,
+              padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
+            }}>
+              🛡️ Smart SL: {smartSL?.enabled ? "ON" : "OFF"}
+            </button>
             <div style={{
               background: status?.enabled ? GREEN + "22" : "#333",
               color: status?.enabled ? GREEN : "#888",
@@ -448,6 +475,20 @@ function ScalperTradeCard({ t, livePrice, isExpanded, onToggleExpand, onManualEx
           {!isOpen && t.exit_reason && (
             <Section title="🚪 EXIT LOGIC — kyu nikla">
               <div style={{ color: "#ccc", fontSize: 11, lineHeight: 1.5 }}>{t.exit_reason}</div>
+            </Section>
+          )}
+
+          {/* SMART SL LADDER (visible only for OPEN trades) */}
+          {isOpen && (
+            <Section title="🛡️ SMART SL LADDER">
+              <SmartSLLadder
+                tradeId={t.id}
+                entry={t.entry_price}
+                action={t.action}
+                currentLtp={cur}
+                entrySpot={t.entry_spot}
+                currentSpot={null}
+              />
             </Section>
           )}
 

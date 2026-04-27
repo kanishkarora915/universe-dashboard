@@ -897,6 +897,98 @@ async def scalper_stats():
         return {"error": str(e)}
 
 
+@app.get("/api/scalper/smart-sl")
+async def scalper_smart_sl_get():
+    """Get Smart SL config (enabled, spot_anchor_pct) + ladder structure."""
+    try:
+        import scalper_mode
+        cfg = scalper_mode.get_smart_sl_config()
+        return {
+            **cfg,
+            "ladder": [
+                {"stage": i, "trigger_pct": t, "sl_offset_pct": s, "label": l}
+                for i, (t, s, l) in enumerate(scalper_mode.SMART_SL_LADDER)
+            ],
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/scalper/smart-sl/toggle")
+async def scalper_smart_sl_toggle():
+    """Flip Smart SL ON/OFF. Takes effect on next tick — no trade disruption."""
+    try:
+        import scalper_mode
+        cur = scalper_mode.get_smart_sl_config()
+        new = scalper_mode.set_smart_sl_config(enabled=(not cur["enabled"]))
+        return {"ok": True, "enabled": new["enabled"], "config": new}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/scalper/smart-sl/config")
+async def scalper_smart_sl_set(body: dict):
+    """Set Smart SL fields explicitly: {enabled, spot_anchor_pct}."""
+    try:
+        import scalper_mode
+        new = scalper_mode.set_smart_sl_config(
+            enabled=body.get("enabled"),
+            spot_anchor_pct=body.get("spot_anchor_pct"),
+        )
+        return {"ok": True, "config": new}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/scalper/trades/{trade_id}/ladder")
+async def scalper_trade_ladder(trade_id: int):
+    """Live ladder progress for one open trade — for UI rendering."""
+    try:
+        import scalper_mode
+        conn = scalper_mode._conn()
+        row = conn.execute(
+            "SELECT entry_price, current_ltp, smart_sl_stage, smart_sl_value, entry_spot, idx, action FROM scalper_trades WHERE id=?",
+            (trade_id,)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return JSONResponse({"error": "Trade not found"}, status_code=404)
+        cfg = scalper_mode.get_smart_sl_config()
+        ladder = scalper_mode.get_ladder_progress(
+            row["entry_price"],
+            row["current_ltp"] or row["entry_price"],
+            current_stage_saved=row["smart_sl_stage"] or 0,
+        )
+        return {
+            "trade_id": trade_id,
+            "entry_price": row["entry_price"],
+            "current_ltp": row["current_ltp"],
+            "current_stage": row["smart_sl_stage"] or 0,
+            "active_sl": row["smart_sl_value"] or row["entry_price"] * 0.85,
+            "entry_spot": row["entry_spot"],
+            "spot_anchor_pct": cfg["spot_anchor_pct"],
+            "smart_sl_enabled": cfg["enabled"],
+            "ladder": ladder,
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.delete("/api/scalper/trades/{trade_id}")
+async def scalper_delete_trade(trade_id: int):
+    """USER-ONLY manual delete. No auto-deletion happens system-wide."""
+    try:
+        import scalper_mode
+        conn = scalper_mode._conn()
+        conn.execute("DELETE FROM scalper_ticks WHERE trade_id=?", (trade_id,))
+        cur = conn.execute("DELETE FROM scalper_trades WHERE id=?", (trade_id,))
+        conn.commit()
+        conn.close()
+        return {"ok": True, "deleted": cur.rowcount}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/scalper/capital-usage")
 async def scalper_capital_usage():
     """Live capital usage breakdown — committed, available, unrealized P&L.

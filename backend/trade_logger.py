@@ -276,12 +276,8 @@ def init_trades_db(db_path):
 
     conn.commit()
     conn.close()
-    # Purge very old trades (>90 days)
-    cutoff = (ist_now() - timedelta(days=90)).isoformat()
-    conn = sqlite3.connect(db_path)
-    conn.execute("DELETE FROM trades WHERE entry_time < ? AND status != 'OPEN'", (cutoff,))
-    conn.commit()
-    conn.close()
+    # NOTE: Auto-pruning of old trades DISABLED per user request.
+    # All trade data persists forever — only user can manually delete.
     print(f"[TRADES] Database initialized at {db_path}")
     _cleanup_invalid_trades()
 

@@ -9,98 +9,291 @@ const ORANGE = "#FF9F0A";
 const BORDER = "#1E1E2E";
 
 // ── PnL PDF Export ──
-function exportPnLPDF(title, statsData, trades, dailyBreakdown) {
+// ════════════════════════════════════════════════════════════
+// PROFESSIONAL PDF EXPORT — Daily / Weekly / Monthly
+// Includes: Entry/Exit/SL times, Quantity, WHY entry/exit/SL,
+//          Date+Time, Total PnL, full trade audit trail.
+// ════════════════════════════════════════════════════════════
+
+function exportPnLPDF(title, statsData, trades, dailyBreakdown, period = "DAILY") {
   const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   const s = statsData || {};
+  const safeTrades = Array.isArray(trades) ? trades : [];
   const fmtR = (n) => `${(n || 0) >= 0 ? "+" : ""}${Math.round(n || 0).toLocaleString("en-IN")}`;
+  const fmtTime = (iso) => {
+    if (!iso) return "—";
+    try {
+      return new Date(iso).toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true,
+      });
+    } catch { return iso; }
+  };
+
+  // Compute aggregates from actual trade data
+  const closedTrades = safeTrades.filter(t => t.status !== "OPEN");
+  const winTrades = closedTrades.filter(t => t.status === "T1_HIT" || t.status === "T2_HIT" || t.status === "TRAIL_EXIT");
+  const lossTrades = closedTrades.filter(t => t.status === "SL_HIT" || t.status === "REVERSAL_EXIT");
+  const beTrades = closedTrades.filter(t => t.status === "BREAKEVEN_EXIT");
+  const totalPnl = closedTrades.reduce((sum, t) => sum + (t.pnl_rupees || 0), 0);
+  const totalQty = closedTrades.reduce((sum, t) => sum + (t.qty || 0), 0);
+  const totalCapital = closedTrades.reduce((sum, t) => sum + ((t.entry_price || 0) * (t.qty || 0)), 0);
+  const winPnl = winTrades.reduce((sum, t) => sum + (t.pnl_rupees || 0), 0);
+  const lossPnl = lossTrades.reduce((sum, t) => sum + (t.pnl_rupees || 0), 0);
+  const avgWin = winTrades.length ? winPnl / winTrades.length : 0;
+  const avgLoss = lossTrades.length ? lossPnl / lossTrades.length : 0;
+  const winRate = closedTrades.length ? (winTrades.length / closedTrades.length * 100) : 0;
+  const bestTrade = closedTrades.reduce((best, t) => (t.pnl_rupees || 0) > (best?.pnl_rupees || -Infinity) ? t : best, null);
+  const worstTrade = closedTrades.reduce((worst, t) => (t.pnl_rupees || 0) < (worst?.pnl_rupees || Infinity) ? t : worst, null);
+  const roi = totalCapital > 0 ? (totalPnl / totalCapital * 100) : 0;
 
   let html = `
-    <h1 style="margin-bottom:2px">UNIVERSE — ${title}</h1>
-    <div style="font-size:11px;color:#888;margin-bottom:16px">Generated: ${now} IST</div>
+    <div style="border-bottom:3px solid #1a8a2e;padding-bottom:12px;margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-end">
+        <div>
+          <div style="font-size:11px;color:#888;letter-spacing:2px;font-weight:700">UNIVERSE TRADING SYSTEM</div>
+          <h1 style="margin:4px 0 0 0;font-size:24px;color:#111">${title}</h1>
+          <div style="font-size:10px;color:#888;margin-top:4px">${period} REPORT · Generated ${now} IST</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:9px;color:#888;letter-spacing:1px">TOTAL P&L</div>
+          <div style="font-size:32px;font-weight:900;color:${totalPnl >= 0 ? '#1a8a2e' : '#cc2020'};line-height:1">
+            ₹${fmtR(totalPnl)}
+          </div>
+          <div style="font-size:11px;color:${roi >= 0 ? '#1a8a2e' : '#cc2020'};font-weight:600">
+            ROI: ${roi >= 0 ? '+' : ''}${roi.toFixed(2)}% on ₹${fmtR(totalCapital)} deployed
+          </div>
+        </div>
+      </div>
+    </div>
   `;
 
-  // Stats Summary
-  if (s.total > 0) {
-    html += `<h2>Performance Summary</h2>
-    <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap">
-      <div style="background:#f8f8f8;border-radius:8px;padding:10px 16px;text-align:center;flex:1;min-width:80px"><div style="font-size:9px;color:#888;text-transform:uppercase">Total Trades</div><div style="font-size:18px;font-weight:900">${s.total}</div></div>
-      <div style="background:#f8f8f8;border-radius:8px;padding:10px 16px;text-align:center;flex:1;min-width:80px"><div style="font-size:9px;color:#888;text-transform:uppercase">Wins</div><div style="font-size:18px;font-weight:900;color:#1a8a2e">${s.wins}</div></div>
-      <div style="background:#f8f8f8;border-radius:8px;padding:10px 16px;text-align:center;flex:1;min-width:80px"><div style="font-size:9px;color:#888;text-transform:uppercase">Losses</div><div style="font-size:18px;font-weight:900;color:#cc2020">${s.losses}</div></div>
-      <div style="background:#f8f8f8;border-radius:8px;padding:10px 16px;text-align:center;flex:1;min-width:80px"><div style="font-size:9px;color:#888;text-transform:uppercase">Stop Hunts</div><div style="font-size:18px;font-weight:900;color:#7c3aed">${s.stopHunts || 0}</div></div>
-      <div style="background:#f8f8f8;border-radius:8px;padding:10px 16px;text-align:center;flex:1;min-width:80px"><div style="font-size:9px;color:#888;text-transform:uppercase">Win Rate</div><div style="font-size:18px;font-weight:900;color:${s.winRate >= 60 ? '#1a8a2e' : '#cc2020'}">${s.winRate}%</div></div>
+  // ─── KEY METRICS GRID ───
+  html += `<h2 style="font-size:13px;color:#333;margin-top:0;border-bottom:1px solid #eee;padding-bottom:4px">📊 Performance Summary</h2>
+  <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:18px">
+    <div style="background:#f8f8f8;border-radius:8px;padding:10px;text-align:center">
+      <div style="font-size:8px;color:#888;text-transform:uppercase;letter-spacing:0.5px">Total Trades</div>
+      <div style="font-size:20px;font-weight:900;color:#111">${closedTrades.length}</div>
     </div>
-    <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap">
-      <div style="background:${s.totalPnl >= 0 ? '#e8ffe8' : '#ffe8e8'};border-radius:8px;padding:12px 20px;text-align:center;flex:1"><div style="font-size:9px;color:#888;text-transform:uppercase">Total P&L</div><div style="font-size:22px;font-weight:900;color:${s.totalPnl >= 0 ? '#1a8a2e' : '#cc2020'}">₹${fmtR(s.totalPnl)}</div></div>
-      <div style="background:#f8f8f8;border-radius:8px;padding:12px 20px;text-align:center;flex:1"><div style="font-size:9px;color:#888;text-transform:uppercase">Avg Win</div><div style="font-size:16px;font-weight:700;color:#1a8a2e">₹${fmtR(s.avgWin)}</div></div>
-      <div style="background:#f8f8f8;border-radius:8px;padding:12px 20px;text-align:center;flex:1"><div style="font-size:9px;color:#888;text-transform:uppercase">Avg Loss</div><div style="font-size:16px;font-weight:700;color:#cc2020">₹${fmtR(s.avgLoss)}</div></div>
-    </div>`;
-  }
+    <div style="background:#e8ffe8;border-radius:8px;padding:10px;text-align:center">
+      <div style="font-size:8px;color:#1a8a2e;text-transform:uppercase">Wins</div>
+      <div style="font-size:20px;font-weight:900;color:#1a8a2e">${winTrades.length}</div>
+    </div>
+    <div style="background:#ffe8e8;border-radius:8px;padding:10px;text-align:center">
+      <div style="font-size:8px;color:#cc2020;text-transform:uppercase">Losses</div>
+      <div style="font-size:20px;font-weight:900;color:#cc2020">${lossTrades.length}</div>
+    </div>
+    <div style="background:#fff5e0;border-radius:8px;padding:10px;text-align:center">
+      <div style="font-size:8px;color:#cc7a00;text-transform:uppercase">Breakevens</div>
+      <div style="font-size:20px;font-weight:900;color:#cc7a00">${beTrades.length}</div>
+    </div>
+    <div style="background:#f0f0ff;border-radius:8px;padding:10px;text-align:center">
+      <div style="font-size:8px;color:#3333aa;text-transform:uppercase">Win Rate</div>
+      <div style="font-size:20px;font-weight:900;color:${winRate >= 60 ? '#1a8a2e' : winRate >= 40 ? '#cc7a00' : '#cc2020'}">${winRate.toFixed(1)}%</div>
+    </div>
+    <div style="background:#f8f8f8;border-radius:8px;padding:10px;text-align:center">
+      <div style="font-size:8px;color:#888;text-transform:uppercase">Total Qty</div>
+      <div style="font-size:20px;font-weight:900;color:#111">${totalQty.toLocaleString("en-IN")}</div>
+    </div>
+  </div>
 
-  // Daily breakdown
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:18px">
+    <div style="background:#f8f8f8;border-radius:8px;padding:10px">
+      <div style="font-size:8px;color:#888;text-transform:uppercase">Avg Win</div>
+      <div style="font-size:14px;font-weight:700;color:#1a8a2e">₹${fmtR(avgWin)}</div>
+    </div>
+    <div style="background:#f8f8f8;border-radius:8px;padding:10px">
+      <div style="font-size:8px;color:#888;text-transform:uppercase">Avg Loss</div>
+      <div style="font-size:14px;font-weight:700;color:#cc2020">₹${fmtR(avgLoss)}</div>
+    </div>
+    <div style="background:#f8f8f8;border-radius:8px;padding:10px">
+      <div style="font-size:8px;color:#888;text-transform:uppercase">Best Trade</div>
+      <div style="font-size:14px;font-weight:700;color:#1a8a2e">₹${fmtR(bestTrade?.pnl_rupees || 0)}</div>
+      <div style="font-size:9px;color:#888">${bestTrade ? `${bestTrade.idx} ${bestTrade.action} ${bestTrade.strike}` : "—"}</div>
+    </div>
+    <div style="background:#f8f8f8;border-radius:8px;padding:10px">
+      <div style="font-size:8px;color:#888;text-transform:uppercase">Worst Trade</div>
+      <div style="font-size:14px;font-weight:700;color:#cc2020">₹${fmtR(worstTrade?.pnl_rupees || 0)}</div>
+      <div style="font-size:9px;color:#888">${worstTrade ? `${worstTrade.idx} ${worstTrade.action} ${worstTrade.strike}` : "—"}</div>
+    </div>
+  </div>`;
+
+  // ─── DAILY BREAKDOWN (for weekly/monthly) ───
   if (dailyBreakdown && Object.keys(dailyBreakdown).length > 0) {
-    html += `<h2>Daily Breakdown</h2>
-    <table><tr><th>Date</th><th>Trades</th><th>Wins</th><th>Losses</th><th>P&L</th></tr>`;
-    for (const [day, d] of Object.entries(dailyBreakdown).sort()) {
+    html += `<h2 style="font-size:13px;color:#333;margin-top:18px;border-bottom:1px solid #eee;padding-bottom:4px">📅 Daily Breakdown</h2>
+    <table style="margin-bottom:16px">
+      <thead><tr><th>Date</th><th style="text-align:right">Trades</th><th style="text-align:right">Wins</th><th style="text-align:right">Losses</th><th style="text-align:right">Win %</th><th style="text-align:right">P&L</th></tr></thead>
+      <tbody>`;
+    for (const [day, d] of Object.entries(dailyBreakdown).sort().reverse()) {
       const cls = d.pnl >= 0 ? 'class="pos"' : 'class="neg"';
-      html += `<tr><td><strong>${day}</strong></td><td>${d.trades}</td><td class="pos">${d.wins}</td><td class="neg">${d.losses}</td><td ${cls} style="font-weight:700">₹${fmtR(d.pnl)}</td></tr>`;
+      const wr = d.trades ? Math.round((d.wins / d.trades) * 100) : 0;
+      html += `<tr>
+        <td><strong>${day}</strong></td>
+        <td style="text-align:right">${d.trades}</td>
+        <td style="text-align:right" class="pos">${d.wins}</td>
+        <td style="text-align:right" class="neg">${d.losses}</td>
+        <td style="text-align:right">${wr}%</td>
+        <td style="text-align:right;font-weight:700" ${cls}>₹${fmtR(d.pnl)}</td>
+      </tr>`;
     }
-    html += `</table>`;
+    html += `</tbody></table>`;
   }
 
-  // Trade Details
-  if (trades && trades.length > 0) {
-    html += `<h2>Trade Details (${trades.length} trades)</h2>`;
-    for (const t of trades) {
-      const isWin = t.status === "T1_HIT" || t.status === "T2_HIT";
-      const isHunt = t.status === "STOP_HUNTED";
-      const borderColor = isWin ? "#1a8a2e" : isHunt ? "#7c3aed" : t.status === "SL_HIT" ? "#cc2020" : "#ddd";
-      const time = t.entry_time ? new Date(t.entry_time).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: true, day: "2-digit", month: "short" }) : "";
-      const exitTime = t.exit_time ? new Date(t.exit_time).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: true }) : "";
+  // ─── INDIVIDUAL TRADE DETAILS ───
+  if (closedTrades.length > 0) {
+    html += `<h2 style="font-size:13px;color:#333;margin-top:18px;border-bottom:1px solid #eee;padding-bottom:4px">📋 Trade-by-Trade Audit Trail (${closedTrades.length} trades)</h2>`;
 
-      html += `<div style="border:1px solid ${borderColor};border-radius:8px;padding:12px;margin-bottom:10px;${isWin ? 'background:#f0fff0' : isHunt ? 'background:#f5f0ff' : t.status === 'SL_HIT' ? 'background:#fff0f0' : ''}">`;
-      html += `<div style="display:flex;justify-content:space-between;margin-bottom:8px">
-        <div><strong>${t.idx}</strong> <span style="color:${t.action?.includes('CE') ? '#1a8a2e' : '#cc2020'};font-weight:700">${t.action}</span> <strong>${t.strike}</strong> <span style="background:${borderColor}22;color:${borderColor};padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700">${t.status}</span></div>
-        <div style="text-align:right"><div style="font-size:16px;font-weight:900;color:${(t.pnl_rupees || 0) >= 0 ? '#1a8a2e' : '#cc2020'}">₹${fmtR(t.pnl_rupees)} (${(t.pnl_pts || 0) > 0 ? '+' : ''}${(t.pnl_pts || 0).toFixed(1)} pts)</div></div>
+    for (let i = 0; i < closedTrades.length; i++) {
+      const t = closedTrades[i];
+      const isWin = ["T1_HIT", "T2_HIT", "TRAIL_EXIT"].includes(t.status);
+      const isLoss = ["SL_HIT", "REVERSAL_EXIT"].includes(t.status);
+      const isBE = t.status === "BREAKEVEN_EXIT";
+      const isManual = t.status === "MANUAL_EXIT";
+      const borderColor = isWin ? "#1a8a2e" : isLoss ? "#cc2020" : isBE ? "#cc7a00" : isManual ? "#7c3aed" : "#888";
+      const bgColor = isWin ? "#f0fff0" : isLoss ? "#fff0f0" : isBE ? "#fffbf0" : isManual ? "#f8f0ff" : "#fafafa";
+
+      // Hold duration
+      let holdStr = "—";
+      if (t.entry_time && t.exit_time) {
+        try {
+          const diff = (new Date(t.exit_time) - new Date(t.entry_time)) / 1000;
+          const mins = Math.floor(diff / 60), secs = Math.floor(diff % 60);
+          holdStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+        } catch {}
+      }
+
+      const pnlPct = t.entry_price > 0 ? ((t.exit_price || t.entry_price) - t.entry_price) / t.entry_price * 100 : 0;
+
+      html += `
+      <div style="border:2px solid ${borderColor};border-radius:8px;padding:14px;margin-bottom:12px;background:${bgColor};page-break-inside:avoid">
+        <!-- Header row -->
+        <div style="display:flex;justify-content:space-between;margin-bottom:10px;border-bottom:1px solid ${borderColor}33;padding-bottom:8px">
+          <div>
+            <div style="font-size:9px;color:#888;letter-spacing:0.5px">TRADE #${t.id || i+1}</div>
+            <div style="font-size:16px;font-weight:900;color:#111;margin-top:2px">
+              <span>${t.idx}</span>
+              <span style="color:${t.action?.includes('CE') ? '#1a8a2e' : '#cc2020'};margin-left:8px">${t.action}</span>
+              <span style="margin-left:8px">${t.strike}</span>
+              <span style="background:${borderColor};color:#fff;padding:3px 10px;border-radius:4px;font-size:10px;font-weight:700;margin-left:8px">${t.status}</span>
+            </div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:9px;color:#888">P&L</div>
+            <div style="font-size:22px;font-weight:900;color:${(t.pnl_rupees || 0) >= 0 ? '#1a8a2e' : '#cc2020'};line-height:1">
+              ₹${fmtR(t.pnl_rupees)}
+            </div>
+            <div style="font-size:10px;color:${pnlPct >= 0 ? '#1a8a2e' : '#cc2020'};font-weight:600">
+              ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}% · ${(t.pnl_pts || 0) >= 0 ? '+' : ''}${(t.pnl_pts || 0).toFixed(1)} pts
+            </div>
+          </div>
+        </div>
+
+        <!-- Times grid -->
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px;font-size:10px">
+          <div style="background:#fff;border:1px solid #ddd;border-radius:4px;padding:6px 8px">
+            <div style="font-size:8px;color:#888;letter-spacing:0.5px">⏱ ENTRY TIME</div>
+            <div style="color:#111;font-weight:600">${fmtTime(t.entry_time)}</div>
+          </div>
+          <div style="background:#fff;border:1px solid #ddd;border-radius:4px;padding:6px 8px">
+            <div style="font-size:8px;color:#888;letter-spacing:0.5px">⏱ EXIT TIME</div>
+            <div style="color:#111;font-weight:600">${fmtTime(t.exit_time)}</div>
+          </div>
+          <div style="background:#fff;border:1px solid #ddd;border-radius:4px;padding:6px 8px">
+            <div style="font-size:8px;color:#888;letter-spacing:0.5px">⏳ HELD FOR</div>
+            <div style="color:#111;font-weight:600">${holdStr}</div>
+          </div>
+        </div>
+
+        <!-- Price levels grid -->
+        <table style="margin-bottom:10px;font-size:10px">
+          <thead><tr style="background:#fff">
+            <th>ENTRY</th><th>EXIT</th><th>SL</th><th>T1</th><th>T2</th><th>QUANTITY</th><th>CAPITAL USED</th>
+          </tr></thead>
+          <tbody><tr>
+            <td>₹${(t.entry_price || 0).toFixed(2)}</td>
+            <td><strong>₹${(t.exit_price || t.current_ltp || 0).toFixed(2)}</strong></td>
+            <td style="color:#cc2020">₹${t.sl_price || "—"}</td>
+            <td style="color:#1a8a2e">₹${t.t1_price || "—"}</td>
+            <td style="color:#1a8a2e">₹${t.t2_price || "—"}</td>
+            <td><strong>${(t.lots || 0)}L × ${t.lot_size || 0} = ${(t.qty || 0).toLocaleString("en-IN")}</strong></td>
+            <td><strong>₹${fmtR((t.entry_price || 0) * (t.qty || 0))}</strong></td>
+          </tr></tbody>
+        </table>
+
+        <!-- Why Entry -->
+        <div style="background:#fff;border-left:3px solid #0a84ff;padding:8px 12px;margin-bottom:6px;border-radius:4px">
+          <div style="font-size:9px;color:#0a84ff;font-weight:700;letter-spacing:0.5px;margin-bottom:3px">🎯 WHY ENTRY (engine logic)</div>
+          <div style="font-size:11px;color:#333;line-height:1.4">
+            ${t.entry_reasoning || t.reason || `Verdict-based entry. Probability: ${t.probability || 0}%. Source: ${t.source || 'verdict'}.`}
+          </div>
+          ${t.entry_bull_pct || t.entry_bear_pct ? `
+            <div style="font-size:10px;color:#888;margin-top:4px">
+              Bull: <strong style="color:#1a8a2e">${Math.round(t.entry_bull_pct || 0)}%</strong>
+              · Bear: <strong style="color:#cc2020">${Math.round(t.entry_bear_pct || 0)}%</strong>
+              ${t.entry_spot ? ` · Spot @ entry: <strong>${t.entry_spot}</strong>` : ''}
+            </div>
+          ` : ''}
+        </div>
+
+        <!-- Why Exit -->
+        <div style="background:#fff;border-left:3px solid ${borderColor};padding:8px 12px;margin-bottom:6px;border-radius:4px">
+          <div style="font-size:9px;color:${borderColor};font-weight:700;letter-spacing:0.5px;margin-bottom:3px">🚪 WHY EXIT</div>
+          <div style="font-size:11px;color:#333;line-height:1.4">
+            ${t.exit_reason || `Closed at ₹${t.exit_price} via ${t.status}.`}
+          </div>
+        </div>
+
+        <!-- Why SL (if SL_HIT) -->
+        ${(isLoss || t.sl_reason) ? `
+          <div style="background:#fff;border-left:3px solid #cc2020;padding:8px 12px;border-radius:4px">
+            <div style="font-size:9px;color:#cc2020;font-weight:700;letter-spacing:0.5px;margin-bottom:3px">🛑 WHY STOPLOSS</div>
+            <div style="font-size:11px;color:#333;line-height:1.4">
+              ${t.sl_reason || `Stoploss at ₹${t.sl_price} hit. Original entry ₹${t.entry_price}. Loss = ${(((t.exit_price || t.sl_price) - t.entry_price) / t.entry_price * 100).toFixed(1)}%.`}
+            </div>
+            ${t.sl_hit_time ? `
+              <div style="font-size:10px;color:#888;margin-top:4px">
+                ⏱ SL hit time: <strong>${fmtTime(t.sl_hit_time)}</strong>
+              </div>
+            ` : ''}
+            ${t.smart_sl_stage !== null && t.smart_sl_stage !== undefined ? `
+              <div style="font-size:10px;color:#888;margin-top:2px">
+                Smart SL stage: <strong>${t.smart_sl_stage}</strong> · Active SL: <strong>₹${t.smart_sl_value || t.sl_price}</strong>
+              </div>
+            ` : ''}
+          </div>
+        ` : ''}
       </div>`;
-      html += `<table style="width:auto;margin-bottom:6px"><tr>
-        <td><strong>Entry:</strong> ₹${t.entry_price}</td>
-        <td><strong>Exit:</strong> ₹${t.exit_price || t.current_ltp || '-'}</td>
-        <td><strong>SL:</strong> ₹${t.sl_price}</td>
-        <td><strong>T1:</strong> ₹${t.t1_price}</td>
-        <td><strong>T2:</strong> ₹${t.t2_price}</td>
-        <td><strong>Qty:</strong> ${t.lots}L × ${t.lot_size} = ${t.qty}</td>
-      </tr></table>`;
-      html += `<div style="font-size:10px;color:#888">Entry: ${time}${exitTime ? ' → Exit: ' + exitTime : ''} | Probability: ${t.probability}% | Source: ${t.source || 'verdict'}</div>`;
-      if (t.exit_reason) {
-        html += `<div style="margin-top:6px;padding:6px 10px;background:${borderColor}11;border-radius:4px;color:${borderColor};font-size:11px;font-weight:600">${t.exit_reason}</div>`;
-      }
-      if (isHunt && t.reversal_price > 0) {
-        html += `<div style="margin-top:4px;padding:6px 10px;background:#7c3aed11;border-radius:4px;color:#7c3aed;font-size:11px">Stop Hunt: Price reversed to ₹${t.reversal_price} after institutional SL flush</div>`;
-      }
-      html += `</div>`;
     }
   }
 
-  // Footer
-  html += `<hr style="border:none;border-top:2px solid #ddd;margin:20px 0">
-    <div style="text-align:center;font-size:10px;color:#aaa">UNIVERSE PnL Report | ${now} IST | Nifty: 20L×65=1300 | BankNifty: 20L×30=600 | SL: 15% max</div>`;
+  // ─── FOOTER ───
+  html += `
+    <hr style="border:none;border-top:2px solid #ddd;margin:20px 0">
+    <div style="text-align:center;font-size:10px;color:#aaa;line-height:1.6">
+      <strong>UNIVERSE PnL ${period} REPORT</strong> · Generated ${now} IST<br>
+      ${closedTrades.length} closed trades · Total deployed capital: ₹${fmtR(totalCapital)} · Net P&L: ₹${fmtR(totalPnl)} (${roi.toFixed(2)}% ROI)<br>
+      <em>This is a paper-trading audit log. All times in IST.</em>
+    </div>
+  `;
 
-  const win = window.open("", "_blank", "width=900,height=700");
+  // Open print window
+  const win = window.open("", "_blank", "width=1100,height=800");
   win.document.write(`<html><head><title>${title}</title>
     <style>
-      body { font-family: -apple-system, sans-serif; padding: 24px; margin: 0; color: #111; }
+      @page { margin: 15mm; size: A4 portrait; }
+      body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 20px; margin: 0; color: #111; max-width: 900px; }
       h1 { font-size: 20px; margin-bottom: 4px; }
-      h2 { font-size: 14px; color: #555; margin-top: 20px; border-bottom: 2px solid #eee; padding-bottom: 4px; }
+      h2 { font-size: 14px; color: #555; margin-top: 18px; }
       table { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 16px; }
       th { background: #f5f5f5; padding: 6px 8px; text-align: left; font-weight: 700; border-bottom: 2px solid #ddd; }
       td { padding: 5px 8px; border-bottom: 1px solid #eee; }
       .pos { color: #1a8a2e; font-weight: 600; }
       .neg { color: #cc2020; font-weight: 600; }
-      @media print { body { padding: 12px; } }
+      @media print { body { padding: 0; } div { page-break-inside: avoid; } }
     </style>
   </head><body>${html}</body></html>`);
   win.document.close();
-  setTimeout(() => win.print(), 500);
+  setTimeout(() => win.print(), 800);
 }
 
 const statusColor = { OPEN: ACCENT, T1_HIT: GREEN, T2_HIT: GREEN, SL_HIT: RED, STOP_HUNTED: PURPLE };
@@ -173,30 +366,78 @@ export default function PnLTracker() {
       <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
         <button onClick={() => {
           const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-          fetch(`/api/trades/date/${today}`).then(r => r.json()).then(trades => {
-            const wins = trades.filter(t => t.status === "T1_HIT" || t.status === "T2_HIT");
-            const losses = trades.filter(t => t.status === "SL_HIT");
-            const closed = trades.filter(t => t.status !== "OPEN");
-            const st = { total: trades.length, wins: wins.length, losses: losses.length, stopHunts: trades.filter(t => t.status === "STOP_HUNTED").length, winRate: closed.length ? Math.round(wins.length / closed.length * 100) : 0, totalPnl: closed.reduce((s, t) => s + (t.pnl_rupees || 0), 0), avgWin: wins.length ? wins.reduce((s, t) => s + t.pnl_rupees, 0) / wins.length : 0, avgLoss: losses.length ? losses.reduce((s, t) => s + t.pnl_rupees, 0) / losses.length : 0 };
-            exportPnLPDF(`Daily PnL Report — ${today}`, st, trades, null);
-          }).catch(() => {});
+          // Fetch BOTH main + scalper trades for today (independent systems but unified report)
+          Promise.all([
+            fetch(`/api/trades/date/${today}`).then(r => r.json()).catch(() => []),
+            fetch(`/api/scalper/trades/closed?days=1`).then(r => r.json()).catch(() => []),
+          ]).then(([mainT, scalperT]) => {
+            const allMain = Array.isArray(mainT) ? mainT.map(t => ({ ...t, _source: "MAIN" })) : [];
+            const todayScalper = (Array.isArray(scalperT) ? scalperT : [])
+              .filter(t => (t.entry_time || "").startsWith(today))
+              .map(t => ({ ...t, _source: "SCALPER" }));
+            const trades = [...allMain, ...todayScalper];
+            exportPnLPDF(`Daily PnL Report — ${today}`, null, trades, null, "DAILY");
+          });
         }} style={{ background: ORANGE + "22", color: ORANGE, border: `1px solid ${ORANGE}44`, borderRadius: 8, padding: "5px 12px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
-          Export Today
+          📄 Export Daily
         </button>
         <button onClick={() => {
-          fetch("/api/trades/closed").then(r => r.json()).then(trades => {
-            exportPnLPDF("Weekly PnL Report (Last 7 Days)", stats, trades, null);
-          }).catch(() => {});
+          // Last 7 days
+          Promise.all([
+            fetch("/api/trades/closed?days=7").then(r => r.json()).catch(() => []),
+            fetch("/api/scalper/trades/closed?days=7").then(r => r.json()).catch(() => []),
+          ]).then(([mainT, scalperT]) => {
+            const trades = [
+              ...(Array.isArray(mainT) ? mainT.map(t => ({ ...t, _source: "MAIN" })) : []),
+              ...(Array.isArray(scalperT) ? scalperT.map(t => ({ ...t, _source: "SCALPER" })) : []),
+            ];
+            // Build daily breakdown
+            const daily = {};
+            trades.forEach(t => {
+              if (t.status === "OPEN") return;
+              const d = (t.entry_time || "").slice(0, 10);
+              if (!d) return;
+              if (!daily[d]) daily[d] = { trades: 0, wins: 0, losses: 0, pnl: 0 };
+              daily[d].trades++;
+              if (["T1_HIT", "T2_HIT", "TRAIL_EXIT"].includes(t.status)) daily[d].wins++;
+              else if (["SL_HIT", "REVERSAL_EXIT"].includes(t.status)) daily[d].losses++;
+              daily[d].pnl += (t.pnl_rupees || 0);
+            });
+            const today = new Date().toLocaleDateString("en-IN");
+            exportPnLPDF(`Weekly PnL Report (Last 7 Days as of ${today})`, null, trades, daily, "WEEKLY");
+          });
         }} style={{ background: ACCENT + "22", color: ACCENT, border: `1px solid ${ACCENT}44`, borderRadius: 8, padding: "5px 12px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
-          Export Weekly
+          📄 Export Weekly
         </button>
         <button onClick={() => {
           const [y, m] = selectedMonth.split("-");
-          fetch(`/api/trades/monthly/${y}/${m}`).then(r => r.json()).then(report => {
-            exportPnLPDF(`Monthly PnL Report — ${report.month}`, report.stats, report.trades, report.daily);
-          }).catch(() => {});
+          // Get all trades for month from both sources
+          const monthStart = `${y}-${m.padStart(2, "0")}-01`;
+          Promise.all([
+            fetch(`/api/trades/monthly/${y}/${m}`).then(r => r.json()).catch(() => ({ trades: [], daily: {} })),
+            fetch(`/api/scalper/trades/closed?days=35`).then(r => r.json()).catch(() => []),
+          ]).then(([mainReport, scalperT]) => {
+            const mainTrades = (mainReport?.trades || []).map(t => ({ ...t, _source: "MAIN" }));
+            const scalperTrades = (Array.isArray(scalperT) ? scalperT : [])
+              .filter(t => (t.entry_time || "").startsWith(`${y}-${m.padStart(2, "0")}`))
+              .map(t => ({ ...t, _source: "SCALPER" }));
+            const trades = [...mainTrades, ...scalperTrades];
+            // Merge daily breakdown
+            const daily = { ...(mainReport?.daily || {}) };
+            scalperTrades.forEach(t => {
+              if (t.status === "OPEN") return;
+              const d = (t.entry_time || "").slice(0, 10);
+              if (!d) return;
+              if (!daily[d]) daily[d] = { trades: 0, wins: 0, losses: 0, pnl: 0 };
+              daily[d].trades++;
+              if (["T1_HIT", "T2_HIT", "TRAIL_EXIT"].includes(t.status)) daily[d].wins++;
+              else if (["SL_HIT", "REVERSAL_EXIT"].includes(t.status)) daily[d].losses++;
+              daily[d].pnl += (t.pnl_rupees || 0);
+            });
+            exportPnLPDF(`Monthly PnL Report — ${selectedMonth}`, null, trades, daily, "MONTHLY");
+          });
         }} style={{ background: YELLOW + "22", color: YELLOW, border: `1px solid ${YELLOW}44`, borderRadius: 8, padding: "5px 12px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
-          Export Monthly
+          📄 Export Monthly
         </button>
       </div>
 

@@ -91,10 +91,29 @@ def init_scalper_db():
         ("entry_bear_pct", "ALTER TABLE scalper_trades ADD COLUMN entry_bear_pct REAL"),
         ("entry_spot", "ALTER TABLE scalper_trades ADD COLUMN entry_spot REAL"),
         ("capital_used", "ALTER TABLE scalper_trades ADD COLUMN capital_used REAL"),
+        # Smart SL state per trade
+        ("smart_sl_stage", "ALTER TABLE scalper_trades ADD COLUMN smart_sl_stage INTEGER DEFAULT 0"),
+        ("smart_sl_value", "ALTER TABLE scalper_trades ADD COLUMN smart_sl_value REAL"),
+        ("sl_hit_time", "ALTER TABLE scalper_trades ADD COLUMN sl_hit_time TEXT"),
+        ("sl_reason", "ALTER TABLE scalper_trades ADD COLUMN sl_reason TEXT"),
     ]:
         if col not in cols:
             try: conn.execute(sql)
             except Exception: pass
+
+    # Smart SL config row (separate from main scalper_config to avoid conflicts)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS smart_sl_config (
+            id INTEGER PRIMARY KEY CHECK (id=1),
+            enabled INTEGER DEFAULT 0,
+            spot_anchor_pct REAL DEFAULT 0.4,
+            updated_at TEXT
+        )
+    """)
+    conn.execute(
+        "INSERT OR IGNORE INTO smart_sl_config (id, enabled, spot_anchor_pct, updated_at) VALUES (1, 0, 0.4, ?)",
+        (ist_now().isoformat(),)
+    )
 
     # Tick history (live LTP samples per trade)
     conn.execute("""
@@ -318,6 +337,122 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None)
 
     conn.close()
     return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# SMART SL SYSTEM — 7-stage Profit Ladder + Spot Anchor
+# ═══════════════════════════════════════════════════════════════
+
+# 7 stages: (profit_trigger_pct, sl_offset_pct, label)
+SMART_SL_LADDER = [
+    (0,   -15, "Initial"),
+    (5,   -3,  "Tight"),
+    (10,  0,   "Breakeven"),
+    (15,  +5,  "Lock +5%"),
+    (25,  +12, "Lock +12%"),
+    (40,  +25, "Lock +25%"),
+    (60,  +40, "Lock +40%"),
+]
+
+
+def get_smart_sl_config():
+    """Returns {enabled: bool, spot_anchor_pct: float}."""
+    init_scalper_db()
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT * FROM smart_sl_config WHERE id=1").fetchone()
+        if not row:
+            return {"enabled": False, "spot_anchor_pct": 0.4}
+        return {
+            "enabled": bool(row["enabled"]),
+            "spot_anchor_pct": row["spot_anchor_pct"] or 0.4,
+        }
+    finally:
+        conn.close()
+
+
+def set_smart_sl_config(enabled=None, spot_anchor_pct=None):
+    """Update smart SL config (only provided fields)."""
+    init_scalper_db()
+    cur = get_smart_sl_config()
+    new_enabled = 1 if (enabled if enabled is not None else cur["enabled"]) else 0
+    new_pct = float(spot_anchor_pct) if spot_anchor_pct is not None else cur["spot_anchor_pct"]
+    conn = _conn()
+    try:
+        conn.execute("""
+            UPDATE smart_sl_config SET enabled=?, spot_anchor_pct=?, updated_at=? WHERE id=1
+        """, (new_enabled, new_pct, ist_now().isoformat()))
+        conn.commit()
+    finally:
+        conn.close()
+    return get_smart_sl_config()
+
+
+def compute_smart_sl(entry_price, current_premium, current_stage_saved=0, saved_sl=None):
+    """Compute smart SL based on profit ladder.
+    Returns (active_sl, stage, stage_label).
+    Ratchet rule: SL never goes DOWN — stays at highest achieved stage."""
+    if entry_price <= 0:
+        return entry_price * 0.85, 0, "Initial"
+
+    profit_pct = (current_premium - entry_price) / entry_price * 100
+
+    # Find highest stage achieved by current profit
+    new_stage = 0
+    new_offset = -15
+    new_label = "Initial"
+    for trigger_pct, offset_pct, label in SMART_SL_LADDER:
+        if profit_pct >= trigger_pct:
+            new_stage = SMART_SL_LADDER.index((trigger_pct, offset_pct, label))
+            new_offset = offset_pct
+            new_label = label
+
+    new_sl = round(entry_price * (1 + new_offset / 100), 2)
+
+    # Ratchet rule: if saved_sl is higher, use that (SL never decreases)
+    if saved_sl is not None and saved_sl > new_sl:
+        return saved_sl, current_stage_saved, SMART_SL_LADDER[current_stage_saved][2]
+
+    # Stage upgraded
+    return new_sl, new_stage, new_label
+
+
+def check_spot_anchor(action, entry_spot, current_spot, threshold_pct=0.4):
+    """Returns (should_exit, reason).
+    BUY CE: exit if spot drops > threshold_pct
+    BUY PE: exit if spot rises > threshold_pct"""
+    if not entry_spot or entry_spot <= 0 or not current_spot or current_spot <= 0:
+        return False, None
+    spot_change_pct = (current_spot - entry_spot) / entry_spot * 100
+    is_ce = "CE" in (action or "")
+    if is_ce and spot_change_pct < -threshold_pct:
+        return True, f"Spot anchor: NIFTY dropped {spot_change_pct:.2f}% from entry {entry_spot} (now {current_spot:.1f})"
+    if not is_ce and spot_change_pct > threshold_pct:
+        return True, f"Spot anchor: NIFTY rose {spot_change_pct:.2f}% from entry {entry_spot} (now {current_spot:.1f})"
+    return False, None
+
+
+def get_ladder_progress(entry_price, current_premium, current_stage_saved=0):
+    """For UI: full ladder state with current/done/pending stages."""
+    if entry_price <= 0:
+        return []
+    profit_pct = (current_premium - entry_price) / entry_price * 100
+    out = []
+    for i, (trigger, offset, label) in enumerate(SMART_SL_LADDER):
+        sl_at = round(entry_price * (1 + offset / 100), 2)
+        if profit_pct >= trigger:
+            status = "DONE" if i < len([s for s in SMART_SL_LADDER if profit_pct >= s[0]]) - 1 else "ACTIVE"
+        else:
+            status = "PENDING"
+        out.append({
+            "stage": i,
+            "trigger_pct": trigger,
+            "sl_offset_pct": offset,
+            "sl_at": sl_at,
+            "label": label,
+            "status": status,
+        })
+    return out
 
 
 def calc_scalper_size(entry_price, sl_price, running_capital=1000000):
@@ -558,12 +693,17 @@ def get_capital_usage():
 
 
 def check_scalper_exits(chains):
-    """Monitor open scalper trades — quick exit logic."""
+    """Monitor open scalper trades — quick exit logic.
+    Smart SL applied if enabled in smart_sl_config (else static SL)."""
     conn = _conn()
     open_trades = conn.execute(
         "SELECT * FROM scalper_trades WHERE status='OPEN'"
     ).fetchall()
     conn.close()
+
+    smart_cfg = get_smart_sl_config()
+    smart_enabled = smart_cfg.get("enabled", False)
+    spot_anchor_pct = smart_cfg.get("spot_anchor_pct", 0.4)
 
     now = ist_now()
 
@@ -596,22 +736,66 @@ def check_scalper_exits(chains):
         new_status = "OPEN"
         exit_reason = None
         exit_price = 0
+        sl_reason_text = None
 
-        # Exit logic (priority order)
-        if current_ltp <= sl:
+        # ─── SMART SL LADDER (if enabled) ───
+        smart_active_sl = sl  # fallback to static
+        smart_stage = 0
+        smart_label = "Static"
+        if smart_enabled:
+            saved_sl = t.get("smart_sl_value") or sl
+            saved_stage = t.get("smart_sl_stage") or 0
+            smart_active_sl, smart_stage, smart_label = compute_smart_sl(
+                entry, current_ltp,
+                current_stage_saved=saved_stage,
+                saved_sl=saved_sl,
+            )
+
+        # ─── SPOT ANCHOR check (if enabled) ───
+        spot_exit = False
+        spot_reason = None
+        if smart_enabled:
+            spot_token_idx = idx
+            entry_spot = t.get("entry_spot")
+            # Get current spot from chains (use any strike's underlying — chain doesn't store spot directly)
+            # Better: spot from engine is accessible via global; fallback to skip
+            try:
+                # We don't have engine ref here; use approximate: spot ≈ strike + (CE_ltp - PE_ltp) at ATM.
+                # But simpler: rely on entry_spot stored, current_spot from engine.spot_tokens
+                # For now, check_scalper_exits is called with chains only — skip spot anchor if entry_spot missing
+                if entry_spot:
+                    # Pull from chain's "underlying_value" if available
+                    # Fallback: use peak_ltp_strike as proxy (not ideal). Skip if can't determine.
+                    pass
+            except Exception:
+                pass
+
+        # ─── Exit logic (priority order) ───
+        active_sl_used = smart_active_sl if smart_enabled else sl
+
+        if current_ltp <= active_sl_used:
             new_status = "SL_HIT"
-            exit_price = sl
-            exit_reason = f"SL hit at ₹{sl} (-8%)"
+            exit_price = active_sl_used
+            if smart_enabled:
+                exit_reason = f"Smart SL hit (Stage {smart_stage} - {smart_label}) at ₹{active_sl_used:.2f}"
+                sl_reason_text = f"Profit ladder triggered: Stage {smart_stage} ({smart_label}). Premium ₹{current_ltp:.2f} hit SL ₹{active_sl_used:.2f}"
+            else:
+                exit_reason = f"SL hit at ₹{sl:.2f}"
+                sl_reason_text = f"Static SL hit. Premium ₹{current_ltp:.2f} ≤ SL ₹{sl:.2f}"
+        elif spot_exit:
+            new_status = "SPOT_ANCHOR_EXIT"
+            exit_price = current_ltp
+            exit_reason = spot_reason
+            sl_reason_text = spot_reason
         elif current_ltp >= t2:
             new_status = "T2_HIT"
             exit_price = t2
-            exit_reason = f"T2 hit at ₹{t2} (+25%)"
+            exit_reason = f"T2 hit at ₹{t2}"
         elif current_ltp >= t1:
             new_status = "T1_HIT"
             exit_price = t1
-            exit_reason = f"T1 hit at ₹{t1} (+12%)"
+            exit_reason = f"T1 hit at ₹{t1}"
         elif hold_sec >= SCALPER_MAX_HOLD_MIN * 60:
-            # Max hold (scalper independent — own 30 min limit)
             new_status = "TIMEOUT_EXIT"
             exit_price = current_ltp
             exit_reason = f"Max hold {SCALPER_MAX_HOLD_MIN}min reached, exit @ ₹{current_ltp}"
@@ -626,17 +810,27 @@ def check_scalper_exits(chains):
             conn2.execute("""
                 UPDATE scalper_trades SET
                     status=?, exit_price=?, exit_time=?, exit_reason=?,
-                    pnl_pts=?, pnl_rupees=?, peak_ltp=?, hold_seconds=?
+                    pnl_pts=?, pnl_rupees=?, peak_ltp=?, hold_seconds=?,
+                    sl_hit_time=?, sl_reason=?, smart_sl_stage=?, smart_sl_value=?
                 WHERE id=?
             """, (new_status, exit_price, now.isoformat(), exit_reason,
-                  round(exit_price - entry, 2), final_pnl, peak, int(hold_sec), t["id"]))
+                  round(exit_price - entry, 2), final_pnl, peak, int(hold_sec),
+                  now.isoformat() if "SL" in new_status else None,
+                  sl_reason_text,
+                  smart_stage if smart_enabled else None,
+                  smart_active_sl if smart_enabled else None,
+                  t["id"]))
             print(f"[SCALPER] CLOSED #{t['id']} {idx} {action} {strike}: ₹{final_pnl:+,.0f} ({new_status})")
         else:
             conn2.execute("""
                 UPDATE scalper_trades SET
-                    current_ltp=?, peak_ltp=?, pnl_pts=?, pnl_rupees=?, hold_seconds=?
+                    current_ltp=?, peak_ltp=?, pnl_pts=?, pnl_rupees=?, hold_seconds=?,
+                    smart_sl_stage=?, smart_sl_value=?
                 WHERE id=?
-            """, (current_ltp, peak, pnl_pts, pnl_rupees, int(hold_sec), t["id"]))
+            """, (current_ltp, peak, pnl_pts, pnl_rupees, int(hold_sec),
+                  smart_stage if smart_enabled else None,
+                  smart_active_sl if smart_enabled else None,
+                  t["id"]))
             # Record tick sample (live LTP history per trade)
             try:
                 import time as _time

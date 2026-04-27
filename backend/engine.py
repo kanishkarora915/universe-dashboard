@@ -3675,18 +3675,8 @@ class MarketEngine:
             threading.Thread(target=_scalper_tick_update, daemon=True, name="scalper-tick").start()
 
         # Trinity nightly prune (10 PM IST)
-        if not hasattr(self, "_trinity_last_prune"):
-            self._trinity_last_prune = 0
-        if now_ist.hour == 22 and now - self._trinity_last_prune > 3600:
-            self._trinity_last_prune = now
-            def _trinity_prune():
-                try:
-                    from trinity import storage as _ts
-                    _ts.prune_old_data(days=7)
-                    print("[TRINITY] Nightly prune complete")
-                except Exception as e:
-                    print(f"[TRINITY] prune error: {e}")
-            threading.Thread(target=_trinity_prune, daemon=True, name="trinity-prune").start()
+        # Trinity auto-prune DISABLED per user request — all data persists forever.
+        # Only manual user action via API can delete data.
 
         # ── Rejection Zone Engine — 5-min snapshots ──
         if not hasattr(self, "_rejection_last_capture"):
