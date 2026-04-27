@@ -18,7 +18,7 @@ from threading import Lock
 class TickRingBuffer:
     """Time-series ring buffer with bounded size."""
 
-    def __init__(self, maxlen=21600):  # 6 hours of 1-sec bars
+    def __init__(self, maxlen=86400):  # 12 hours of 500ms bars (2GB RAM upgrade — was 6h)
         self.buf = deque(maxlen=maxlen)
         self.lock = Lock()
 
@@ -67,8 +67,8 @@ class TrinityState:
     """Holds full Trinity state — ring buffers, EMAs, current snapshot."""
 
     def __init__(self):
-        self.bar_buffer = TickRingBuffer(maxlen=21600)   # 6h of 1-sec bars
-        self.fast_buffer = TickRingBuffer(maxlen=600)    # 60s of 100ms samples
+        self.bar_buffer = TickRingBuffer(maxlen=86400)   # 12h of 500ms bars (2GB RAM)
+        self.fast_buffer = TickRingBuffer(maxlen=1200)   # 120s of 100ms samples
         self.premium_ema_5min = EMA(period_secs=300)
         self.premium_ema_3min = EMA(period_secs=180)     # expiry day fallback
         self.last_bar_ts = 0

@@ -17,10 +17,12 @@ def _conn():
 
 def init_db():
     conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
-    # WAL for concurrent reads/writes
+    # WAL for concurrent reads/writes + 2GB RAM optimizations
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=-128000")  # 128MB cache
+        conn.execute("PRAGMA mmap_size=268435456")  # 256MB mmap
     except Exception:
         pass
 

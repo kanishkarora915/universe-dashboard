@@ -92,9 +92,20 @@ def init_db():
     conn.close()
 
 
+_shadow_pragma_done = False
 def _conn():
-    conn = sqlite3.connect(str(DB_PATH))
+    global _shadow_pragma_done
+    conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
     conn.row_factory = sqlite3.Row
+    if not _shadow_pragma_done:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA cache_size=-128000")  # 128MB
+            conn.execute("PRAGMA mmap_size=268435456")  # 256MB mmap
+            _shadow_pragma_done = True
+        except Exception:
+            pass
     return conn
 
 

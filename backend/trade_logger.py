@@ -292,7 +292,8 @@ def _conn():
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
+            conn.execute("PRAGMA cache_size=-256000")  # 256MB cache (2GB RAM upgrade)
+            conn.execute("PRAGMA mmap_size=536870912")  # 512MB memory-mapped I/O
             conn.execute("PRAGMA busy_timeout=30000")  # 30s lock wait
             _wal_enabled = True
         except Exception as e:

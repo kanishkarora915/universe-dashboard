@@ -200,10 +200,21 @@ def set_scalper_config(capital=None, nifty_qty=None, banknifty_qty=None,
     return updated
 
 
+_scalper_pragma_done = False
 def _conn():
+    global _scalper_pragma_done
     init_scalper_db()
-    conn = sqlite3.connect(str(SCALPER_DB))
+    conn = sqlite3.connect(str(SCALPER_DB), timeout=10.0)
     conn.row_factory = sqlite3.Row
+    if not _scalper_pragma_done:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA cache_size=-128000")  # 128MB (2GB RAM)
+            conn.execute("PRAGMA mmap_size=268435456")  # 256MB mmap
+            _scalper_pragma_done = True
+        except Exception:
+            pass
     return conn
 
 

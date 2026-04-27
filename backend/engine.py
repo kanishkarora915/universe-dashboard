@@ -2041,7 +2041,7 @@ class MarketEngine:
             self._verdict_cache_time = 0
 
         # Serve cached if <30s old and not forced
-        if not force_recompute and self._verdict_cache and (now - self._verdict_cache_time) < 30:
+        if not force_recompute and self._verdict_cache and (now - self._verdict_cache_time) < 15:  # 2GB RAM — fresher signals
             return self._verdict_cache
 
         result = self._compute_trap_verdict()
@@ -2400,7 +2400,7 @@ class MarketEngine:
             time_patterns_result = None
             structure_result = None
 
-            with ThreadPoolExecutor(max_workers=4) as executor:
+            with ThreadPoolExecutor(max_workers=8) as executor:  # 2GB RAM upgrade — 8 parallel
                 f_greeks = executor.submit(_safe_call, score_all_greeks_buyer, self, index, label="GREEKS")
                 f_oi = executor.submit(_safe_call, score_all_oi_intel_buyer, self, index, is_expiry, label="OI_INTEL")
                 f_time = executor.submit(_safe_call, score_all_time_patterns_buyer, self, index, label="TIME")
@@ -3646,10 +3646,10 @@ class MarketEngine:
                 daemon=True, name="shadow-close"
             ).start()
 
-        # ── Trinity Engine — 1-second tick (spot/future/synthetic triangulation) ──
+        # ── Trinity Engine — 500ms tick (2GB RAM upgrade — was 1s) ──
         if not hasattr(self, "_trinity_last_step"):
             self._trinity_last_step = 0
-        if market_active and now - self._trinity_last_step >= 1.0:
+        if market_active and now - self._trinity_last_step >= 0.5:
             self._trinity_last_step = now
             def _trinity_step():
                 try:
@@ -3659,12 +3659,12 @@ class MarketEngine:
                     print(f"[TRINITY] step error: {e}")
             threading.Thread(target=_trinity_step, daemon=True, name="trinity-step").start()
 
-        # ── Scalper FAST TICK loop (5s) — INDEPENDENT of slow verdict cycle ──
+        # ── Scalper FAST TICK loop (2s — 2GB RAM upgrade, was 5s) ──
         # Updates open scalper trade current_ltp + records ticks for chart accuracy.
         # No DB lag for PnL calculations.
         if not hasattr(self, "_scalper_tick_last"):
             self._scalper_tick_last = 0
-        if market_active and now - self._scalper_tick_last >= 5.0:
+        if market_active and now - self._scalper_tick_last >= 2.0:
             self._scalper_tick_last = now
             def _scalper_tick_update():
                 try:
