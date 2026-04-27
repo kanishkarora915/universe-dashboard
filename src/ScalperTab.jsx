@@ -40,6 +40,312 @@ const pctFmt = (n, d = 2) => `${(n || 0) >= 0 ? "+" : ""}${(n || 0).toFixed(d)}%
 async function safeFetch(url, fb) {
   try { const r = await fetch(url); if (!r.ok) return fb; return await r.json(); } catch { return fb; }
 }
+
+// ════════════════════════════════════════════════════════════
+// SCALPER-ONLY PDF EXPORT — Daily / Weekly / Monthly
+// Includes WHY entry / WHY exit / WHY SL + entry/exit/SL times
+// ════════════════════════════════════════════════════════════
+function exportScalperPDF(period, trades, capitalCfg, smartSLState) {
+  const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+  const fmtR = (n) => `${(n || 0) >= 0 ? "+" : ""}${Math.round(n || 0).toLocaleString("en-IN")}`;
+  const fmtTime = (iso) => {
+    if (!iso) return "—";
+    try {
+      return new Date(iso).toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true,
+      });
+    } catch { return iso; }
+  };
+
+  const closed = trades.filter(t => t.status !== "OPEN");
+  const wins = closed.filter(t => ["T1_HIT", "T2_HIT"].includes(t.status));
+  const losses = closed.filter(t => t.status === "SL_HIT");
+  const manuals = closed.filter(t => t.status === "MANUAL_EXIT");
+  const timeouts = closed.filter(t => t.status === "TIMEOUT_EXIT");
+  const totalPnl = closed.reduce((s, t) => s + (t.pnl_rupees || 0), 0);
+  const totalCapDeployed = closed.reduce((s, t) => s + ((t.capital_used || 0) || ((t.entry_price || 0) * (t.qty || 0))), 0);
+  const winPnl = wins.reduce((s, t) => s + (t.pnl_rupees || 0), 0);
+  const lossPnl = losses.reduce((s, t) => s + (t.pnl_rupees || 0), 0);
+  const avgWin = wins.length ? winPnl / wins.length : 0;
+  const avgLoss = losses.length ? lossPnl / losses.length : 0;
+  const winRate = closed.length ? (wins.length / closed.length * 100) : 0;
+  const best = closed.reduce((b, t) => (t.pnl_rupees || 0) > (b?.pnl_rupees || -Infinity) ? t : b, null);
+  const worst = closed.reduce((b, t) => (t.pnl_rupees || 0) < (b?.pnl_rupees || Infinity) ? t : b, null);
+  const roi = totalCapDeployed > 0 ? (totalPnl / totalCapDeployed * 100) : 0;
+
+  const titleMap = { DAILY: "Daily", WEEKLY: "Weekly", MONTHLY: "Monthly" };
+  const periodLabel = titleMap[period] || period;
+
+  // Build daily breakdown
+  const daily = {};
+  closed.forEach(t => {
+    const d = (t.entry_time || "").slice(0, 10);
+    if (!d) return;
+    if (!daily[d]) daily[d] = { trades: 0, wins: 0, losses: 0, pnl: 0, capital: 0 };
+    daily[d].trades++;
+    if (["T1_HIT", "T2_HIT"].includes(t.status)) daily[d].wins++;
+    else if (t.status === "SL_HIT") daily[d].losses++;
+    daily[d].pnl += (t.pnl_rupees || 0);
+    daily[d].capital += ((t.entry_price || 0) * (t.qty || 0));
+  });
+
+  let html = `
+    <div style="border-bottom:3px solid #FF9F0A;padding-bottom:12px;margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-end">
+        <div>
+          <div style="font-size:11px;color:#888;letter-spacing:2px;font-weight:700">⚡ UNIVERSE SCALPER MODE</div>
+          <h1 style="margin:4px 0 0 0;font-size:24px;color:#111">${periodLabel} Scalper Report</h1>
+          <div style="font-size:10px;color:#888;margin-top:4px">${period} REPORT · Generated ${now} IST</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:9px;color:#888;letter-spacing:1px">SCALPER TOTAL P&L</div>
+          <div style="font-size:32px;font-weight:900;color:${totalPnl >= 0 ? '#1a8a2e' : '#cc2020'};line-height:1">
+            ₹${fmtR(totalPnl)}
+          </div>
+          <div style="font-size:11px;color:${roi >= 0 ? '#1a8a2e' : '#cc2020'};font-weight:600">
+            ROI: ${roi >= 0 ? '+' : ''}${roi.toFixed(2)}% on ₹${fmtR(totalCapDeployed)} deployed
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Capital config
+  if (capitalCfg) {
+    html += `<div style="background:#fff7e6;border:1px solid #FF9F0A33;border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:11px;color:#555">
+      <strong style="color:#FF9F0A">⚙️ Scalper Config:</strong>
+      Capital ₹${fmtR(capitalCfg.capital || 0)} ·
+      NIFTY qty ${capitalCfg.nifty_qty || "auto"} ·
+      BANKNIFTY qty ${capitalCfg.banknifty_qty || "auto"} ·
+      SL ${((capitalCfg.sl_pct || 0) * 100).toFixed(1)}% · T1 ${((capitalCfg.t1_pct || 0) * 100).toFixed(1)}% · T2 ${((capitalCfg.t2_pct || 0) * 100).toFixed(1)}% ·
+      Threshold ${capitalCfg.threshold || 55}% · Daily Cap ${capitalCfg.daily_cap || 15}
+      ${smartSLState?.enabled ? '<br><strong style="color:#1a8a2e">🛡️ Smart SL: ACTIVE</strong> · 7-stage profit ladder + spot anchor' : '<br><span style="color:#888">🛡️ Smart SL: OFF (using static SL)</span>'}
+    </div>`;
+  }
+
+  // Performance summary
+  html += `<h2 style="font-size:13px;color:#333;margin-top:0;border-bottom:1px solid #eee;padding-bottom:4px">📊 Scalper Performance</h2>
+  <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:18px">
+    <div style="background:#f8f8f8;border-radius:8px;padding:10px;text-align:center">
+      <div style="font-size:8px;color:#888;text-transform:uppercase">Total Trades</div>
+      <div style="font-size:20px;font-weight:900;color:#111">${closed.length}</div>
+    </div>
+    <div style="background:#e8ffe8;border-radius:8px;padding:10px;text-align:center">
+      <div style="font-size:8px;color:#1a8a2e;text-transform:uppercase">Wins (T1/T2)</div>
+      <div style="font-size:20px;font-weight:900;color:#1a8a2e">${wins.length}</div>
+    </div>
+    <div style="background:#ffe8e8;border-radius:8px;padding:10px;text-align:center">
+      <div style="font-size:8px;color:#cc2020;text-transform:uppercase">SL Hits</div>
+      <div style="font-size:20px;font-weight:900;color:#cc2020">${losses.length}</div>
+    </div>
+    <div style="background:#f5f0ff;border-radius:8px;padding:10px;text-align:center">
+      <div style="font-size:8px;color:#7c3aed;text-transform:uppercase">Manual Exits</div>
+      <div style="font-size:20px;font-weight:900;color:#7c3aed">${manuals.length}</div>
+    </div>
+    <div style="background:#fff5e0;border-radius:8px;padding:10px;text-align:center">
+      <div style="font-size:8px;color:#cc7a00;text-transform:uppercase">Timeouts</div>
+      <div style="font-size:20px;font-weight:900;color:#cc7a00">${timeouts.length}</div>
+    </div>
+    <div style="background:#f0f0ff;border-radius:8px;padding:10px;text-align:center">
+      <div style="font-size:8px;color:#3333aa;text-transform:uppercase">Win Rate</div>
+      <div style="font-size:20px;font-weight:900;color:${winRate >= 60 ? '#1a8a2e' : winRate >= 40 ? '#cc7a00' : '#cc2020'}">${winRate.toFixed(1)}%</div>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:18px">
+    <div style="background:#f8f8f8;border-radius:8px;padding:10px">
+      <div style="font-size:8px;color:#888;text-transform:uppercase">Avg Win</div>
+      <div style="font-size:14px;font-weight:700;color:#1a8a2e">₹${fmtR(avgWin)}</div>
+    </div>
+    <div style="background:#f8f8f8;border-radius:8px;padding:10px">
+      <div style="font-size:8px;color:#888;text-transform:uppercase">Avg Loss</div>
+      <div style="font-size:14px;font-weight:700;color:#cc2020">₹${fmtR(avgLoss)}</div>
+    </div>
+    <div style="background:#f8f8f8;border-radius:8px;padding:10px">
+      <div style="font-size:8px;color:#888;text-transform:uppercase">Best Trade</div>
+      <div style="font-size:14px;font-weight:700;color:#1a8a2e">₹${fmtR(best?.pnl_rupees || 0)}</div>
+      <div style="font-size:9px;color:#888">${best ? `${best.idx} ${best.action} ${best.strike}` : "—"}</div>
+    </div>
+    <div style="background:#f8f8f8;border-radius:8px;padding:10px">
+      <div style="font-size:8px;color:#888;text-transform:uppercase">Worst Trade</div>
+      <div style="font-size:14px;font-weight:700;color:#cc2020">₹${fmtR(worst?.pnl_rupees || 0)}</div>
+      <div style="font-size:9px;color:#888">${worst ? `${worst.idx} ${worst.action} ${worst.strike}` : "—"}</div>
+    </div>
+  </div>`;
+
+  // Daily breakdown (for weekly/monthly)
+  if (period !== "DAILY" && Object.keys(daily).length > 0) {
+    html += `<h2 style="font-size:13px;color:#333;margin-top:18px;border-bottom:1px solid #eee;padding-bottom:4px">📅 Daily Breakdown</h2>
+    <table style="margin-bottom:16px"><thead><tr>
+      <th>Date</th><th style="text-align:right">Trades</th><th style="text-align:right">Wins</th>
+      <th style="text-align:right">SL</th><th style="text-align:right">Win %</th>
+      <th style="text-align:right">Capital Used</th><th style="text-align:right">P&L</th>
+    </tr></thead><tbody>`;
+    for (const [d, dd] of Object.entries(daily).sort().reverse()) {
+      const wr = dd.trades ? Math.round((dd.wins / dd.trades) * 100) : 0;
+      const cls = dd.pnl >= 0 ? 'class="pos"' : 'class="neg"';
+      html += `<tr>
+        <td><strong>${d}</strong></td>
+        <td style="text-align:right">${dd.trades}</td>
+        <td style="text-align:right" class="pos">${dd.wins}</td>
+        <td style="text-align:right" class="neg">${dd.losses}</td>
+        <td style="text-align:right">${wr}%</td>
+        <td style="text-align:right">₹${fmtR(dd.capital)}</td>
+        <td style="text-align:right;font-weight:700" ${cls}>₹${fmtR(dd.pnl)}</td>
+      </tr>`;
+    }
+    html += `</tbody></table>`;
+  }
+
+  // Trade-by-trade audit
+  if (closed.length > 0) {
+    html += `<h2 style="font-size:13px;color:#333;margin-top:18px;border-bottom:1px solid #eee;padding-bottom:4px">📋 Trade-by-Trade Audit (${closed.length} trades)</h2>`;
+
+    closed.sort((a, b) => new Date(b.entry_time || 0) - new Date(a.entry_time || 0));
+
+    for (let i = 0; i < closed.length; i++) {
+      const t = closed[i];
+      const isWin = ["T1_HIT", "T2_HIT"].includes(t.status);
+      const isSL = t.status === "SL_HIT";
+      const isManual = t.status === "MANUAL_EXIT";
+      const isTimeout = t.status === "TIMEOUT_EXIT";
+      const borderColor = isWin ? "#1a8a2e" : isSL ? "#cc2020" : isManual ? "#7c3aed" : "#cc7a00";
+      const bgColor = isWin ? "#f0fff0" : isSL ? "#fff0f0" : isManual ? "#f8f0ff" : "#fffbf0";
+
+      let holdStr = "—";
+      if (t.entry_time && t.exit_time) {
+        try {
+          const diff = (new Date(t.exit_time) - new Date(t.entry_time)) / 1000;
+          const mins = Math.floor(diff / 60), secs = Math.floor(diff % 60);
+          holdStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+        } catch {}
+      }
+
+      const pnlPct = t.entry_price > 0 ? ((t.exit_price || t.entry_price) - t.entry_price) / t.entry_price * 100 : 0;
+      const capUsed = (t.capital_used || ((t.entry_price || 0) * (t.qty || 0)));
+
+      html += `
+      <div style="border:2px solid ${borderColor};border-radius:8px;padding:14px;margin-bottom:12px;background:${bgColor};page-break-inside:avoid">
+        <div style="display:flex;justify-content:space-between;margin-bottom:10px;border-bottom:1px solid ${borderColor}33;padding-bottom:8px">
+          <div>
+            <div style="font-size:9px;color:#888;letter-spacing:0.5px">SCALPER TRADE #${t.id}</div>
+            <div style="font-size:16px;font-weight:900;color:#111;margin-top:2px">
+              <span>${t.idx}</span>
+              <span style="color:${t.action?.includes('CE') ? '#1a8a2e' : '#cc2020'};margin-left:8px">${t.action}</span>
+              <span style="margin-left:8px">${t.strike}</span>
+              <span style="background:${borderColor};color:#fff;padding:3px 10px;border-radius:4px;font-size:10px;font-weight:700;margin-left:8px">${t.status}</span>
+            </div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:9px;color:#888">P&L</div>
+            <div style="font-size:22px;font-weight:900;color:${(t.pnl_rupees || 0) >= 0 ? '#1a8a2e' : '#cc2020'};line-height:1">
+              ₹${fmtR(t.pnl_rupees)}
+            </div>
+            <div style="font-size:10px;color:${pnlPct >= 0 ? '#1a8a2e' : '#cc2020'};font-weight:600">
+              ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%
+            </div>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px;font-size:10px">
+          <div style="background:#fff;border:1px solid #ddd;border-radius:4px;padding:6px 8px">
+            <div style="font-size:8px;color:#888">⏱ ENTRY TIME</div>
+            <div style="color:#111;font-weight:600">${fmtTime(t.entry_time)}</div>
+          </div>
+          <div style="background:#fff;border:1px solid #ddd;border-radius:4px;padding:6px 8px">
+            <div style="font-size:8px;color:#888">⏱ EXIT TIME</div>
+            <div style="color:#111;font-weight:600">${fmtTime(t.exit_time)}</div>
+          </div>
+          <div style="background:#fff;border:1px solid #ddd;border-radius:4px;padding:6px 8px">
+            <div style="font-size:8px;color:#888">⏳ HELD FOR</div>
+            <div style="color:#111;font-weight:600">${holdStr}</div>
+          </div>
+        </div>
+
+        <table style="margin-bottom:10px;font-size:10px"><thead><tr style="background:#fff">
+          <th>ENTRY</th><th>EXIT</th><th>SL</th><th>T1</th><th>T2</th>
+          <th>QUANTITY</th><th>CAPITAL USED</th>
+        </tr></thead><tbody><tr>
+          <td>₹${(t.entry_price || 0).toFixed(2)}</td>
+          <td><strong>₹${(t.exit_price || 0).toFixed(2)}</strong></td>
+          <td style="color:#cc2020">₹${t.sl_price || "—"}</td>
+          <td style="color:#1a8a2e">₹${t.t1_price || "—"}</td>
+          <td style="color:#1a8a2e">₹${t.t2_price || "—"}</td>
+          <td><strong>${(t.lots || 0)}L × ${t.lot_size || 0} = ${(t.qty || 0).toLocaleString("en-IN")}</strong></td>
+          <td><strong>₹${fmtR(capUsed)}</strong></td>
+        </tr></tbody></table>
+
+        <div style="background:#fff;border-left:3px solid #0a84ff;padding:8px 12px;margin-bottom:6px;border-radius:4px">
+          <div style="font-size:9px;color:#0a84ff;font-weight:700;letter-spacing:0.5px;margin-bottom:3px">🎯 WHY ENTRY (engine logic)</div>
+          <div style="font-size:11px;color:#333;line-height:1.4">
+            ${t.entry_reasoning || `Verdict signal. Probability: ${t.probability || 0}%.`}
+          </div>
+          ${(t.entry_bull_pct || t.entry_bear_pct) ? `
+            <div style="font-size:10px;color:#888;margin-top:4px">
+              Bull: <strong style="color:#1a8a2e">${Math.round(t.entry_bull_pct || 0)}%</strong>
+              · Bear: <strong style="color:#cc2020">${Math.round(t.entry_bear_pct || 0)}%</strong>
+              ${t.entry_spot ? ` · Spot @ entry: <strong>${t.entry_spot}</strong>` : ''}
+            </div>
+          ` : ''}
+        </div>
+
+        <div style="background:#fff;border-left:3px solid ${borderColor};padding:8px 12px;margin-bottom:6px;border-radius:4px">
+          <div style="font-size:9px;color:${borderColor};font-weight:700;letter-spacing:0.5px;margin-bottom:3px">🚪 WHY EXIT</div>
+          <div style="font-size:11px;color:#333;line-height:1.4">
+            ${t.exit_reason || `Closed at ₹${t.exit_price} via ${t.status}.`}
+          </div>
+        </div>
+
+        ${(isSL || t.sl_reason) ? `
+          <div style="background:#fff;border-left:3px solid #cc2020;padding:8px 12px;border-radius:4px">
+            <div style="font-size:9px;color:#cc2020;font-weight:700;letter-spacing:0.5px;margin-bottom:3px">🛑 WHY STOPLOSS</div>
+            <div style="font-size:11px;color:#333;line-height:1.4">
+              ${t.sl_reason || `Stoploss at ₹${t.sl_price} hit. Entry ₹${t.entry_price}. Loss = ${(((t.exit_price || t.sl_price) - t.entry_price) / t.entry_price * 100).toFixed(1)}%.`}
+            </div>
+            ${t.sl_hit_time ? `
+              <div style="font-size:10px;color:#888;margin-top:4px">
+                ⏱ SL hit at: <strong>${fmtTime(t.sl_hit_time)}</strong>
+              </div>
+            ` : ''}
+            ${(t.smart_sl_stage !== null && t.smart_sl_stage !== undefined) ? `
+              <div style="font-size:10px;color:#888;margin-top:2px">
+                🛡️ Smart SL: Stage <strong>${t.smart_sl_stage}</strong> · Active SL <strong>₹${t.smart_sl_value || t.sl_price}</strong>
+              </div>
+            ` : ''}
+          </div>
+        ` : ''}
+      </div>`;
+    }
+  }
+
+  html += `
+    <hr style="border:none;border-top:2px solid #ddd;margin:20px 0">
+    <div style="text-align:center;font-size:10px;color:#aaa;line-height:1.6">
+      <strong>⚡ UNIVERSE SCALPER ${period} REPORT</strong> · Generated ${now} IST<br>
+      ${closed.length} closed scalper trades · Total deployed: ₹${fmtR(totalCapDeployed)} · Net P&L: ₹${fmtR(totalPnl)} (${roi.toFixed(2)}% ROI)<br>
+      <em>Independent scalper system — separate from main P&L. All times in IST.</em>
+    </div>
+  `;
+
+  const win = window.open("", "_blank", "width=1100,height=800");
+  win.document.write(`<html><head><title>Scalper ${periodLabel} Report</title>
+    <style>
+      @page { margin: 15mm; size: A4 portrait; }
+      body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 20px; margin: 0; color: #111; max-width: 900px; }
+      h1 { font-size: 20px; margin-bottom: 4px; }
+      h2 { font-size: 14px; color: #555; margin-top: 18px; }
+      table { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 16px; }
+      th { background: #f5f5f5; padding: 6px 8px; text-align: left; font-weight: 700; border-bottom: 2px solid #ddd; }
+      td { padding: 5px 8px; border-bottom: 1px solid #eee; }
+      .pos { color: #1a8a2e; font-weight: 600; }
+      .neg { color: #cc2020; font-weight: 600; }
+      @media print { body { padding: 0; } div { page-break-inside: avoid; } }
+    </style>
+  </head><body>${html}</body></html>`);
+  win.document.close();
+  setTimeout(() => win.print(), 800);
+}
 async function postJSON(url, body = {}) {
   try {
     const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -174,7 +480,46 @@ export default function ScalperTab() {
               Own capital · Live tick LTP (1s) · Manual exit · Smart SL toggle
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            {/* PDF Export Buttons */}
+            <button onClick={async () => {
+              const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+              const closed = await safeFetch("/api/scalper/trades/closed?days=1", []);
+              const todayTrades = (Array.isArray(closed) ? closed : [])
+                .filter(t => (t.entry_time || "").startsWith(today));
+              exportScalperPDF("DAILY", todayTrades, config, smartSL);
+            }} style={{
+              background: ORANGE + "22", color: ORANGE,
+              border: `1px solid ${ORANGE}66`,
+              padding: "6px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
+            }}>
+              📄 Daily
+            </button>
+            <button onClick={async () => {
+              const closed = await safeFetch("/api/scalper/trades/closed?days=7", []);
+              exportScalperPDF("WEEKLY", Array.isArray(closed) ? closed : [], config, smartSL);
+            }} style={{
+              background: ACCENT + "22", color: ACCENT,
+              border: `1px solid ${ACCENT}66`,
+              padding: "6px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
+            }}>
+              📄 Weekly
+            </button>
+            <button onClick={async () => {
+              const closed = await safeFetch("/api/scalper/trades/closed?days=35", []);
+              const now = new Date();
+              const yyyymm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+              const monthTrades = (Array.isArray(closed) ? closed : [])
+                .filter(t => (t.entry_time || "").startsWith(yyyymm));
+              exportScalperPDF("MONTHLY", monthTrades, config, smartSL);
+            }} style={{
+              background: YELLOW + "22", color: YELLOW,
+              border: `1px solid ${YELLOW}66`,
+              padding: "6px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
+            }}>
+              📄 Monthly
+            </button>
+            <span style={{ width: 1, height: 20, background: BORDER, margin: "0 4px" }}></span>
             {/* Smart SL Toggle */}
             <button onClick={toggleSmartSL} style={{
               background: smartSL?.enabled ? GREEN + "22" : "#222",
