@@ -172,33 +172,83 @@ export default function CapitalTracker({ system = "SCALPER" }) {
         </div>
       </div>
 
-      {/* Loss recovered + Withdraw */}
-      {(loss_rec > 0 || bank > 0) && (
-        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-          {loss_rec > 0 && (
-            <div style={{
-              flex: 1, background: BG, border: `1px solid ${ORANGE}33`, borderRadius: 6, padding: "8px 10px",
-            }}>
-              <div style={{ fontSize: 9, color: ORANGE, fontWeight: 700 }}>📉 LOSS RECOVERED</div>
-              <div style={{ fontSize: 13, color: ORANGE, fontWeight: 700, marginTop: 2 }}>{fmtL(loss_rec)}</div>
-              <div style={{ fontSize: 9, color: GRAY, marginTop: 2 }}>Profit deducted to fix capital</div>
+      {/* Loss Recovered + Profit Bank — ALWAYS visible (even at ₹0) */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        {/* Loss Recovered card */}
+        <div style={{
+          flex: 1,
+          background: loss_rec > 0 ? BG : "#0d0d12",
+          border: `1px solid ${loss_rec > 0 ? ORANGE + "55" : BORDER}`,
+          borderRadius: 6, padding: "10px 12px",
+        }}>
+          <div style={{ fontSize: 9, color: loss_rec > 0 ? ORANGE : GRAY, fontWeight: 700, letterSpacing: 0.5 }}>
+            📉 LOSS RECOVERED
+          </div>
+          <div style={{
+            fontSize: 16, color: loss_rec > 0 ? ORANGE : "#555", fontWeight: 800, marginTop: 4,
+          }}>{fmtL(loss_rec)}</div>
+          <div style={{ fontSize: 9, color: GRAY, marginTop: 3, lineHeight: 1.3 }}>
+            {loss_rec > 0
+              ? "Profit used to repair capital after losses"
+              : "Future profits will fix capital first"}
+          </div>
+        </div>
+
+        {/* Profit Bank card — ALWAYS visible */}
+        <div style={{
+          flex: 1,
+          background: bank > 0 ? GREEN + "11" : "#0d0d12",
+          border: `1px solid ${bank > 0 ? GREEN + "66" : BORDER}`,
+          borderRadius: 6, padding: "10px 12px",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: 9, color: bank > 0 ? GREEN : GRAY, fontWeight: 700, letterSpacing: 0.5 }}>
+              💸 PROFIT BANK
             </div>
-          )}
-          {bank > 0 && (
-            <div style={{
-              flex: 1, background: GREEN + "11", border: `1px solid ${GREEN}33`, borderRadius: 6, padding: "8px 10px",
+            {withdrawn > 0 && (
+              <span style={{ fontSize: 9, color: GRAY }}>
+                Lifetime out: {fmtL(withdrawn)}
+              </span>
+            )}
+          </div>
+          <div style={{
+            fontSize: 16, color: bank > 0 ? GREEN : "#555", fontWeight: 800, marginTop: 4,
+          }}>{fmtL(bank)}</div>
+          <div style={{ fontSize: 9, color: GRAY, marginTop: 3, lineHeight: 1.3 }}>
+            {bank > 0
+              ? "Excess profits — never consumed by losses"
+              : "Profits at base capital will accumulate here"}
+          </div>
+          <button
+            onClick={() => bank > 0 && handleWithdraw(null)}
+            disabled={bank <= 0}
+            style={{
+              background: bank > 0 ? GREEN : "#222",
+              color: bank > 0 ? "#000" : "#555",
+              border: "none",
+              padding: "5px 12px", borderRadius: 4,
+              fontSize: 10, fontWeight: 700,
+              cursor: bank > 0 ? "pointer" : "not-allowed",
+              marginTop: 6,
+              opacity: bank > 0 ? 1 : 0.5,
             }}>
-              <div style={{ fontSize: 9, color: GREEN, fontWeight: 700 }}>💸 PROFIT BANK</div>
-              <div style={{ fontSize: 13, color: GREEN, fontWeight: 700, marginTop: 2 }}>{fmtL(bank)}</div>
-              <button onClick={() => handleWithdraw(null)} style={{
-                background: GREEN, color: "#000", border: "none",
-                padding: "3px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700,
-                cursor: "pointer", marginTop: 4,
-              }}>
-                💸 Withdraw All
-              </button>
-            </div>
-          )}
+            💸 Withdraw {bank > 0 ? "All" : "(empty)"}
+          </button>
+        </div>
+      </div>
+
+      {/* Info banner explaining how it works */}
+      {bank === 0 && loss_rec === 0 && (
+        <div style={{
+          background: ACCENT + "11", border: `1px solid ${ACCENT}33`,
+          borderRadius: 6, padding: "8px 10px", marginBottom: 10,
+          fontSize: 10, color: "#aaa", lineHeight: 1.5,
+        }}>
+          💡 <strong style={{ color: ACCENT }}>How Capital Tracker Works:</strong><br/>
+          • <strong>Profit at base ₹{fmtL(base).replace("₹", "")}</strong> → Goes to <strong style={{ color: GREEN }}>Profit Bank</strong> (cap stays at base)<br/>
+          • <strong>Loss</strong> → Capital reduces (Profit Bank UNTOUCHED)<br/>
+          • <strong>Profit when below base</strong> → First repairs capital, excess to bank<br/>
+          • <strong>Withdraw anytime</strong> from Profit Bank manually
         </div>
       )}
 
