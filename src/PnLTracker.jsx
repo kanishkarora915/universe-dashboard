@@ -370,76 +370,52 @@ export default function PnLTracker() {
       <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
         <button onClick={() => {
           const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-          // Fetch BOTH main + scalper trades for today (independent systems but unified report)
-          Promise.all([
-            fetch(`/api/trades/date/${today}`).then(r => r.json()).catch(() => []),
-            fetch(`/api/scalper/trades/closed?days=1`).then(r => r.json()).catch(() => []),
-          ]).then(([mainT, scalperT]) => {
-            const allMain = Array.isArray(mainT) ? mainT.map(t => ({ ...t, _source: "MAIN" })) : [];
-            const todayScalper = (Array.isArray(scalperT) ? scalperT : [])
-              .filter(t => (t.entry_time || "").startsWith(today))
-              .map(t => ({ ...t, _source: "SCALPER" }));
-            const trades = [...allMain, ...todayScalper];
-            exportPnLPDF(`Daily PnL Report — ${today}`, null, trades, null, "DAILY");
-          });
+          // Main P&L trades only — scalper has its own export in Scalper tab
+          fetch(`/api/trades/date/${today}`)
+            .then(r => r.json())
+            .then(trades => {
+              const safeT = Array.isArray(trades) ? trades : [];
+              exportPnLPDF(`Main P&L Daily Report — ${today}`, null, safeT, null, "DAILY");
+            })
+            .catch(() => {});
         }} style={{ background: ORANGE + "22", color: ORANGE, border: `1px solid ${ORANGE}44`, borderRadius: 8, padding: "5px 12px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
           📄 Export Daily
         </button>
         <button onClick={() => {
-          // Last 7 days
-          Promise.all([
-            fetch("/api/trades/closed?days=7").then(r => r.json()).catch(() => []),
-            fetch("/api/scalper/trades/closed?days=7").then(r => r.json()).catch(() => []),
-          ]).then(([mainT, scalperT]) => {
-            const trades = [
-              ...(Array.isArray(mainT) ? mainT.map(t => ({ ...t, _source: "MAIN" })) : []),
-              ...(Array.isArray(scalperT) ? scalperT.map(t => ({ ...t, _source: "SCALPER" })) : []),
-            ];
-            // Build daily breakdown
-            const daily = {};
-            trades.forEach(t => {
-              if (t.status === "OPEN") return;
-              const d = (t.entry_time || "").slice(0, 10);
-              if (!d) return;
-              if (!daily[d]) daily[d] = { trades: 0, wins: 0, losses: 0, pnl: 0 };
-              daily[d].trades++;
-              if (["T1_HIT", "T2_HIT", "TRAIL_EXIT"].includes(t.status)) daily[d].wins++;
-              else if (["SL_HIT", "REVERSAL_EXIT"].includes(t.status)) daily[d].losses++;
-              daily[d].pnl += (t.pnl_rupees || 0);
-            });
-            const today = new Date().toLocaleDateString("en-IN");
-            exportPnLPDF(`Weekly PnL Report (Last 7 Days as of ${today})`, null, trades, daily, "WEEKLY");
-          });
+          // Last 7 days — main P&L only
+          fetch("/api/trades/closed?days=7")
+            .then(r => r.json())
+            .then(mainT => {
+              const trades = Array.isArray(mainT) ? mainT : [];
+              const daily = {};
+              trades.forEach(t => {
+                if (t.status === "OPEN") return;
+                const d = (t.entry_time || "").slice(0, 10);
+                if (!d) return;
+                if (!daily[d]) daily[d] = { trades: 0, wins: 0, losses: 0, pnl: 0 };
+                daily[d].trades++;
+                if (["T1_HIT", "T2_HIT", "TRAIL_EXIT"].includes(t.status)) daily[d].wins++;
+                else if (["SL_HIT", "REVERSAL_EXIT"].includes(t.status)) daily[d].losses++;
+                daily[d].pnl += (t.pnl_rupees || 0);
+              });
+              const today = new Date().toLocaleDateString("en-IN");
+              exportPnLPDF(`Main P&L Weekly Report (Last 7 Days as of ${today})`, null, trades, daily, "WEEKLY");
+            })
+            .catch(() => {});
         }} style={{ background: ACCENT + "22", color: ACCENT, border: `1px solid ${ACCENT}44`, borderRadius: 8, padding: "5px 12px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
           📄 Export Weekly
         </button>
         <button onClick={() => {
           const [y, m] = selectedMonth.split("-");
-          // Get all trades for month from both sources
-          const monthStart = `${y}-${m.padStart(2, "0")}-01`;
-          Promise.all([
-            fetch(`/api/trades/monthly/${y}/${m}`).then(r => r.json()).catch(() => ({ trades: [], daily: {} })),
-            fetch(`/api/scalper/trades/closed?days=35`).then(r => r.json()).catch(() => []),
-          ]).then(([mainReport, scalperT]) => {
-            const mainTrades = (mainReport?.trades || []).map(t => ({ ...t, _source: "MAIN" }));
-            const scalperTrades = (Array.isArray(scalperT) ? scalperT : [])
-              .filter(t => (t.entry_time || "").startsWith(`${y}-${m.padStart(2, "0")}`))
-              .map(t => ({ ...t, _source: "SCALPER" }));
-            const trades = [...mainTrades, ...scalperTrades];
-            // Merge daily breakdown
-            const daily = { ...(mainReport?.daily || {}) };
-            scalperTrades.forEach(t => {
-              if (t.status === "OPEN") return;
-              const d = (t.entry_time || "").slice(0, 10);
-              if (!d) return;
-              if (!daily[d]) daily[d] = { trades: 0, wins: 0, losses: 0, pnl: 0 };
-              daily[d].trades++;
-              if (["T1_HIT", "T2_HIT", "TRAIL_EXIT"].includes(t.status)) daily[d].wins++;
-              else if (["SL_HIT", "REVERSAL_EXIT"].includes(t.status)) daily[d].losses++;
-              daily[d].pnl += (t.pnl_rupees || 0);
-            });
-            exportPnLPDF(`Monthly PnL Report — ${selectedMonth}`, null, trades, daily, "MONTHLY");
-          });
+          // Main P&L trades only for the selected month
+          fetch(`/api/trades/monthly/${y}/${m}`)
+            .then(r => r.json())
+            .then(mainReport => {
+              const trades = Array.isArray(mainReport?.trades) ? mainReport.trades : [];
+              const daily = mainReport?.daily || {};
+              exportPnLPDF(`Main P&L Monthly Report — ${selectedMonth}`, null, trades, daily, "MONTHLY");
+            })
+            .catch(() => {});
         }} style={{ background: YELLOW + "22", color: YELLOW, border: `1px solid ${YELLOW}44`, borderRadius: 8, padding: "5px 12px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>
           📄 Export Monthly
         </button>
