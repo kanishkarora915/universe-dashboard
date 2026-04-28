@@ -195,7 +195,7 @@ export function EnhancedVerdictCard({ index, verdict, reasons }) {
       } catch {}
     };
     fetchLtp();
-    const iv = setInterval(fetchLtp, 5000); // Refresh every 5 sec
+    const iv = setInterval(() => { if (document.visibilityState === "visible") fetchLtp(); }, 10000);
     return () => { cancelled = true; clearInterval(iv); };
   }, [index, strike, action]);
 
@@ -569,7 +569,7 @@ export default function BuyerCockpit({ live, verdicts, reasonsMap, openPositions
       } catch {}
     };
     fetchPositions();
-    const iv = setInterval(fetchPositions, 10000); // 10 sec refresh
+    const iv = setInterval(() => { if (document.visibilityState === "visible") fetchPositions(); }, 15000);
     return () => { cancelled = true; clearInterval(iv); };
   }, []);
 

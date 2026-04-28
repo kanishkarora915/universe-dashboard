@@ -77,7 +77,8 @@ export default function TrinityTab() {
   // Initial load + 5s polling fallback
   useEffect(() => {
     loadAll();
-    const iv = setInterval(loadAll, 5000);
+    // 30s for full state (WebSocket /ws/trinity/live handles realtime)
+    const iv = setInterval(() => { if (document.visibilityState === "visible") loadAll(); }, 30000);
     return () => clearInterval(iv);
   }, [loadAll]);
 

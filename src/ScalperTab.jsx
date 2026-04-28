@@ -413,8 +413,10 @@ export default function ScalperTab() {
 
   useEffect(() => {
     fullLoad();
-    const ivFull = setInterval(fullLoad, 5000);
-    const ivTick = setInterval(livePoll, 1000);  // 1s tick poll like real trading apps
+    // Pause polling when tab not visible (huge CPU saving)
+    const visGuard = (fn) => () => { if (document.visibilityState === "visible") fn(); };
+    const ivFull = setInterval(visGuard(fullLoad), 15000);  // was 5s — too aggressive
+    const ivTick = setInterval(visGuard(livePoll), 2000);   // was 1s — 2s feels live, halves load
     return () => { clearInterval(ivFull); clearInterval(ivTick); };
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -454,7 +456,7 @@ export default function ScalperTab() {
       if (r && !r.error) setSmartSL(r);
     };
     fetchSL();
-    const iv = setInterval(fetchSL, 10000);
+    const iv = setInterval(() => { if (document.visibilityState === "visible") fetchSL(); }, 30000);
     return () => clearInterval(iv);
   }, []);
 
@@ -878,7 +880,7 @@ function TickChart({ tradeId, entry, sl, t1, t2 }) {
       if (!cancelled && r && Array.isArray(r.ticks)) setTicks(r.ticks);
     };
     fetchTicks();
-    const iv = setInterval(fetchTicks, 2000);
+    const iv = setInterval(() => { if (document.visibilityState === "visible") fetchTicks(); }, 5000);
     return () => { cancelled = true; clearInterval(iv); };
   }, [tradeId]);
 

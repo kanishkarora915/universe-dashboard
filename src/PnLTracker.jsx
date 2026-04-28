@@ -338,7 +338,11 @@ export default function PnLTracker() {
     if (Array.isArray(d)) setDates(d);
   }, []);
 
-  useEffect(() => { refresh(); const iv = setInterval(refresh, 5000); return () => clearInterval(iv); }, [refresh]);
+  useEffect(() => {
+    refresh();
+    const iv = setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 15000);
+    return () => clearInterval(iv);
+  }, [refresh]);
 
   // Fetch trades for selected date
   useEffect(() => {

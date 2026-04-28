@@ -1811,7 +1811,7 @@ function PriceActionTab() {
 
   useEffect(() => {
     setLoading(true); refresh().then(() => setLoading(false));
-    const iv = setInterval(refresh, 5000);
+    const iv = setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 15000);
     return () => clearInterval(iv);
   }, [refresh]);
 

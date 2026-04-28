@@ -201,6 +201,8 @@ export function useMarketData() {
   const startPolling = useCallback(() => {
     if (pollRef.current) return;
     const poll = async () => {
+      // Skip when tab not visible (huge CPU saving)
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
       try {
         const liveData = await fetchLive();
         if (liveData && !liveData.error) setLiveCached(liveData);
@@ -209,7 +211,9 @@ export function useMarketData() {
       } catch (err) {}
     };
     poll();
-    pollRef.current = setInterval(poll, 3000);
+    // Was 3s — too aggressive. 8s is plenty for live overview data
+    // (tab-specific high-frequency polls handle realtime where needed)
+    pollRef.current = setInterval(poll, 8000);
   }, []);
 
   // ── Lifecycle ─────────────────────────────────────────────────────────
@@ -217,7 +221,12 @@ export function useMarketData() {
   useEffect(() => {
     connectWS();
     fetchAllTabData();
-    slowPollRef.current = setInterval(fetchAllTabData, 30000);
+    // Slow poll: 30s → 60s (fetches all tab data, only need fresh on demand)
+    slowPollRef.current = setInterval(() => {
+      if (typeof document === "undefined" || document.visibilityState === "visible") {
+        fetchAllTabData();
+      }
+    }, 60000);
 
     return () => {
       if (wsRef.current) wsRef.current.close();

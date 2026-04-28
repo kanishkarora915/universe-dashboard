@@ -59,7 +59,11 @@ export default function CapitalTracker({ system = "SCALPER" }) {
 
   useEffect(() => {
     load();
-    const iv = setInterval(load, 5000);
+    // Account state doesn't change every second — 30s is plenty
+    // Pause when tab not visible (saves background CPU)
+    const iv = setInterval(() => {
+      if (document.visibilityState === "visible") load();
+    }, 30000);
     return () => clearInterval(iv);
   }, [system]);
 
