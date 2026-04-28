@@ -350,6 +350,111 @@ def reset_capital(system, to_base=True):
     return {"ok": True, "new_current": new_current}
 
 
+def backfill_from_trades(system):
+    """Scan existing closed trades from the DB and replay through tracker.
+    Builds full historical capital state from past trades.
+
+    SCALPER → reads scalper_trades.db
+    MAIN    → reads trades.db (via trade_logger DB_PATH)
+    """
+    if system not in DEFAULT_BASE:
+        return {"error": f"Invalid system: {system}"}
+
+    # Reset to clean state first (avoid double counting)
+    init_db()
+    conn = _conn()
+    base = conn.execute(
+        "SELECT base_capital FROM capital_state WHERE system=?", (system,)
+    ).fetchone()
+    base_amt = base["base_capital"] if base else DEFAULT_BASE[system]
+
+    now_iso = ist_now().isoformat()
+    # Reset state to clean
+    conn.execute("""
+        UPDATE capital_state
+        SET current_capital=?, profit_bank=0, loss_recovered=0, total_withdrawn=0, updated_at=?
+        WHERE system=?
+    """, (base_amt, now_iso, system))
+    conn.execute("DELETE FROM capital_history WHERE system=?", (system,))
+    conn.commit()
+    conn.close()
+
+    # Now scan trades and replay
+    closed_trades = []
+
+    if system == "SCALPER":
+        from pathlib import Path
+        scalper_db = Path("/data/scalper_trades.db") if Path("/data").is_dir() \
+                     else Path(__file__).parent / "scalper_trades.db"
+        if not scalper_db.exists():
+            return {"ok": True, "replayed": 0, "message": "No scalper DB found"}
+        sc = sqlite3.connect(str(scalper_db))
+        sc.row_factory = sqlite3.Row
+        try:
+            rows = sc.execute("""
+                SELECT id, entry_time, exit_time, idx, action, strike,
+                       entry_price, exit_price, pnl_rupees, status
+                FROM scalper_trades
+                WHERE status != 'OPEN' AND pnl_rupees IS NOT NULL
+                ORDER BY exit_time ASC, entry_time ASC
+            """).fetchall()
+            closed_trades = [dict(r) for r in rows]
+        finally:
+            sc.close()
+
+    elif system == "MAIN":
+        from pathlib import Path
+        # Locate trades.db (usually on persistent disk)
+        main_db = Path("/data/trades.db") if Path("/data/trades.db").exists() \
+                  else Path(__file__).parent / "trades.db"
+        if not main_db.exists():
+            return {"ok": True, "replayed": 0, "message": "No main trades DB found"}
+        mc = sqlite3.connect(str(main_db))
+        mc.row_factory = sqlite3.Row
+        try:
+            rows = mc.execute("""
+                SELECT id, entry_time, exit_time, idx, action, strike,
+                       entry_price, exit_price, pnl_rupees, status
+                FROM trades
+                WHERE status != 'OPEN' AND pnl_rupees IS NOT NULL
+                ORDER BY exit_time ASC, entry_time ASC
+            """).fetchall()
+            closed_trades = [dict(r) for r in rows]
+        finally:
+            mc.close()
+
+    # Replay each trade through record_trade_pnl
+    replayed = 0
+    total_pnl = 0
+    for t in closed_trades:
+        pnl = t.get("pnl_rupees") or 0
+        if pnl == 0:
+            continue
+        desc = f"{t.get('idx')} {t.get('action')} {t.get('strike')} @ ₹{t.get('exit_price', 0):.2f} ({t.get('status')})"
+        try:
+            record_trade_pnl(
+                system,
+                pnl,
+                trade_id=t.get("id"),
+                description=f"[BACKFILL] {desc}",
+            )
+            replayed += 1
+            total_pnl += pnl
+        except Exception as e:
+            print(f"[CAPITAL] backfill error trade #{t.get('id')}: {e}")
+
+    final_state = get_state(system)
+    return {
+        "ok": True,
+        "system": system,
+        "replayed": replayed,
+        "total_pnl_replayed": round(total_pnl, 2),
+        "final_capital": final_state.get("current_capital"),
+        "final_profit_bank": final_state.get("profit_bank"),
+        "final_loss_recovered": final_state.get("loss_recovered"),
+    }
+
+
 def get_summary(system):
     """One-shot summary for UI."""
     state = get_state(system)

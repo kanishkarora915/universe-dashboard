@@ -103,7 +103,24 @@ export default function CapitalTracker({ system = "SCALPER" }) {
             Auto-adjusts on profit/loss · Independent system
           </div>
         </div>
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <button onClick={async () => {
+            if (!window.confirm("Replay ALL existing closed trades through tracker?\n\nThis will:\n• Reset current state\n• Process every past trade in order\n• Build profit_bank + loss_recovered from history\n\nSafe to run multiple times.")) return;
+            const r = await postJSON(`/api/capital/${system}/backfill`, {});
+            if (r && r.ok) {
+              alert(`✅ Backfill complete!\n\nReplayed: ${r.replayed} trades\nTotal P&L: ₹${Math.round(r.total_pnl_replayed).toLocaleString("en-IN")}\nFinal capital: ₹${Math.round(r.final_capital).toLocaleString("en-IN")}\nProfit Bank: ₹${Math.round(r.final_profit_bank).toLocaleString("en-IN")}\nLoss Recovered: ₹${Math.round(r.final_loss_recovered).toLocaleString("en-IN")}`);
+              await load();
+            } else {
+              alert(`Backfill failed: ${r?.error || "Unknown error"}`);
+            }
+          }} style={{
+            background: ACCENT + "22", color: ACCENT,
+            border: `1px solid ${ACCENT}66`,
+            padding: "5px 10px", borderRadius: 4,
+            fontSize: 10, fontWeight: 700, cursor: "pointer",
+          }}>
+            🔄 Backfill History
+          </button>
           <button onClick={() => setShowHistory(!showHistory)} style={btnSecondary}>
             {showHistory ? "Hide History" : "📜 History"}
           </button>

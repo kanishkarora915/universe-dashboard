@@ -1253,6 +1253,21 @@ async def capital_reset(system: str, body: dict = None):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.post("/api/capital/{system}/backfill")
+async def capital_backfill(system: str):
+    """Replay all existing closed trades through tracker — builds full
+    historical state from past trades (P&L, profit bank, loss recovery)."""
+    try:
+        import capital_tracker
+        sys_upper = system.upper()
+        if sys_upper not in ("SCALPER", "MAIN"):
+            return JSONResponse({"error": "system must be SCALPER or MAIN"}, status_code=400)
+        return capital_tracker.backfill_from_trades(sys_upper)
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── BUYER MODE endpoints ──
 
 @app.get("/api/buyer-mode")
