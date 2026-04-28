@@ -1238,6 +1238,76 @@ async def risk_tier_reset():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Daily Training endpoints (B1+B2+B3) ──
+
+@app.get("/api/daily/profile/today")
+async def daily_profile_today():
+    """Today's profile (live updates throughout day)."""
+    try:
+        from daily_training import get_today_profile
+        return get_today_profile() or {"error": "No profile yet — capture at 3:30 PM"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/daily/profile/{day_name}")
+async def daily_profile_day(day_name: str):
+    """Past 12 profiles for a weekday (MON, TUE, WED...)."""
+    try:
+        from daily_training import get_profile_for_day
+        return {"profiles": get_profile_for_day(day_name)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/daily/comparison")
+async def daily_comparison(weeks: int = 4):
+    """Find similar past same-weekday profiles for today."""
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from daily_training import find_similar_past_days
+        return {"matches": find_similar_past_days(engine, days_back=weeks)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/daily/weights/today")
+async def daily_weights_today():
+    """Day-specific engine weights for today (Mon/Tue/etc)."""
+    try:
+        from daily_training import get_day_weights
+        result = get_day_weights()
+        return result or {"error": "No day-specific weights yet"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/daily/predict")
+async def daily_predict():
+    """Morning prediction (B10) — full forecast for today's session."""
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from morning_prediction import predict_today
+        return predict_today(engine)
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/daily/capture-now")
+async def daily_capture_now():
+    """Manual trigger — force EOD profile capture."""
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from daily_training import capture_today_profile
+        return capture_today_profile(engine)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Truth/Lie Detector endpoints (A3) ──
 
 @app.get("/api/truth-lie/patterns")

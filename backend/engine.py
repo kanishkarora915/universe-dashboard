@@ -502,6 +502,12 @@ class MarketEngine:
             rejection_engine.capture_eod_levels(self)
         except Exception as e:
             print(f"[REJECTION] EOD capture error: {e}")
+        # B1: Daily Training — capture today's profile (EOD)
+        try:
+            import daily_training
+            daily_training.capture_today_profile(self)
+        except Exception as e:
+            print(f"[DAILY-TRAIN] EOD capture error: {e}")
 
     def _safe_shadow_call(self, method_name):
         """Safely invoke shadow_autopsy methods — isolated from tick loop."""
