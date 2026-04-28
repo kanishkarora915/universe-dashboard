@@ -424,14 +424,17 @@ class MarketEngine:
             self.backtest_tracker = None
 
     def _start_auto_trainer(self):
-        """Background thread: auto-train weights every Sunday 8 PM IST.
-        Also trains on startup if last training was >7 days ago."""
+        """Background thread: auto-train weights DAILY at 4:00 PM IST (post-market).
+        Also trains on startup if last training was >24 hours ago.
+
+        Daily learning is much more responsive than weekly — system adapts to
+        regime changes within a day instead of waiting a week."""
         def _trainer_loop():
             try:
                 from ml_feedback import run_auto_train, get_last_training_time
-                # Check if training is overdue on startup
                 last_train = get_last_training_time()
-                if last_train is None or (ist_now() - last_train).days >= 7:
+                # Train on startup if last train >24h ago
+                if last_train is None or (ist_now() - last_train).total_seconds() >= 86400:
                     print("[AUTO-TRAIN] Training overdue — running now...")
                     result = run_auto_train()
                     print(f"[AUTO-TRAIN] Startup training done: {result.get('notes', 'OK')}")
@@ -441,22 +444,25 @@ class MarketEngine:
             while True:
                 try:
                     now = ist_now()
-                    # Sunday = 6, check at 8 PM IST
-                    if now.weekday() == 6 and now.hour == 20 and now.minute < 5:
+                    # DAILY at 4:00 PM IST (post-market close, all outcomes checked by then)
+                    # Skip weekends (no new market data)
+                    if (now.weekday() < 5 and now.hour == 16 and now.minute < 5):
                         from ml_feedback import run_auto_train, get_last_training_time
                         last_train = get_last_training_time()
-                        if last_train is None or (now - last_train).days >= 6:
-                            print("[AUTO-TRAIN] Weekly training triggered...")
+                        # Don't double-train within same day
+                        if (last_train is None
+                                or last_train.date() != now.date()):
+                            print("[AUTO-TRAIN] Daily 4PM training triggered...")
                             result = run_auto_train()
                             print(f"[AUTO-TRAIN] Done: {result.get('notes', 'OK')}")
-                    time.sleep(300)  # Check every 5 minutes
+                    time.sleep(300)  # Check every 5 min
                 except Exception as e:
                     print(f"[AUTO-TRAIN] Error: {e}")
                     time.sleep(600)
 
         t = threading.Thread(target=_trainer_loop, daemon=True, name="auto-trainer")
         t.start()
-        print("[ENGINE] Auto-trainer thread started (trains Sunday 8 PM IST)")
+        print("[ENGINE] Auto-trainer thread started (trains DAILY 4:00 PM IST, weekdays only)")
 
     def _capture_trading_times(self):
         """Background: capture 5-min trading times snapshot."""

@@ -88,12 +88,15 @@ class BacktestTracker:
         self._last_log = {}  # Per-index: {"NIFTY": timestamp, "BANKNIFTY": timestamp}
 
     def log_verdict(self, idx, action, probability, spot_price, engine_scores=None):
-        """Log a verdict signal with per-engine score breakdown for later verification."""
-        if action == "NO TRADE" or probability < 60 or spot_price <= 0:
+        """Log a verdict signal with per-engine score breakdown for later verification.
+
+        Lowered probability threshold 60→50 to capture more training data.
+        Even weak signals teach the model when engines are unreliable."""
+        if action == "NO TRADE" or probability < 50 or spot_price <= 0:
             return
-        # Don't log more than once per 2 minutes PER INDEX
+        # Don't log more than once per 90 sec PER INDEX (was 120 sec)
         now = time.time()
-        if now - self._last_log.get(idx, 0) < 120:
+        if now - self._last_log.get(idx, 0) < 90:
             return
         self._last_log[idx] = now
 

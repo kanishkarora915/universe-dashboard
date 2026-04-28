@@ -230,12 +230,20 @@ def get_engine_accuracy(days=30):
 def get_optimal_weights():
     """Calculate recommended weights using REAL per-engine accuracy.
 
-    Bayesian update: new_weight = default_weight × (engine_accuracy / avg_accuracy)
-    Capped at ±15% per cycle for stability. Normalized to keep total ~140.
+    IMPROVEMENTS (v2):
+    - Bayesian update with TREND awareness (last 7 days weighted 2x vs older 23 days)
+    - High-signal accuracy bonus (when engine scored >50% of max, did it win?)
+    - Cap raised ±15% → ±30% per cycle (faster learning)
+    - Min data lowered 3 → 2 (more engines participate sooner)
+    - Compound learning: progressively shifts toward winners
     """
     accuracy = get_engine_accuracy(days=30)
     if "error" in accuracy and not accuracy.get("engines"):
         return {"error": accuracy["error"], "current": {}, "recommended": {}}
+
+    # Also fetch last 7-day accuracy for trend weighting
+    accuracy_7d = get_engine_accuracy(days=7)
+    engines_7d_map = {e["name"]: e for e in accuracy_7d.get("engines", [])}
 
     current = load_weights()
     engine_data = accuracy.get("engines", [])
@@ -244,7 +252,6 @@ def get_optimal_weights():
     has_real = any(e.get("hasRealData") for e in engine_data)
 
     if not has_real or not engine_data:
-        # Not enough per-engine data — return current weights as recommended
         return {
             "current": {k: current.get(k, v["max"]) for k, v in DEFAULT_WEIGHTS.items()},
             "recommended": {k: current.get(k, v["max"]) for k, v in DEFAULT_WEIGHTS.items()},
@@ -256,13 +263,23 @@ def get_optimal_weights():
             "hasRealData": False,
         }
 
-    # Calculate average accuracy across engines with real data
-    real_engines = [e for e in engine_data if e["dataPoints"] >= 3]
+    # Calculate WEIGHTED average accuracy:
+    #   Recent 7d weighted 2x vs older 23d (trend-aware)
+    real_engines = [e for e in engine_data if e["dataPoints"] >= 2]
     if not real_engines:
         avg_accuracy = 50
     else:
-        avg_accuracy = sum(e["accuracy"] for e in real_engines) / len(real_engines)
-    avg_accuracy = max(avg_accuracy, 1)  # Prevent division by zero
+        # Blend 30d + 7d (trend-aware)
+        blended_accs = []
+        for e in real_engines:
+            acc_30d = e["accuracy"]
+            e_7d = engines_7d_map.get(e["name"])
+            acc_7d = e_7d["accuracy"] if e_7d and e_7d.get("dataPoints", 0) >= 2 else acc_30d
+            # Blend: 60% recent + 40% all 30 days (catches deteriorating engines)
+            blended = (acc_7d * 0.6) + (acc_30d * 0.4)
+            blended_accs.append(blended)
+        avg_accuracy = sum(blended_accs) / len(blended_accs)
+    avg_accuracy = max(avg_accuracy, 1)
 
     recommended = {}
     changes = []
@@ -272,17 +289,28 @@ def get_optimal_weights():
         info = DEFAULT_WEIGHTS[name]
         curr = current.get(name, info["max"])
 
-        if eng["dataPoints"] >= 3:
-            # Real Bayesian update
-            ratio = eng["accuracy"] / avg_accuracy
-            new_weight = round(info["max"] * ratio)
+        if eng["dataPoints"] >= 2:  # Lowered from 3
+            # Get blended accuracy (trend-aware)
+            e_7d = engines_7d_map.get(name)
+            acc_7d = e_7d["accuracy"] if e_7d and e_7d.get("dataPoints", 0) >= 2 else eng["accuracy"]
+            blended_acc = (acc_7d * 0.6) + (eng["accuracy"] * 0.4)
 
-            # Cap at ±15% of default
-            max_change = max(1, round(info["max"] * 0.15))
-            new_weight = max(info["max"] - max_change, min(info["max"] + max_change, new_weight))
-            new_weight = max(1, new_weight)  # Never go below 1
+            # High-signal bonus: if engine performs well when scored HIGH, boost ratio
+            high_acc = eng.get("highSignalAccuracy", 0) or 0
+            if high_acc >= 60 and eng["dataPoints"] >= 5:
+                blended_acc = blended_acc * 0.7 + high_acc * 0.3  # 30% bonus weight
+
+            # Bayesian update with raised cap
+            ratio = blended_acc / avg_accuracy
+            # Compound from CURRENT weight (not default) — progressive learning
+            new_weight = round(curr * ratio)
+
+            # Cap at ±30% per cycle (was ±15% — too conservative)
+            max_change = max(2, round(info["max"] * 0.30))
+            new_weight = max(curr - max_change, min(curr + max_change, new_weight))
+            # Never go below 1, never above 2x default (sanity ceiling)
+            new_weight = max(1, min(info["max"] * 2, new_weight))
         else:
-            # Not enough data — keep current
             new_weight = curr
 
         recommended[name] = new_weight
@@ -295,8 +323,14 @@ def get_optimal_weights():
                 "to": new_weight,
                 "change": diff,
                 "accuracy": eng["accuracy"],
+                "accuracy_7d": engines_7d_map.get(name, {}).get("accuracy"),
+                "highSignalAccuracy": eng.get("highSignalAccuracy", 0),
                 "dataPoints": eng["dataPoints"],
-                "reason": f"Accuracy {eng['accuracy']}% vs avg {avg_accuracy:.0f}%"
+                "reason": (
+                    f"Blended {round((engines_7d_map.get(name, {}).get('accuracy') or eng['accuracy']) * 0.6 + eng['accuracy'] * 0.4, 1)}% "
+                    f"vs avg {avg_accuracy:.0f}% "
+                    f"(7d: {engines_7d_map.get(name, {}).get('accuracy', '—')}%, 30d: {eng['accuracy']}%)"
+                )
             })
 
     # Normalize to keep total near TOTAL_MAX
@@ -315,6 +349,7 @@ def get_optimal_weights():
         "dataPoints": accuracy.get("total", 0),
         "avgAccuracy": round(avg_accuracy, 1),
         "hasRealData": True,
+        "learningMode": "trend-aware-v2",
     }
 
 
