@@ -108,7 +108,16 @@ def _is_trading_day():
 
 
 def _get_running_capital():
-    """Get current running capital = initial + cumulative realized P&L."""
+    """Get current running capital from capital tracker (MAIN system).
+    Falls back to legacy calc if tracker unavailable."""
+    try:
+        from capital_tracker import get_running_capital
+        cap = get_running_capital("MAIN")
+        if cap and cap > 0:
+            return cap
+    except Exception:
+        pass
+    # Legacy fallback
     if not DB_PATH:
         return INITIAL_CAPITAL
     try:
@@ -118,7 +127,7 @@ def _get_running_capital():
         ).fetchone()[0] or 0
         conn.close()
         running = INITIAL_CAPITAL + total_pnl
-        return max(running, INITIAL_CAPITAL * 0.2)  # Never go below 20% of initial (₹2L floor)
+        return max(running, INITIAL_CAPITAL * 0.2)
     except Exception:
         return INITIAL_CAPITAL
 
@@ -803,6 +812,17 @@ class TradeManager:
                       new_sl, breakeven_active, trailing_active, trail_level,
                       new_status, exit_price, ist_now().isoformat(), exit_reason, alerts_str, t["id"]))
                 print(f"[TRADE] CLOSED: {action} {idx} {strike} — {new_status} — PnL: ₹{total_pnl:+,.0f} (partial: ₹{already_booked_pnl:+,.0f} + exit: ₹{remaining_pnl_for_log:+,.0f})")
+                # ── Record P&L in capital tracker (auto-adjust running capital + profit bank) ──
+                try:
+                    from capital_tracker import record_trade_pnl
+                    record_trade_pnl(
+                        "MAIN",
+                        total_pnl,
+                        trade_id=t["id"],
+                        description=f"{idx} {action} {strike} @ ₹{exit_price} ({new_status})"
+                    )
+                except Exception as _e:
+                    print(f"[CAPITAL] main close record error: {_e}")
 
                 # Autopsy: capture exit snapshot
                 if self._engine_ref:

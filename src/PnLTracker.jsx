@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import CapitalTracker from "./components/CapitalTracker";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -362,6 +363,9 @@ export default function PnLTracker() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* Independent Capital Tracker for MAIN P&L — base/running/profit-bank logic */}
+      <CapitalTracker system="MAIN" />
+
       {/* EXPORT BUTTONS */}
       <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
         <button onClick={() => {

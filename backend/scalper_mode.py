@@ -250,7 +250,12 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None)
     cfg = get_scalper_config()
     threshold = cfg.get("threshold") or SCALPER_THRESHOLD
     daily_cap = cfg.get("daily_cap") or SCALPER_DAILY_CAP
-    capital = cfg.get("capital") or 1000000
+    # Use RUNNING capital from tracker (compounds with P&L)
+    try:
+        from capital_tracker import get_running_capital
+        capital = get_running_capital("SCALPER") or cfg.get("capital") or 1000000
+    except Exception:
+        capital = cfg.get("capital") or 1000000
 
     win_pct = verdict_data.get("winProbability", 0)
     if win_pct < threshold:
@@ -482,7 +487,7 @@ def calc_scalper_size(entry_price, sl_price, running_capital=1000000):
 def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
                     entry_reasoning=None, entry_bull_pct=None, entry_bear_pct=None,
                     entry_spot=None):
-    """Create new scalper trade with user-configured capital + qty + entry context."""
+    """Create new scalper trade with RUNNING capital (auto-adjusts after profit/loss)."""
     if entry_price <= 0:
         return None
 
@@ -490,7 +495,12 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
     sl_pct = cfg.get("sl_pct") or SCALPER_SL_PCT
     t1_pct = cfg.get("t1_pct") or SCALPER_T1_PCT
     t2_pct = cfg.get("t2_pct") or SCALPER_T2_PCT
-    capital = cfg.get("capital") or 1000000
+    # Use RUNNING capital (capital tracker) — base falls back to user config
+    try:
+        from capital_tracker import get_running_capital
+        capital = get_running_capital("SCALPER") or cfg.get("capital") or 1000000
+    except Exception:
+        capital = cfg.get("capital") or 1000000
 
     sl_price = round(entry_price * (1 - sl_pct))
     t1_price = round(entry_price * (1 + t1_pct))
@@ -637,6 +647,13 @@ def manual_exit(trade_id, current_ltp, reason="MANUAL_EXIT"):
         conn.commit()
 
         print(f"[SCALPER] MANUAL EXIT #{trade_id}: ₹{exit_price} | PnL ₹{pnl_rupees:+,.0f}")
+        # Record P&L in capital tracker (auto-adjust)
+        try:
+            from capital_tracker import record_trade_pnl
+            record_trade_pnl("SCALPER", pnl_rupees, trade_id=trade_id,
+                             description=f"Manual exit @ ₹{exit_price:.2f}")
+        except Exception as e:
+            print(f"[CAPITAL] manual exit record error: {e}")
         return {
             "ok": True, "trade_id": trade_id, "exit_price": exit_price,
             "pnl_rupees": pnl_rupees, "pnl_pts": pnl_pts, "hold_seconds": hold_sec,
@@ -832,6 +849,13 @@ def check_scalper_exits(chains):
                   smart_active_sl if smart_enabled else None,
                   t["id"]))
             print(f"[SCALPER] CLOSED #{t['id']} {idx} {action} {strike}: ₹{final_pnl:+,.0f} ({new_status})")
+            # ── Record P&L in capital tracker (auto-adjust running capital + profit bank) ──
+            try:
+                from capital_tracker import record_trade_pnl
+                desc = f"{idx} {action} {strike} @ ₹{exit_price} ({new_status})"
+                record_trade_pnl("SCALPER", final_pnl, trade_id=t["id"], description=desc)
+            except Exception as e:
+                print(f"[CAPITAL] scalper record error: {e}")
         else:
             conn2.execute("""
                 UPDATE scalper_trades SET

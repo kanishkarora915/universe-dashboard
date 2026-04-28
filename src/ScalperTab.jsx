@@ -16,6 +16,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createChart, LineSeries } from "lightweight-charts";
 import SmartSLLadder from "./components/SmartSLLadder";
+import CapitalTracker from "./components/CapitalTracker";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -548,6 +549,9 @@ export default function ScalperTab() {
       </div>
 
       {/* CAPITAL USAGE PANEL */}
+      {/* Independent Capital Tracker — base/running/profit-bank logic */}
+      <CapitalTracker system="SCALPER" />
+
       <CapitalUsagePanel usage={capitalUsage} config={config} todayPnl={todayPnl} openLivePnl={openLivePnl} />
 
       {/* Quick stats */}

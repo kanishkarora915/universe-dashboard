@@ -1179,6 +1179,80 @@ async def zones_analysis(index: str):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Capital Tracker endpoints ──
+# Independent per-system tracker (SCALPER + MAIN). Auto-adjusts on
+# trade close. Profit Bank stores excess over base. Loss reduces capital.
+
+@app.get("/api/capital/{system}")
+async def capital_get(system: str):
+    """Get capital state for SCALPER or MAIN system."""
+    try:
+        import capital_tracker
+        sys_upper = system.upper()
+        if sys_upper not in ("SCALPER", "MAIN"):
+            return JSONResponse({"error": "system must be SCALPER or MAIN"}, status_code=400)
+        return capital_tracker.get_summary(sys_upper)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/capital/{system}/history")
+async def capital_history(system: str, limit: int = 100):
+    """Full capital adjustment history for a system."""
+    try:
+        import capital_tracker
+        sys_upper = system.upper()
+        if sys_upper not in ("SCALPER", "MAIN"):
+            return JSONResponse({"error": "system must be SCALPER or MAIN"}, status_code=400)
+        return {"history": capital_tracker.get_history(sys_upper, limit=limit)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/capital/{system}/withdraw")
+async def capital_withdraw(system: str, body: dict = None):
+    """Manual withdraw from Profit Bank. body={amount: float} or omit for full."""
+    try:
+        import capital_tracker
+        sys_upper = system.upper()
+        if sys_upper not in ("SCALPER", "MAIN"):
+            return JSONResponse({"error": "system must be SCALPER or MAIN"}, status_code=400)
+        amount = (body or {}).get("amount")
+        return capital_tracker.withdraw_profit_bank(sys_upper, amount=amount)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/capital/{system}/base")
+async def capital_set_base(system: str, body: dict):
+    """Set base capital target (e.g. ₹10L)."""
+    try:
+        import capital_tracker
+        sys_upper = system.upper()
+        if sys_upper not in ("SCALPER", "MAIN"):
+            return JSONResponse({"error": "system must be SCALPER or MAIN"}, status_code=400)
+        new_base = body.get("base_capital")
+        if not new_base or new_base <= 0:
+            return JSONResponse({"error": "base_capital must be > 0"}, status_code=400)
+        return capital_tracker.set_base_capital(sys_upper, float(new_base))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/capital/{system}/reset")
+async def capital_reset(system: str, body: dict = None):
+    """Reset current capital to base. body={to_base: bool} default True."""
+    try:
+        import capital_tracker
+        sys_upper = system.upper()
+        if sys_upper not in ("SCALPER", "MAIN"):
+            return JSONResponse({"error": "system must be SCALPER or MAIN"}, status_code=400)
+        to_base = (body or {}).get("to_base", True)
+        return capital_tracker.reset_capital(sys_upper, to_base=bool(to_base))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── BUYER MODE endpoints ──
 
 @app.get("/api/buyer-mode")
