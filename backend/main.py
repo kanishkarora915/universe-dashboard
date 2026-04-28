@@ -1238,6 +1238,82 @@ async def risk_tier_reset():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Truth/Lie Detector endpoints (A3) ──
+
+@app.get("/api/truth-lie/patterns")
+async def truth_lie_patterns(days: int = 30):
+    """Aggregate pattern analysis (top 50 patterns)."""
+    try:
+        from truth_lie_detector import get_pattern_summary
+        return {"patterns": get_pattern_summary(days=days)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/truth-lie/check")
+async def truth_lie_check(action: str, probability: int, top_engine: str = "unknown", vix: float = 18):
+    """Check if a hypothetical trade would be blocked by pattern matching."""
+    try:
+        from truth_lie_detector import check_pattern
+        is_lie, conf, win_rate, samples, msg = check_pattern(
+            action, probability, top_engine, vix
+        )
+        return {
+            "is_lie": is_lie,
+            "confidence": conf,
+            "win_rate": win_rate,
+            "samples": samples,
+            "message": msg,
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── Quality Score endpoints (A8) ──
+
+@app.get("/api/quality/current/{index}")
+async def quality_current(index: str):
+    """Live quality score for current verdict on this index."""
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from quality_score import calculate_quality
+        idx = index.upper()
+        verdict = engine.get_trap_verdict()
+        v = verdict.get(idx.lower(), {})
+        action = v.get("action", "")
+        if not action or action == "NO TRADE":
+            return {"score": 0, "grade": "NO_TRADE", "passes": False, "reasons": ["No active signal"]}
+        return calculate_quality(v, action, idx, engine=engine)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── OI Shift Detector endpoints (A2) ──
+
+@app.get("/api/oi-shifts/recent")
+async def oi_shifts_recent(idx: str = None, hours: int = 2):
+    """Recent wall shifts."""
+    try:
+        from oi_shift_detector import get_recent_shifts
+        return {"shifts": get_recent_shifts(idx, hours=hours)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/oi-shifts/capture-now")
+async def oi_shifts_capture_now():
+    """Manual snapshot trigger."""
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from oi_shift_detector import capture_wall_snapshot
+        capture_wall_snapshot(engine)
+        return {"ok": True}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Capital Tracker endpoints ──
 # Independent per-system tracker (SCALPER + MAIN). Auto-adjusts on
 # trade close. Profit Bank stores excess over base. Loss reduces capital.

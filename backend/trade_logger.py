@@ -852,6 +852,21 @@ class TradeManager:
                 except Exception as _e:
                     print(f"[RISK-TIER] record error: {_e}")
 
+                # ── Truth/Lie Detector (A3) — record pattern outcome for future filtering ──
+                try:
+                    from truth_lie_detector import record_trade_outcome as record_pattern
+                    record_pattern({
+                        "action": action,
+                        "status": new_status,
+                        "pnl_rupees": total_pnl,
+                        "probability": t.get("probability", 0),
+                        "vix": 18,  # could fetch live, but defaults OK
+                        "engine_scores": {},  # not currently stored on trade
+                        "trade_id": t["id"],
+                    })
+                except Exception as _e:
+                    print(f"[TRUTH-LIE] record error: {_e}")
+
                 # Autopsy: capture exit snapshot
                 if self._engine_ref:
                     try:

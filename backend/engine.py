@@ -3665,6 +3665,19 @@ class MarketEngine:
                     print(f"[TRINITY] step error: {e}")
             threading.Thread(target=_trinity_step, daemon=True, name="trinity-step").start()
 
+        # ── OI Shift Detector (A2) — capture wall snapshots every 5 min ──
+        if not hasattr(self, "_oi_shift_last"):
+            self._oi_shift_last = 0
+        if market_active and now - self._oi_shift_last >= 300:
+            self._oi_shift_last = now
+            def _oi_shift_capture():
+                try:
+                    from oi_shift_detector import capture_wall_snapshot
+                    capture_wall_snapshot(self)
+                except Exception as e:
+                    print(f"[OI-SHIFT] capture error: {e}")
+            threading.Thread(target=_oi_shift_capture, daemon=True, name="oi-shift").start()
+
         # ── Scalper FAST TICK loop (2s — 2GB RAM upgrade, was 5s) ──
         # Updates open scalper trade current_ltp + records ticks for chart accuracy.
         # No DB lag for PnL calculations.
@@ -3898,6 +3911,63 @@ class MarketEngine:
                         pending_expired = age > 120
 
                         if momentum_confirmed:
+                            # ── A2: OI Shift Detector — block if trade against shifted wall ──
+                            try:
+                                from oi_shift_detector import is_trade_against_shift
+                                blocked, reason = is_trade_against_shift(idx, action, spot_ltp)
+                                if blocked:
+                                    print(f"[TRADE] BLOCKED by OI shift: {reason}")
+                                    self.trade_manager._pending_entry.pop(idx, None)
+                                    self.trade_manager._pending_entry_time.pop(idx, None)
+                                    continue
+                            except Exception as _e:
+                                pass
+
+                            # ── A4: Divergence Filter — block if spot/premium diverging ──
+                            try:
+                                from divergence_filter import check_divergence
+                                div_block, div_reason, div_pct = check_divergence(
+                                    self, idx, action, pending_strike, locked_ltp
+                                )
+                                if div_block:
+                                    print(f"[TRADE] BLOCKED by divergence: {div_reason}")
+                                    self.trade_manager._pending_entry.pop(idx, None)
+                                    self.trade_manager._pending_entry_time.pop(idx, None)
+                                    continue
+                            except Exception as _e:
+                                pass
+
+                            # ── A3: Truth/Lie Detector — block known failure patterns ──
+                            try:
+                                from truth_lie_detector import check_pattern
+                                eng_scores = v.get("engineScores", {})
+                                top_engine = max(eng_scores, key=lambda k: abs(eng_scores.get(k, 0))) if eng_scores else "unknown"
+                                vix = v.get("vix", 18) or 18
+                                is_lie, conf, win_rate, samples, msg = check_pattern(
+                                    action, v.get("winProbability", 0), top_engine, vix
+                                )
+                                if is_lie:
+                                    print(f"[TRADE] BLOCKED by Truth/Lie: {msg}")
+                                    self.trade_manager._pending_entry.pop(idx, None)
+                                    self.trade_manager._pending_entry_time.pop(idx, None)
+                                    continue
+                            except Exception as _e:
+                                pass
+
+                            # ── A8: Quality Score — must be >= 6 stars ──
+                            try:
+                                from quality_score import calculate_quality
+                                q = calculate_quality(v, action, idx, engine=self)
+                                if not q.get("passes"):
+                                    print(f"[TRADE] BLOCKED by quality: {q['score']}/10 ({q['grade']}) — {'; '.join(q['reasons'][:3])}")
+                                    self.trade_manager._pending_entry.pop(idx, None)
+                                    self.trade_manager._pending_entry_time.pop(idx, None)
+                                    continue
+                                else:
+                                    print(f"[TRADE] Quality OK: {q['score']}/10 ({q['grade']})")
+                            except Exception as _e:
+                                pass
+
                             whale_aligned = False
                             try:
                                 from smart_money import is_smart_money_aligned
