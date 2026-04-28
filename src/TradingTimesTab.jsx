@@ -518,16 +518,27 @@ export default function TradingTimesTab() {
   const [live, setLive] = useState(null);
   const [timeline, setTimeline] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(null);
+  const [smartEvents, setSmartEvents] = useState([]);
+  const [story, setStory] = useState(null);
 
   const loadData = useCallback(() => {
     fetchTT(`live/${index}`).then(setLive);
     fetchTT(`timeline/${index}`).then(setTimeline);
+    // NEW: smart events from times_tab_engine
+    fetch(`/api/times/events?idx=${index}`).then(r => r.json()).then(d => {
+      if (d?.events) setSmartEvents(d.events);
+    }).catch(() => {});
+    fetch(`/api/times/story?idx=${index}`).then(r => r.json()).then(d => {
+      if (d && !d.error) setStory(d);
+    }).catch(() => {});
     setLastUpdate(new Date().toLocaleTimeString("en-IN"));
   }, [index]);
 
   useEffect(() => {
     loadData();
-    const interval = setInterval(loadData, 30000); // Auto-refresh 30s
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") loadData();
+    }, 30000);
     return () => clearInterval(interval);
   }, [loadData]);
 
@@ -565,6 +576,9 @@ export default function TradingTimesTab() {
       {/* Signal Banner */}
       <SignalBanner signal={live?.signal} />
 
+      {/* SMART EVENTS — kya hua, kab hua, kyu hua */}
+      <SmartEventsTimeline events={smartEvents} story={story} />
+
       {/* Layer Cards */}
       <LayerCards data={live?.latest} />
 
@@ -577,5 +591,89 @@ export default function TradingTimesTab() {
       {/* Reports */}
       <Reports index={index} />
     </div>
+  );
+}
+
+function SmartEventsTimeline({ events, story }) {
+  if (!events || events.length === 0) {
+    return (
+      <Card>
+        <Label>📊 SMART EVENTS — Kya Hua, Kyu Hua, Kab Hua</Label>
+        <div style={{ color: "#555", textAlign: "center", padding: 20, fontSize: 12 }}>
+          No events yet today. OI shifts, hidden activity, regime changes will appear here.
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <Label>📊 SMART EVENTS — {events.length} events today</Label>
+        {story && (
+          <span style={{
+            padding: "3px 10px",
+            background: story.bias === "BULLISH" ? GREEN + "22" : story.bias === "BEARISH" ? RED + "22" : YELLOW + "22",
+            color: story.bias === "BULLISH" ? GREEN : story.bias === "BEARISH" ? RED : YELLOW,
+            border: `1px solid ${story.bias === "BULLISH" ? GREEN : story.bias === "BEARISH" ? RED : YELLOW}`,
+            borderRadius: 4,
+            fontSize: 10,
+            fontWeight: 700,
+          }}>
+            BIAS: {story.bias}
+          </span>
+        )}
+      </div>
+
+      {story && (
+        <div style={{
+          background: BG, borderRadius: 6, padding: "8px 10px", marginBottom: 10,
+          fontSize: 10, color: "#888",
+          display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8,
+        }}>
+          <div><b style={{ color: "#fff" }}>{story.bull_events}</b> bull events</div>
+          <div><b style={{ color: "#fff" }}>{story.bear_events}</b> bear events</div>
+          <div><b style={{ color: "#fff" }}>{story.wall_shifts_count}</b> wall shifts</div>
+          <div><b style={{ color: story.net_pnl >= 0 ? GREEN : RED }}>₹{Math.round(story.net_pnl || 0).toLocaleString("en-IN")}</b> P&L</div>
+        </div>
+      )}
+
+      <div style={{ maxHeight: 500, overflowY: "auto" }}>
+        {events.slice().reverse().map((e, i) => (
+          <div key={i} style={{
+            background: BG, borderLeft: `3px solid ${
+              e.type === "OI_WALL_SHIFT" ? "#fb5607" :
+              e.type?.startsWith("HIDDEN_") ? "#a855f7" :
+              e.type === "REGIME_CHANGE" ? "#0a84ff" :
+              e.type?.startsWith("TRADE_") ? "#26a69a" :
+              "#666"
+            }`,
+            borderRadius: 4,
+            padding: "10px 12px",
+            marginBottom: 6,
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <span style={{ color: "#fff", fontWeight: 700, fontSize: 12 }}>{e.title}</span>
+              <span style={{ color: "#666", fontSize: 10 }}>{e.time_str}</span>
+            </div>
+            {e.math && (
+              <div style={{ fontSize: 10, color: "#bbb", marginTop: 2 }}>
+                <span style={{ color: ACCENT, fontWeight: 700 }}>📊 Math:</span> {e.math}
+              </div>
+            )}
+            {e.why && (
+              <div style={{ fontSize: 10, color: "#bbb", marginTop: 2 }}>
+                <span style={{ color: GREEN, fontWeight: 700 }}>💡 Why:</span> {e.why}
+              </div>
+            )}
+            {e.trap && (
+              <div style={{ fontSize: 10, color: "#fbbf24", marginTop: 2, fontStyle: "italic" }}>
+                <span style={{ fontWeight: 700 }}>🎯 Trap:</span> {e.trap}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }

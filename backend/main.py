@@ -1179,6 +1179,79 @@ async def zones_analysis(index: str):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Times Tab Real Engine endpoints (Phase 1) ──
+
+@app.get("/api/times/events")
+async def times_events(idx: str = "NIFTY"):
+    """Chronological event timeline for today with maths + logic + traps."""
+    try:
+        from times_tab_engine import get_today_events
+        return {"events": get_today_events(idx.upper())}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/times/story")
+async def times_story(idx: str = "NIFTY"):
+    """Today's story summary + bias."""
+    try:
+        from times_tab_engine import get_today_story
+        return get_today_story(idx.upper())
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── AI Brain endpoints (Phase 2-3) ──
+
+@app.post("/api/ai/ask")
+async def ai_ask(body: dict):
+    """User asks AI a question. AI fetches all dashboard data + responds."""
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        question = (body or {}).get("question", "").strip()
+        session = (body or {}).get("session_id", "default")
+        if not question:
+            return JSONResponse({"error": "question required"}, status_code=400)
+        from ai_brain import ask
+        return ask(question, engine, session_id=session)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/ai/eod-forecast")
+async def ai_eod_forecast_get():
+    """Get latest EOD forecast (today's tomorrow prediction)."""
+    try:
+        from ai_brain import get_latest_eod_forecast
+        f = get_latest_eod_forecast()
+        return f or {"error": "No forecast yet — generated daily at 3:20 PM IST"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/ai/eod-forecast/generate")
+async def ai_eod_forecast_generate():
+    """Manual trigger — force AI EOD forecast generation now."""
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from ai_brain import generate_eod_forecast
+        return generate_eod_forecast(engine)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/ai/chat-history")
+async def ai_chat_history(session_id: str = "default", limit: int = 30):
+    """Get chat history for a session."""
+    try:
+        from ai_brain import get_chat_history
+        return {"messages": get_chat_history(session_id, limit=limit)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Volatility Detector endpoints (A1) ──
 
 @app.get("/api/volatility/regime")

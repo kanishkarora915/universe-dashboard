@@ -508,6 +508,13 @@ class MarketEngine:
             daily_training.capture_today_profile(self)
         except Exception as e:
             print(f"[DAILY-TRAIN] EOD capture error: {e}")
+        # AI Brain — generate tomorrow's forecast
+        try:
+            import ai_brain
+            ai_brain.generate_eod_forecast(self)
+            print("[AI-BRAIN] EOD forecast generated")
+        except Exception as e:
+            print(f"[AI-BRAIN] EOD forecast error: {e}")
 
     def _safe_shadow_call(self, method_name):
         """Safely invoke shadow_autopsy methods — isolated from tick loop."""
@@ -3614,6 +3621,27 @@ class MarketEngine:
         if now_ist.hour == 15 and now_ist.minute >= 25 and not self._tt_yesterday_saved:
             self._tt_yesterday_saved = True
             threading.Thread(target=self._save_yesterday_oi, daemon=True).start()
+
+        # AI Brain EOD Forecast — 3:20 PM IST (5 min before EOD)
+        # Mon-Fri only. Runs once per day. Captures full day data + tomorrow predictions.
+        if not hasattr(self, "_ai_forecast_today"):
+            self._ai_forecast_today = ""
+        today_date = now_ist.strftime("%Y-%m-%d")
+        if (now_ist.weekday() < 5 and now_ist.hour == 15 and now_ist.minute >= 20
+                and now_ist.minute < 25
+                and self._ai_forecast_today != today_date):
+            self._ai_forecast_today = today_date
+            def _ai_forecast_job():
+                try:
+                    import ai_brain
+                    result = ai_brain.generate_eod_forecast(self)
+                    if result.get("ok"):
+                        print(f"[AI-BRAIN] 3:20 PM forecast generated for {today_date}")
+                    else:
+                        print(f"[AI-BRAIN] 3:20 PM forecast failed: {result.get('error')}")
+                except Exception as e:
+                    print(f"[AI-BRAIN] 3:20 PM forecast crash: {e}")
+            threading.Thread(target=_ai_forecast_job, daemon=True, name="ai-eod-forecast").start()
 
         # Weekly Beast Mode retrain: Friday 3:25 PM EOD
         if (now_ist.weekday() == 4 and now_ist.hour == 15 and now_ist.minute >= 25

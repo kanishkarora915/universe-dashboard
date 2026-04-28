@@ -15,6 +15,7 @@ import AutopsyMindWidget from "./AutopsyMindWidget";
 import OIInsightPanel from "./OIInsightPanel";
 import BuyerModeToggle from "./BuyerModeToggle";
 import SmartTradingStatus from "./SmartTradingStatus";
+import EODForecastCard from "./EODForecastCard";
 
 const GREEN = "#10b981";
 const RED = "#ef4444";
@@ -592,6 +593,9 @@ export default function BuyerCockpit({ live, verdicts, reasonsMap, openPositions
         <EnhancedVerdictCard index="NIFTY" verdict={nifty} reasons={reasonsMap?.nifty || nifty?.reasons} />
         <EnhancedVerdictCard index="BANKNIFTY" verdict={bn} reasons={reasonsMap?.banknifty || bn?.reasons} />
       </div>
+
+      {/* AI EOD FORECAST CARD — tomorrow's prediction */}
+      <EODForecastCard />
 
       {/* SMART TRADING STATUS — 18 intelligence engines combined */}
       <SmartTradingStatus />

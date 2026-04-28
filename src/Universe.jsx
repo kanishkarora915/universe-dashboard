@@ -39,6 +39,7 @@ import { useWatchlist } from "./hooks/useWatchlist";
 import { FONT, RADIUS, SPACE, TEXT_SIZE, TEXT_WEIGHT } from "./theme";
 import { exportSignalsToPDF, exportFullReport } from "./pdfExport";
 import { fetchTrapScan, fetchAIAnalysis, fetchTrapHistory, fetchTrapToday, fetchPriceAction, fetchTrapVerdict } from "./api";
+import AIChat from "./components/AIChat";
 
 const ACCENT = "#0A84FF";
 const BG = "#0A0A0F";
@@ -3146,6 +3147,9 @@ export default function Universe({ onLogout }) {
 
       {/* NOTIFICATIONS — legacy, still rendered */}
       <Notifications />
+
+      {/* AI BRAIN — floating chat (Claude Haiku) — visible on all tabs */}
+      <AIChat />
     </div>
   );
 }
