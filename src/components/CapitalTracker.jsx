@@ -1,34 +1,39 @@
 /**
- * CapitalTracker — Live capital state widget per system (SCALPER or MAIN).
+ * CapitalTracker — Professional account summary widget per system.
  *
- * Shows:
- *   Base capital (target level)
- *   Current capital (live, can shrink with losses)
- *   Profit Bank (excess profits, never consumed by losses)
- *   Loss Recovered (profits that went to repair capital)
- *   History feed
- *   Withdraw button
+ * Industry-standard accounting view (like Zerodha Console / Upstox Pro):
+ *   - Net Capital (current + unrealized)
+ *   - Realized P&L (closed trades)
+ *   - Unrealized P&L (open trades)
+ *   - Day / Week / Month performance
+ *   - Win rate, drawdown, returns
+ *   - Best/worst trade
+ *
+ * No "profit bank" gimmicks — clean financial reporting.
+ * No withdraw button — just real account state.
  */
 
 import React, { useEffect, useState } from "react";
 
-const GREEN = "#30D158";
-const RED = "#FF453A";
-const ORANGE = "#FF9F0A";
-const ACCENT = "#0A84FF";
-const PURPLE = "#BF5AF2";
-const YELLOW = "#FFD60A";
+const GREEN = "#26a69a";
+const RED = "#ef5350";
+const BLUE = "#2962ff";
 const GRAY = "#6b7280";
-const BG = "#0A0A0F";
-const CARD = "#111118";
-const BORDER = "#1E1E2E";
+const FG = "#d4d4d8";
+const FG_DIM = "#71717a";
+const BG = "#0a0a0a";
+const CARD = "#0f0f10";
+const BORDER = "#1f1f24";
+const BORDER_LIGHT = "#27272a";
 
 const fmtR = (n) => `₹${Math.round(n || 0).toLocaleString("en-IN")}`;
+const fmtSign = (n) => `${(n || 0) >= 0 ? "+" : ""}${fmtR(n)}`;
+const fmtPct = (n) => `${(n || 0) >= 0 ? "+" : ""}${(n || 0).toFixed(2)}%`;
 const fmtL = (n) => {
   const x = Math.abs(n || 0);
-  if (x >= 10000000) return `₹${(n / 10000000).toFixed(2)}Cr`;
-  if (x >= 100000) return `₹${(n / 100000).toFixed(2)}L`;
-  if (x >= 1000) return `₹${(n / 1000).toFixed(1)}k`;
+  if (x >= 10000000) return `${n >= 0 ? "" : "-"}₹${(Math.abs(n) / 10000000).toFixed(2)}Cr`;
+  if (x >= 100000) return `${n >= 0 ? "" : "-"}₹${(Math.abs(n) / 100000).toFixed(2)}L`;
+  if (x >= 1000) return `${n >= 0 ? "" : "-"}₹${(Math.abs(n) / 1000).toFixed(1)}k`;
   return fmtR(n);
 };
 
@@ -38,7 +43,6 @@ async function safeFetch(url, fb) {
 async function postJSON(url, body = {}) {
   try {
     const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    if (!r.ok) return null;
     return await r.json();
   } catch { return null; }
 }
@@ -47,10 +51,9 @@ export default function CapitalTracker({ system = "SCALPER" }) {
   const [data, setData] = useState(null);
   const [editing, setEditing] = useState(false);
   const [newBase, setNewBase] = useState("");
-  const [showHistory, setShowHistory] = useState(false);
 
   const load = async () => {
-    const r = await safeFetch(`/api/capital/${system}`, null);
+    const r = await safeFetch(`/api/capital/${system}/account`, null);
     if (r && !r.error) setData(r);
   };
 
@@ -60,15 +63,9 @@ export default function CapitalTracker({ system = "SCALPER" }) {
     return () => clearInterval(iv);
   }, [system]);
 
-  const handleWithdraw = async (amount = null) => {
-    if (!window.confirm(amount ? `Withdraw ₹${Math.round(amount).toLocaleString("en-IN")} from Profit Bank?` : "Withdraw entire Profit Bank?")) return;
-    await postJSON(`/api/capital/${system}/withdraw`, amount ? { amount } : {});
-    await load();
-  };
-
   const saveBase = async () => {
     const v = parseFloat(newBase);
-    if (!v || v <= 0) return alert("Invalid amount");
+    if (!v || v <= 0) return;
     await postJSON(`/api/capital/${system}/base`, { base_capital: v });
     setEditing(false);
     setNewBase("");
@@ -76,276 +73,245 @@ export default function CapitalTracker({ system = "SCALPER" }) {
   };
 
   if (!data) {
-    return <div style={wrap}><div style={{ color: GRAY, fontSize: 11 }}>Loading capital tracker…</div></div>;
+    return <div style={wrap}><div style={{ color: FG_DIM, fontSize: 12 }}>Loading account...</div></div>;
   }
 
-  const base = data.base_capital || 0;
-  const current = data.current_capital || 0;
-  const bank = data.profit_bank || 0;
-  const loss_rec = data.loss_recovered || 0;
-  const withdrawn = data.total_withdrawn || 0;
-  const repairNeeded = data.repair_needed || 0;
-  const deficit = data.deficit_pct || 0;
-  const growth = data.growth_pct || 0;
-  const isBelow = data.below_base;
+  const {
+    base_capital, current_capital, net_capital,
+    realized_pnl_total, unrealized_pnl,
+    day_pnl, week_pnl, month_pnl,
+    returns_pct, day_pct, week_pct, month_pct,
+    total_trades, wins, losses, open_count,
+    win_rate, max_drawdown, drawdown_pct,
+    best_trade, worst_trade, avg_win, avg_loss,
+  } = data;
 
-  const stateColor = isBelow ? RED : current === base ? ACCENT : GREEN;
+  const totalPnl = realized_pnl_total + unrealized_pnl;
+  const isProfit = totalPnl >= 0;
 
   return (
     <div style={wrap}>
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+      {/* Header — minimal, Bloomberg-ish */}
+      <div style={{
+        display: "flex", justifyContent: "space-between", alignItems: "baseline",
+        paddingBottom: 12, borderBottom: `1px solid ${BORDER_LIGHT}`, marginBottom: 14,
+      }}>
         <div>
-          <div style={{ fontSize: 11, color: GRAY, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1 }}>
-            💰 Capital Tracker · {system}
+          <div style={{ fontSize: 10, color: FG_DIM, fontWeight: 600, letterSpacing: 1, textTransform: "uppercase" }}>
+            ACCOUNT · {system}
           </div>
-          <div style={{ fontSize: 10, color: "#555", marginTop: 2 }}>
-            Auto-adjusts on profit/loss · Independent system
+          <div style={{ fontSize: 11, color: FG_DIM, marginTop: 2 }}>
+            Real-time accounting · Independent system
           </div>
         </div>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 4 }}>
+          <button onClick={() => setEditing(!editing)} style={btnGhost}>
+            {editing ? "Cancel" : "Edit Base"}
+          </button>
           <button onClick={async () => {
-            if (!window.confirm("Replay ALL existing closed trades through tracker?\n\nThis will:\n• Reset current state\n• Process every past trade in order\n• Build profit_bank + loss_recovered from history\n\nSafe to run multiple times.")) return;
+            if (!window.confirm(`Re-sync account from trade history?\n\nThis recalculates Realized P&L from all closed trades.`)) return;
             const r = await postJSON(`/api/capital/${system}/backfill`, {});
-            if (r && r.ok) {
-              alert(`✅ Backfill complete!\n\nReplayed: ${r.replayed} trades\nTotal P&L: ₹${Math.round(r.total_pnl_replayed).toLocaleString("en-IN")}\nFinal capital: ₹${Math.round(r.final_capital).toLocaleString("en-IN")}\nProfit Bank: ₹${Math.round(r.final_profit_bank).toLocaleString("en-IN")}\nLoss Recovered: ₹${Math.round(r.final_loss_recovered).toLocaleString("en-IN")}`);
-              await load();
-            } else {
-              alert(`Backfill failed: ${r?.error || "Unknown error"}`);
-            }
-          }} style={{
-            background: ACCENT + "22", color: ACCENT,
-            border: `1px solid ${ACCENT}66`,
-            padding: "5px 10px", borderRadius: 4,
-            fontSize: 10, fontWeight: 700, cursor: "pointer",
-          }}>
-            🔄 Backfill History
-          </button>
-          <button onClick={() => setShowHistory(!showHistory)} style={btnSecondary}>
-            {showHistory ? "Hide History" : "📜 History"}
-          </button>
-          <button onClick={() => setEditing(!editing)} style={btnSecondary}>
-            ⚙️ Base
+            if (r?.ok) await load();
+          }} style={btnGhost}>
+            Re-sync
           </button>
         </div>
       </div>
 
-      {/* Base capital edit */}
+      {/* Edit base inline */}
       {editing && (
-        <div style={{ background: BG, padding: 10, borderRadius: 6, marginBottom: 10, border: `1px solid ${BORDER}` }}>
-          <div style={{ fontSize: 10, color: GRAY, marginBottom: 4 }}>Set new base capital target:</div>
+        <div style={{ background: BG, padding: 10, borderRadius: 4, marginBottom: 12, border: `1px solid ${BORDER}` }}>
+          <div style={{ fontSize: 10, color: FG_DIM, marginBottom: 4 }}>Base capital (₹):</div>
           <div style={{ display: "flex", gap: 6 }}>
             <input
-              type="text"
-              inputMode="decimal"
-              value={newBase}
+              type="text" inputMode="decimal" value={newBase}
               onChange={(e) => setNewBase(e.target.value)}
-              placeholder={`Current: ${fmtR(base)}`}
-              style={{
-                flex: 1, background: "#000", border: `1px solid ${BORDER}`,
-                color: "#fff", padding: "6px 10px", borderRadius: 4, fontSize: 12,
-              }}
+              placeholder={String(base_capital)}
+              style={inputStyle}
             />
             <button onClick={saveBase} style={btnPrimary}>Save</button>
           </div>
         </div>
       )}
 
-      {/* Main capital row */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
-        <Stat label="BASE (Target)" value={fmtL(base)} color="#fff" />
-        <Stat
-          label="RUNNING (Live)"
-          value={fmtL(current)}
-          color={stateColor}
-          sub={isBelow ? `▼ ${deficit.toFixed(2)}% below` : current > base ? `▲ at base` : "✓ at base"}
-        />
-        <Stat
-          label="PROFIT BANK"
-          value={fmtL(bank)}
-          color={GREEN}
-          sub={withdrawn > 0 ? `Withdrawn: ${fmtL(withdrawn)}` : "Untouched by losses"}
-        />
-      </div>
-
-      {/* Capital health bar */}
-      <div style={{ marginBottom: 10 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: GRAY, marginBottom: 4 }}>
-          <span>Health: {((current / base) * 100).toFixed(1)}%</span>
-          {isBelow && <span style={{ color: RED }}>Repair needed: {fmtL(repairNeeded)}</span>}
+      {/* TOP ROW — Hero P&L + Net Capital */}
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16, marginBottom: 18 }}>
+        <div>
+          <div style={labelStyle}>NET P&L (REALIZED + UNREALIZED)</div>
+          <div style={{
+            fontSize: 32, fontWeight: 700, color: isProfit ? GREEN : RED,
+            fontFeatureSettings: "'tnum'", lineHeight: 1.1, marginTop: 4,
+          }}>
+            {fmtSign(totalPnl)}
+          </div>
+          <div style={{ fontSize: 12, color: isProfit ? GREEN : RED, marginTop: 4, fontWeight: 500 }}>
+            {fmtPct(returns_pct)} on capital
+          </div>
         </div>
-        <div style={{ height: 8, background: "#1a1a1a", borderRadius: 4, overflow: "hidden", position: "relative" }}>
-          <div style={{
-            width: `${Math.min((current / base) * 100, 100)}%`,
-            height: "100%",
-            background: isBelow ? RED : current >= base ? GREEN : ORANGE,
-            transition: "width 0.4s",
-          }} />
-          {/* Base marker line */}
-          <div style={{
-            position: "absolute", top: 0, bottom: 0, left: "100%",
-            borderLeft: `2px solid ${ACCENT}`,
-          }} />
+        <div style={{ borderLeft: `1px solid ${BORDER_LIGHT}`, paddingLeft: 14 }}>
+          <div style={labelStyle}>NET CAPITAL</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: FG, fontFeatureSettings: "'tnum'", marginTop: 4 }}>
+            {fmtL(net_capital)}
+          </div>
+          <div style={{ fontSize: 11, color: FG_DIM, marginTop: 4 }}>
+            Base: {fmtL(base_capital)}
+          </div>
         </div>
       </div>
 
-      {/* Loss Recovered + Profit Bank — ALWAYS visible (even at ₹0) */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-        {/* Loss Recovered card */}
-        <div style={{
-          flex: 1,
-          background: loss_rec > 0 ? BG : "#0d0d12",
-          border: `1px solid ${loss_rec > 0 ? ORANGE + "55" : BORDER}`,
-          borderRadius: 6, padding: "10px 12px",
-        }}>
-          <div style={{ fontSize: 9, color: loss_rec > 0 ? ORANGE : GRAY, fontWeight: 700, letterSpacing: 0.5 }}>
-            📉 LOSS RECOVERED
-          </div>
-          <div style={{
-            fontSize: 16, color: loss_rec > 0 ? ORANGE : "#555", fontWeight: 800, marginTop: 4,
-          }}>{fmtL(loss_rec)}</div>
-          <div style={{ fontSize: 9, color: GRAY, marginTop: 3, lineHeight: 1.3 }}>
-            {loss_rec > 0
-              ? "Profit used to repair capital after losses"
-              : "Future profits will fix capital first"}
-          </div>
-        </div>
+      {/* MIDDLE ROW — Realized + Unrealized split */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
+        <Cell label="REALIZED P&L" value={fmtSign(realized_pnl_total)} color={realized_pnl_total >= 0 ? GREEN : RED} />
+        <Cell label={`UNREALIZED (${open_count} open)`} value={fmtSign(unrealized_pnl)} color={unrealized_pnl >= 0 ? GREEN : RED} />
+      </div>
 
-        {/* Profit Bank card — ALWAYS visible */}
-        <div style={{
-          flex: 1,
-          background: bank > 0 ? GREEN + "11" : "#0d0d12",
-          border: `1px solid ${bank > 0 ? GREEN + "66" : BORDER}`,
-          borderRadius: 6, padding: "10px 12px",
-        }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ fontSize: 9, color: bank > 0 ? GREEN : GRAY, fontWeight: 700, letterSpacing: 0.5 }}>
-              💸 PROFIT BANK
-            </div>
-            {withdrawn > 0 && (
-              <span style={{ fontSize: 9, color: GRAY }}>
-                Lifetime out: {fmtL(withdrawn)}
+      {/* PERFORMANCE — Day / Week / Month */}
+      <div style={{
+        background: BG, border: `1px solid ${BORDER}`, borderRadius: 4,
+        padding: 12, marginBottom: 14,
+      }}>
+        <div style={{ ...labelStyle, marginBottom: 10 }}>PERFORMANCE</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+          <Period label="Day" pnl={day_pnl} pct={day_pct} />
+          <Period label="Week (7d)" pnl={week_pnl} pct={week_pct} />
+          <Period label="Month (30d)" pnl={month_pnl} pct={month_pct} />
+        </div>
+      </div>
+
+      {/* TRADE STATS */}
+      <div style={{
+        background: BG, border: `1px solid ${BORDER}`, borderRadius: 4,
+        padding: 12, marginBottom: 14,
+      }}>
+        <div style={{ ...labelStyle, marginBottom: 10 }}>TRADE STATISTICS</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
+          <Mini label="Total" value={total_trades} />
+          <Mini label="Wins" value={wins} color={GREEN} />
+          <Mini label="Losses" value={losses} color={RED} />
+          <Mini label="Win Rate" value={`${win_rate.toFixed(1)}%`} color={win_rate >= 60 ? GREEN : win_rate >= 40 ? FG : RED} />
+        </div>
+      </div>
+
+      {/* RISK METRICS */}
+      <div style={{
+        background: BG, border: `1px solid ${BORDER}`, borderRadius: 4,
+        padding: 12, marginBottom: 0,
+      }}>
+        <div style={{ ...labelStyle, marginBottom: 10 }}>RISK & RETURNS</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <Mini label="Max Drawdown" value={fmtL(-max_drawdown)} sub={`-${drawdown_pct.toFixed(2)}%`} color={RED} />
+          <Mini label="Best Trade" value={fmtSign(best_trade)} color={GREEN} />
+          <Mini label="Avg Win" value={fmtSign(avg_win)} color={GREEN} />
+          <Mini label="Avg Loss" value={fmtSign(avg_loss)} color={RED} />
+        </div>
+        {avg_win > 0 && avg_loss < 0 && (
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${BORDER}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: FG_DIM }}>
+              <span>Risk:Reward Ratio</span>
+              <span style={{ color: avg_win / Math.abs(avg_loss) >= 1.5 ? GREEN : avg_win / Math.abs(avg_loss) >= 1 ? FG : RED, fontWeight: 600 }}>
+                1 : {(avg_win / Math.abs(avg_loss)).toFixed(2)}
               </span>
-            )}
+            </div>
           </div>
-          <div style={{
-            fontSize: 16, color: bank > 0 ? GREEN : "#555", fontWeight: 800, marginTop: 4,
-          }}>{fmtL(bank)}</div>
-          <div style={{ fontSize: 9, color: GRAY, marginTop: 3, lineHeight: 1.3 }}>
-            {bank > 0
-              ? "Excess profits — never consumed by losses"
-              : "Profits at base capital will accumulate here"}
-          </div>
-          <button
-            onClick={() => bank > 0 && handleWithdraw(null)}
-            disabled={bank <= 0}
-            style={{
-              background: bank > 0 ? GREEN : "#222",
-              color: bank > 0 ? "#000" : "#555",
-              border: "none",
-              padding: "5px 12px", borderRadius: 4,
-              fontSize: 10, fontWeight: 700,
-              cursor: bank > 0 ? "pointer" : "not-allowed",
-              marginTop: 6,
-              opacity: bank > 0 ? 1 : 0.5,
-            }}>
-            💸 Withdraw {bank > 0 ? "All" : "(empty)"}
-          </button>
-        </div>
+        )}
       </div>
-
-      {/* Info banner explaining how it works */}
-      {bank === 0 && loss_rec === 0 && (
-        <div style={{
-          background: ACCENT + "11", border: `1px solid ${ACCENT}33`,
-          borderRadius: 6, padding: "8px 10px", marginBottom: 10,
-          fontSize: 10, color: "#aaa", lineHeight: 1.5,
-        }}>
-          💡 <strong style={{ color: ACCENT }}>How Capital Tracker Works:</strong><br/>
-          • <strong>Profit at base ₹{fmtL(base).replace("₹", "")}</strong> → Goes to <strong style={{ color: GREEN }}>Profit Bank</strong> (cap stays at base)<br/>
-          • <strong>Loss</strong> → Capital reduces (Profit Bank UNTOUCHED)<br/>
-          • <strong>Profit when below base</strong> → First repairs capital, excess to bank<br/>
-          • <strong>Withdraw anytime</strong> from Profit Bank manually
-        </div>
-      )}
-
-      {/* History */}
-      {showHistory && data.history && data.history.length > 0 && (
-        <div style={{ background: BG, border: `1px solid ${BORDER}`, borderRadius: 6, padding: 10, marginTop: 10, maxHeight: 280, overflowY: "auto" }}>
-          <div style={{ fontSize: 10, color: GRAY, fontWeight: 700, marginBottom: 6 }}>
-            📜 RECENT ADJUSTMENTS
-          </div>
-          {data.history.slice(0, 20).map((h, i) => {
-            const c = h.event_type === "PROFIT_BANK" ? GREEN
-                   : h.event_type === "PROFIT_REPAIR" ? ORANGE
-                   : h.event_type === "LOSS" ? RED
-                   : h.event_type === "WITHDRAW" ? PURPLE
-                   : GRAY;
-            const ts = h.ts ? new Date(h.ts).toLocaleString("en-IN", {
-              timeZone: "Asia/Kolkata", day: "2-digit", month: "short",
-              hour: "2-digit", minute: "2-digit", hour12: true,
-            }) : "";
-            return (
-              <div key={i} style={{
-                fontSize: 10, padding: "4px 0", borderBottom: `1px solid ${BORDER}33`,
-              }}>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: c, fontWeight: 700 }}>{h.event_type}</span>
-                  <span style={{ color: GRAY, fontSize: 9 }}>{ts}</span>
-                </div>
-                <div style={{ color: "#ccc", marginTop: 2 }}>
-                  {h.amount >= 0 ? "+" : ""}{fmtR(h.amount)}
-                  {h.capital_after !== undefined && ` · Capital: ${fmtR(h.capital_after)}`}
-                  {h.profit_bank_after !== undefined && h.profit_bank_after !== h.profit_bank_before && ` · Bank: ${fmtR(h.profit_bank_after)}`}
-                </div>
-                {h.description && (
-                  <div style={{ color: "#888", fontSize: 9, marginTop: 1 }}>{h.description}</div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }
 
-function Stat({ label, value, color = "#fff", sub }) {
+// ──────────── Sub-components ────────────
+
+function Cell({ label, value, color }) {
   return (
-    <div style={{ background: BG, border: `1px solid ${BORDER}`, borderRadius: 6, padding: "8px 10px" }}>
-      <div style={{ fontSize: 9, color: GRAY, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</div>
-      <div style={{ fontSize: 16, color, fontWeight: 800, marginTop: 2 }}>{value}</div>
-      {sub && <div style={{ fontSize: 9, color: GRAY, marginTop: 2 }}>{sub}</div>}
+    <div style={{ background: BG, border: `1px solid ${BORDER}`, borderRadius: 4, padding: "10px 12px" }}>
+      <div style={labelStyle}>{label}</div>
+      <div style={{
+        fontSize: 16, fontWeight: 700, color, marginTop: 4,
+        fontFeatureSettings: "'tnum'",
+      }}>{value}</div>
     </div>
   );
 }
+
+function Period({ label, pnl, pct }) {
+  const isPos = (pnl || 0) >= 0;
+  return (
+    <div>
+      <div style={{ fontSize: 10, color: FG_DIM, fontWeight: 500 }}>{label}</div>
+      <div style={{
+        fontSize: 15, fontWeight: 700, color: isPos ? GREEN : RED,
+        marginTop: 4, fontFeatureSettings: "'tnum'",
+      }}>
+        {fmtSign(pnl)}
+      </div>
+      <div style={{ fontSize: 10, color: isPos ? GREEN : RED, marginTop: 2 }}>
+        {fmtPct(pct)}
+      </div>
+    </div>
+  );
+}
+
+function Mini({ label, value, sub, color = FG }) {
+  return (
+    <div>
+      <div style={{ fontSize: 10, color: FG_DIM, fontWeight: 500 }}>{label}</div>
+      <div style={{
+        fontSize: 14, fontWeight: 700, color, marginTop: 3,
+        fontFeatureSettings: "'tnum'",
+      }}>{value}</div>
+      {sub && <div style={{ fontSize: 9, color: FG_DIM, marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
+
+const labelStyle = {
+  fontSize: 9,
+  color: FG_DIM,
+  fontWeight: 600,
+  letterSpacing: 0.5,
+  textTransform: "uppercase",
+};
 
 const wrap = {
   background: CARD,
   border: `1px solid ${BORDER}`,
-  borderRadius: 10,
-  padding: 14,
+  borderRadius: 6,
+  padding: 16,
   marginBottom: 12,
+  fontFamily: "-apple-system, 'Segoe UI', system-ui, sans-serif",
 };
 
-const btnSecondary = {
+const btnGhost = {
   background: "transparent",
-  color: GRAY,
-  border: `1px solid ${BORDER}`,
+  color: FG_DIM,
+  border: `1px solid ${BORDER_LIGHT}`,
   padding: "5px 10px",
-  borderRadius: 4,
+  borderRadius: 3,
   fontSize: 10,
-  fontWeight: 700,
+  fontWeight: 500,
   cursor: "pointer",
+  letterSpacing: 0.3,
 };
 
 const btnPrimary = {
-  background: ACCENT,
+  background: BLUE,
   color: "#fff",
   border: "none",
   padding: "6px 14px",
-  borderRadius: 4,
+  borderRadius: 3,
   fontSize: 11,
-  fontWeight: 700,
+  fontWeight: 600,
   cursor: "pointer",
+};
+
+const inputStyle = {
+  flex: 1,
+  background: "#000",
+  border: `1px solid ${BORDER_LIGHT}`,
+  color: FG,
+  padding: "6px 10px",
+  borderRadius: 3,
+  fontSize: 12,
+  fontFamily: "monospace",
+  outline: "none",
 };

@@ -18,7 +18,7 @@ DB: /data/capital_tracker.db (persistent, never auto-deleted)
 
 import sqlite3
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 IST = pytz.timezone("Asia/Kolkata")
@@ -452,6 +452,153 @@ def backfill_from_trades(system):
         "final_capital": final_state.get("current_capital"),
         "final_profit_bank": final_state.get("profit_bank"),
         "final_loss_recovered": final_state.get("loss_recovered"),
+    }
+
+
+def get_account_summary(system):
+    """Professional accounting view — realized/unrealized P&L, drawdown,
+    daily/weekly/monthly performance. Direct from trade DBs (no profit_bank fluff)."""
+    if system not in DEFAULT_BASE:
+        return {"error": f"Invalid system: {system}"}
+
+    init_db()
+    state_conn = _conn()
+    state_row = state_conn.execute(
+        "SELECT base_capital FROM capital_state WHERE system=?", (system,)
+    ).fetchone()
+    state_conn.close()
+    base = state_row["base_capital"] if state_row else DEFAULT_BASE[system]
+
+    # Pick the right trade DB
+    from pathlib import Path
+    if system == "SCALPER":
+        db_path = Path("/data/scalper_trades.db") if Path("/data").is_dir() \
+                  else Path(__file__).parent / "scalper_trades.db"
+        table = "scalper_trades"
+    else:
+        db_path = Path("/data/trades.db") if Path("/data/trades.db").exists() \
+                  else Path(__file__).parent / "trades.db"
+        table = "trades"
+
+    if not db_path.exists():
+        return {
+            "system": system, "base_capital": base, "current_capital": base,
+            "realized_pnl_total": 0, "unrealized_pnl": 0, "net_capital": base,
+            "day_pnl": 0, "week_pnl": 0, "month_pnl": 0,
+            "total_trades": 0, "wins": 0, "losses": 0, "open_count": 0,
+            "win_rate": 0, "max_drawdown": 0, "drawdown_pct": 0,
+            "best_trade": 0, "worst_trade": 0, "avg_win": 0, "avg_loss": 0,
+            "returns_pct": 0,
+        }
+
+    conn = sqlite3.connect(str(db_path), timeout=10.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        now = ist_now()
+        today_str = now.strftime("%Y-%m-%d")
+        week_cutoff = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+        month_cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+
+        # All closed trades
+        closed = conn.execute(
+            f"SELECT * FROM {table} WHERE status != 'OPEN' AND pnl_rupees IS NOT NULL ORDER BY exit_time ASC, entry_time ASC"
+        ).fetchall()
+        closed = [dict(r) for r in closed]
+
+        # Open trades for unrealized
+        open_trades = conn.execute(
+            f"SELECT * FROM {table} WHERE status='OPEN'"
+        ).fetchall()
+        open_trades = [dict(r) for r in open_trades]
+    finally:
+        conn.close()
+
+    # ── Aggregations ──
+    realized_pnl = sum(t.get("pnl_rupees", 0) or 0 for t in closed)
+    unrealized_pnl = sum(
+        ((t.get("current_ltp") or t.get("entry_price", 0)) - t.get("entry_price", 0)) * (t.get("qty", 0) or 0)
+        for t in open_trades
+    )
+
+    today_pnl = sum(
+        t.get("pnl_rupees", 0) or 0 for t in closed
+        if (t.get("entry_time") or "").startswith(today_str)
+    )
+    week_pnl = sum(
+        t.get("pnl_rupees", 0) or 0 for t in closed
+        if (t.get("entry_time") or "") >= week_cutoff
+    )
+    month_pnl = sum(
+        t.get("pnl_rupees", 0) or 0 for t in closed
+        if (t.get("entry_time") or "") >= month_cutoff
+    )
+
+    wins = [t for t in closed if (t.get("pnl_rupees") or 0) > 0]
+    losses = [t for t in closed if (t.get("pnl_rupees") or 0) < 0]
+    win_rate = (len(wins) / len(closed) * 100) if closed else 0
+    avg_win = (sum(t["pnl_rupees"] for t in wins) / len(wins)) if wins else 0
+    avg_loss = (sum(t["pnl_rupees"] for t in losses) / len(losses)) if losses else 0
+    best = max((t.get("pnl_rupees", 0) for t in closed), default=0)
+    worst = min((t.get("pnl_rupees", 0) for t in closed), default=0)
+
+    # ── Drawdown calc (cumulative equity curve) ──
+    equity = base
+    peak = base
+    max_dd = 0
+    for t in closed:
+        equity += (t.get("pnl_rupees", 0) or 0)
+        if equity > peak:
+            peak = equity
+        dd = peak - equity
+        if dd > max_dd:
+            max_dd = dd
+    current_capital = base + realized_pnl
+    net_capital = current_capital + unrealized_pnl
+    returns_pct = ((current_capital - base) / base * 100) if base > 0 else 0
+    dd_pct = (max_dd / base * 100) if base > 0 else 0
+
+    # Daily P&L breakdown (last 30 days)
+    daily_breakdown = {}
+    for t in closed:
+        d = (t.get("entry_time") or "")[:10]
+        if not d or d < month_cutoff:
+            continue
+        if d not in daily_breakdown:
+            daily_breakdown[d] = {"trades": 0, "pnl": 0, "wins": 0, "losses": 0}
+        daily_breakdown[d]["trades"] += 1
+        daily_breakdown[d]["pnl"] += (t.get("pnl_rupees", 0) or 0)
+        if (t.get("pnl_rupees") or 0) > 0:
+            daily_breakdown[d]["wins"] += 1
+        elif (t.get("pnl_rupees") or 0) < 0:
+            daily_breakdown[d]["losses"] += 1
+
+    return {
+        "system": system,
+        "base_capital": round(base, 2),
+        "current_capital": round(current_capital, 2),
+        "net_capital": round(net_capital, 2),
+        "realized_pnl_total": round(realized_pnl, 2),
+        "unrealized_pnl": round(unrealized_pnl, 2),
+        "day_pnl": round(today_pnl, 2),
+        "week_pnl": round(week_pnl, 2),
+        "month_pnl": round(month_pnl, 2),
+        "returns_pct": round(returns_pct, 2),
+        "day_pct": round((today_pnl / base * 100), 2) if base > 0 else 0,
+        "week_pct": round((week_pnl / base * 100), 2) if base > 0 else 0,
+        "month_pct": round((month_pnl / base * 100), 2) if base > 0 else 0,
+        "total_trades": len(closed),
+        "wins": len(wins),
+        "losses": len(losses),
+        "open_count": len(open_trades),
+        "win_rate": round(win_rate, 1),
+        "max_drawdown": round(max_dd, 2),
+        "drawdown_pct": round(dd_pct, 2),
+        "best_trade": round(best, 2),
+        "worst_trade": round(worst, 2),
+        "avg_win": round(avg_win, 2),
+        "avg_loss": round(avg_loss, 2),
+        "daily_breakdown": daily_breakdown,
+        "ts": ist_now().isoformat(),
     }
 
 

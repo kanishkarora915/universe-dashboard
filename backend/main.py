@@ -1253,6 +1253,21 @@ async def capital_reset(system: str, body: dict = None):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/capital/{system}/account")
+async def capital_account(system: str):
+    """Professional account summary — realized/unrealized P&L, drawdown,
+    daily/weekly/monthly performance. Direct from trade DB."""
+    try:
+        import capital_tracker
+        sys_upper = system.upper()
+        if sys_upper not in ("SCALPER", "MAIN"):
+            return JSONResponse({"error": "system must be SCALPER or MAIN"}, status_code=400)
+        return capital_tracker.get_account_summary(sys_upper)
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.post("/api/capital/{system}/backfill")
 async def capital_backfill(system: str):
     """Replay all existing closed trades through tracker — builds full
