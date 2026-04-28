@@ -3799,10 +3799,37 @@ class MarketEngine:
             except Exception as e:
                 print(f"[SCALPER] Error: {e}")
 
+            # ── VOLATILITY GATE (A1) — check regime before any trades ──
+            try:
+                from volatility_detector import classify_regime
+                vol_regime = classify_regime(self)
+                vol_rec = vol_regime.get("recommend", {})
+            except Exception as _e:
+                print(f"[VOL] regime check failed: {_e}")
+                vol_regime = {"regime": "UNKNOWN"}
+                vol_rec = {"trade_allowed": True, "main_pnl_allowed": True,
+                          "min_probability": 50, "sl_multiplier": 1.0,
+                          "target_multiplier": 1.0, "qty_multiplier": 1.0}
+
             for idx in ["NIFTY", "BANKNIFTY"]:
               try:
                 key = idx.lower()
                 v = verdict.get(key, {})
+
+                # ── VOLATILITY-AWARE GATE ──
+                if not vol_rec.get("main_pnl_allowed", True):
+                    if vol_regime.get("regime") not in ("NORMAL", "UNKNOWN"):
+                        print(f"[TRADE] BLOCKED by regime {vol_regime.get('regime')} — {'; '.join(vol_regime.get('notes', []))}")
+                    continue
+                # Adjusted probability requirement
+                vol_min_prob = vol_rec.get("min_probability", 50)
+                v_prob = v.get("winProbability", 0)
+                if v_prob < vol_min_prob:
+                    if vol_regime.get("regime") not in ("NORMAL", "UNKNOWN"):
+                        print(f"[TRADE] BELOW VOL THRESHOLD: {v_prob}% < {vol_min_prob}% (regime: {vol_regime.get('regime')})")
+                    # Don't 'continue' — let normal gate handle 50% baseline
+                    # Just log the regime context
+
                 if self.trade_manager.should_enter_trade(idx, v):
                     chain = self.chains.get(idx, {})
                     cfg = INDEX_CONFIG[idx]
@@ -3853,9 +3880,22 @@ class MarketEngine:
                             continue
 
                         age = time.time() - self.trade_manager._pending_entry_time.get(idx, 0)
-                        momentum_confirmed = locked_ltp >= pending["entry_price"] * 1.005
+                        # ENTRY TIMING FIX (A7): Tiered confirmation based on confidence
+                        # High confidence (>75%) = INSTANT entry (no wait)
+                        # Medium confidence (60-75%) = 0.2% confirmation (was 0.5%)
+                        # Low confidence (<60%) = 0.5% confirmation (was 0.5%)
+                        # Result: Catch real moves earlier, avoid late peak entries
+                        prob = pending.get("probability", 0)
+                        if prob >= 75:
+                            confirm_threshold = 1.0  # instant — no wait
+                        elif prob >= 60:
+                            confirm_threshold = 1.002  # 0.2% confirmation
+                        else:
+                            confirm_threshold = 1.005  # 0.5% (default)
+                        momentum_confirmed = locked_ltp >= pending["entry_price"] * confirm_threshold
                         signal_reversed = locked_ltp < pending["entry_price"] * 0.98
-                        pending_expired = age > 300
+                        # Reduced 5min → 2min expiry (faster cycle, catch fresh signals)
+                        pending_expired = age > 120
 
                         if momentum_confirmed:
                             whale_aligned = False
@@ -3874,6 +3914,7 @@ class MarketEngine:
                                     expiry=str(self.nearest_expiry.get(idx, "")),
                                     straddle=straddle,
                                     whale_aligned=whale_aligned,
+                                    engine=self,  # for ATR target calc
                                 )
                             except Exception as e:
                                 print(f"[TRADE] log_trade FAILED for {idx}: {e}")

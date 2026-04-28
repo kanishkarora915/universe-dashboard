@@ -400,38 +400,59 @@ class TradeManager:
         return "NORMAL"
 
     def log_trade(self, idx, action, strike, entry_price, probability, source="verdict", expiry="",
-                  straddle=0, big_wall=0, whale_aligned=False):
-        """Log a new trade entry with smart SL/targets.
+                  straddle=0, big_wall=0, whale_aligned=False, engine=None):
+        """Log a new trade entry with ATR-based realistic SL/targets (A6).
         whale_aligned=True → uses larger position (smart money agrees with direction)."""
         if entry_price <= 0:
             return None
 
-        # Smart SL: 20% of entry for cheap premiums, 15% for expensive, minimum ₹5 drop
-        if entry_price < 100:
-            sl_price = round(entry_price * 0.80)  # 20% SL for cheap options
-        else:
-            sl_price = round(entry_price * 0.85)  # 15% SL for expensive options
-        sl_price = max(sl_price, round(entry_price - max(straddle * 0.15, 5)))
-        sl_price = min(sl_price, round(entry_price * 0.85))  # Never tighter than 15%
+        # ── ATR-based targets (A6) — replaces fixed +30%/+60% ──
+        side = "CE" if "CE" in (action or "") else "PE"
+        targets = None
+        if engine is not None:
+            try:
+                from atr_targets import get_realistic_targets
+                targets = get_realistic_targets(engine, idx, strike, side, entry_price)
+            except Exception as _e:
+                print(f"[TRADE] ATR target calc failed, using fallback: {_e}")
 
-        # Position size SCALED by conviction (probability) + whale alignment bonus
+        if targets and targets.get("method") == "atr":
+            sl_price = targets["sl"]
+            t1_price = targets["t1"]
+            t2_price = targets["t2"]
+            print(f"[TRADE] ATR targets: SL ₹{sl_price} (-{targets['sl_pct']}%) "
+                  f"T1 ₹{t1_price} (+{targets['t1_pct']}%) T2 ₹{t2_price} (+{targets['t2_pct']}%) "
+                  f"vol_mult={targets['vol_multiplier']}")
+        else:
+            # Fallback: legacy fixed SL/T1/T2
+            if entry_price < 100:
+                sl_price = round(entry_price * 0.80)
+            else:
+                sl_price = round(entry_price * 0.85)
+            sl_price = max(sl_price, round(entry_price - max(straddle * 0.15, 5)))
+            sl_price = min(sl_price, round(entry_price * 0.85))
+            if straddle > 0:
+                t1_price = round(entry_price + straddle * 0.20)
+                t2_price = round(entry_price + straddle * 0.40)
+            else:
+                t1_price = round(entry_price * 1.20)
+                t2_price = round(entry_price * 1.40)
+
+        # Position size SCALED by conviction + whale alignment + ADAPTIVE TIER (A5)
+        try:
+            from risk_tier_manager import get_tier_qty_multiplier
+            tier_mult = get_tier_qty_multiplier()
+        except Exception:
+            tier_mult = 1.0
+
         lots, lot_size, qty = calc_position_size(
             idx, entry_price, sl_price,
             conviction=probability,
             whale_aligned=whale_aligned,
         )
-
-        # Smart T1: based on straddle or 20% of entry
-        if straddle > 0:
-            t1_price = round(entry_price + straddle * 0.20)  # 20% of straddle move
-        else:
-            t1_price = round(entry_price * 1.20)
-
-        # Smart T2: based on straddle or 40%
-        if straddle > 0:
-            t2_price = round(entry_price + straddle * 0.40)
-        else:
-            t2_price = round(entry_price * 1.40)
+        if tier_mult != 1.0:
+            qty = max(lot_size, int(qty * tier_mult))
+            lots = qty // lot_size
 
         now = ist_now()
         conn = _conn()
@@ -823,6 +844,13 @@ class TradeManager:
                     )
                 except Exception as _e:
                     print(f"[CAPITAL] main close record error: {_e}")
+
+                # ── Update Adaptive Risk Tier (A5) — auto-adjust qty/threshold/SL ──
+                try:
+                    from risk_tier_manager import record_trade_outcome
+                    record_trade_outcome(new_status, total_pnl, capital=INITIAL_CAPITAL)
+                except Exception as _e:
+                    print(f"[RISK-TIER] record error: {_e}")
 
                 # Autopsy: capture exit snapshot
                 if self._engine_ref:

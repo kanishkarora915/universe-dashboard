@@ -1179,6 +1179,65 @@ async def zones_analysis(index: str):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Volatility Detector endpoints (A1) ──
+
+@app.get("/api/volatility/regime")
+async def volatility_regime():
+    """Current market volatility regime + recommendations."""
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        from volatility_detector import classify_regime, log_regime
+        result = classify_regime(engine)
+        log_regime(result)
+        return result
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/volatility/history")
+async def volatility_history(hours: int = 4):
+    """Recent regime changes."""
+    try:
+        from volatility_detector import get_regime_history
+        return {"history": get_regime_history(hours)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── Risk Tier endpoints (A5) ──
+
+@app.get("/api/risk-tier/current")
+async def risk_tier_current():
+    """Current adaptive risk tier + win/loss streaks."""
+    try:
+        import risk_tier_manager
+        return risk_tier_manager.get_summary()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/risk-tier/history")
+async def risk_tier_history(limit: int = 50):
+    """Tier transition history."""
+    try:
+        import risk_tier_manager
+        return {"history": risk_tier_manager.get_history(limit=limit)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/risk-tier/reset")
+async def risk_tier_reset():
+    """Manual reset to Tier 1 (use with caution)."""
+    try:
+        import risk_tier_manager
+        risk_tier_manager.reset_for_new_day()
+        return {"ok": True, "state": risk_tier_manager.get_summary()}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Capital Tracker endpoints ──
 # Independent per-system tracker (SCALPER + MAIN). Auto-adjusts on
 # trade close. Profit Bank stores excess over base. Loss reduces capital.
