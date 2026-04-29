@@ -30,6 +30,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict, deque
 from typing import Dict, List, Optional, Any
 import os
+from pathlib import Path
 
 from candle_pattern_engine import build_candles_from_ticks, detect_patterns
 from vix_velocity import push_vix, get_tracker as get_vix_tracker
@@ -41,8 +42,11 @@ from health_score import compute_health
 # Config & state
 # ──────────────────────────────────────────────────────────────
 
-DATA_DIR = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
-WATCHER_DB = os.path.join(DATA_DIR, "position_watcher.db")
+# Match the same pattern used by scalper_mode.py / trade_logger.py:
+#   /data/  on Render (persistent disk),  backend/  locally.
+_DATA_DIR_PATH = Path("/data") if Path("/data").is_dir() else Path(__file__).parent
+DATA_DIR = str(_DATA_DIR_PATH)
+WATCHER_DB = str(_DATA_DIR_PATH / "position_watcher.db")
 
 DEFAULT_CONFIG = {
     "auto_exit_main": False,      # Auto-exit on PnL trades
@@ -485,6 +489,8 @@ def watcher_pulse(engine) -> Dict:
         "actions": [],
         "errors": [],
     }
+    print(f"[WATCHER] pulse start · DB={WATCHER_DB} · "
+          f"trades={_trades_db_path()} · scalper={_scalper_db_path()}")
 
     # ── 1. Push VIX sample ──
     try:
@@ -528,34 +534,93 @@ def watcher_pulse(engine) -> Dict:
                 _process_trade(t, "SCALPER", engine, cfg, snapshot)
             except Exception as e:
                 snapshot["errors"].append(f"scalper #{t.get('id')}: {e}")
+                import traceback; traceback.print_exc()
     except Exception as e:
         snapshot["errors"].append(f"scalper loop: {e}")
+        import traceback; traceback.print_exc()
 
+    print(f"[WATCHER] pulse done · main={snapshot['main_count']} "
+          f"scalper={snapshot['scalper_count']} actions={len(snapshot['actions'])} "
+          f"errors={len(snapshot['errors'])} cached={len(_last_health_cache)}")
+    if snapshot["errors"]:
+        for err in snapshot["errors"][:5]:
+            print(f"[WATCHER]   err: {err}")
     return snapshot
 
 
+def _stub_health(trade: Dict, source: str, note: str) -> Dict:
+    """Minimal health entry shown when full computation is impossible
+    (cold-start, missing live data). Frontend treats this as 'initialising'."""
+    return {
+        "score": 7.0,
+        "verdict": "HEALTHY",
+        "exit_recommended": False,
+        "tighten_sl": False,
+        "suggested_action": "HOLD",
+        "reasons": [f"Watcher initialising — {note}"],
+        "profit_pct": 0,
+        "hold_minutes": 0,
+        "components": {},
+        "trade_id": trade.get("id"),
+        "source": source,
+        "idx": trade.get("idx"),
+        "action": trade.get("action"),
+        "strike": trade.get("strike"),
+        "entry_price": trade.get("entry_price"),
+        "current_premium": trade.get("current_ltp") or trade.get("entry_price"),
+        "spot": trade.get("entry_spot"),
+        "day_high": 0,
+        "day_low": 0,
+        "qty": trade.get("qty"),
+        "ts": time.time(),
+        "stub": True,
+    }
+
+
 def _process_trade(trade: Dict, source: str, engine, cfg: Dict, snapshot: Dict):
-    """Compute health + apply action for a single trade."""
+    """Compute health + apply action for a single trade.
+
+    Always writes at least a stub entry to _last_health_cache so the UI
+    never shows perpetual "pending data" — partial health is better than
+    no health.
+    """
     idx = trade.get("idx", "")
     action = trade.get("action", "BUY_CE")
     strike = trade.get("strike", 0)
     entry_price = trade.get("entry_price", 0) or 0
     qty = trade.get("qty", 0) or 0
     trade_id = trade.get("id")
+    sid = f"{source}:{trade_id}"
 
     if not idx or not strike or entry_price <= 0:
+        # Even bad rows get a stub so frontend stops spinning
+        _last_health_cache[sid] = _stub_health(trade, source, "missing core fields")
         return
 
-    # Live data
-    spot_tok = engine.spot_tokens.get(idx.upper())
+    # Live data with multiple fallbacks
+    spot_tok = engine.spot_tokens.get(idx.upper()) if hasattr(engine, "spot_tokens") else None
     spot = engine.prices.get(spot_tok, {}).get("ltp", 0) if spot_tok else 0
+    if spot <= 0:
+        # Fallback: trade's stored entry_spot (better than 0)
+        spot = trade.get("entry_spot", 0) or 0
 
     chain = engine.chains.get(idx, {}) if hasattr(engine, "chains") else {}
-    sd = chain.get(strike, {}) if isinstance(chain, dict) else {}
+    if not isinstance(chain, dict):
+        chain = {}
+    # Strike key may be int or str depending on source — try both
+    sd = chain.get(strike, {}) or chain.get(str(strike), {}) or {}
     opt_key = "ce_ltp" if "CE" in action.upper() else "pe_ltp"
-    current_premium = sd.get(opt_key, 0) or trade.get("current_ltp", 0) or 0
+    current_premium = (
+        sd.get(opt_key, 0)
+        or trade.get("current_ltp", 0)
+        or trade.get("peak_ltp", 0)
+        or entry_price  # last resort: assume flat
+    )
 
-    if spot <= 0 or current_premium <= 0:
+    # If we still have nothing useful for spot, write stub and bail.
+    if spot <= 0:
+        _last_health_cache[sid] = _stub_health(trade, source,
+            f"no spot for {idx} (token={spot_tok})")
         return
 
     # Register trade in premium tracker if first time

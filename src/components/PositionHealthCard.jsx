@@ -73,9 +73,9 @@ export default function PositionHealthCard({ source = "MAIN", tradeId, action, c
       <div style={{
         fontSize: 11, color: "#666", padding: "4px 8px",
         background: "rgba(255,255,255,0.02)", borderRadius: 6,
-        border: "1px solid #1E1E2E", display: "inline-block"
+        border: "1px solid #1E1E2E", display: "inline-block", marginTop: 6,
       }}>
-        Health: —
+        Health: loading…
       </div>
     );
   }
@@ -83,19 +83,19 @@ export default function PositionHealthCard({ source = "MAIN", tradeId, action, c
   if (!health) {
     return (
       <div style={{
-        fontSize: 11, color: "#666", padding: "4px 8px",
-        background: "rgba(255,255,255,0.02)", borderRadius: 6,
-        border: "1px solid #1E1E2E", display: "inline-block"
+        fontSize: 11, color: "#888", padding: "4px 8px",
+        background: "rgba(10, 132, 255, 0.06)", borderRadius: 6,
+        border: "1px solid #0A84FF44", display: "inline-block", marginTop: 6,
       }}>
-        Health: pending data
+        ⏳ Watcher initialising — first health pulse within 30s
       </div>
     );
   }
 
   const score = health.score ?? 0;
-  const verdict = health.verdict || "—";
+  const verdict = health.stub ? "INITIALISING" : (health.verdict || "—");
   const reasons = health.reasons || [];
-  const suggested = health.suggested_action || "HOLD";
+  const suggested = health.stub ? "WAITING" : (health.suggested_action || "HOLD");
   const profitPct = health.profit_pct;
   const holdMin = health.hold_minutes;
 
