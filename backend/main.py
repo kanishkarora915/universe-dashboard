@@ -1236,6 +1236,16 @@ async def position_health_one(trade_id: int, source: str = "MAIN"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/market/close-status")
+async def market_close_status():
+    """Market close countdown for the UI banner (3:20 PM warning → 3:25 PM auto-close)."""
+    try:
+        from scalper_mode import get_market_close_status
+        return get_market_close_status()
+    except Exception as e:
+        return JSONResponse({"error": str(e), "state": "NORMAL"}, status_code=500)
+
+
 @app.get("/api/positions/watcher-debug")
 async def positions_watcher_debug():
     """Full diagnostic: DB paths, trades found in DB vs trades cached

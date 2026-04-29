@@ -720,6 +720,92 @@ def get_capital_usage():
         conn.close()
 
 
+def _eod_close_all_scalper(open_trades, chains, now):
+    """Close every open scalper trade at last-known LTP. Status=EOD_CLOSE."""
+    if not open_trades:
+        return
+    conn = _conn()
+    closed = 0
+    for t in open_trades:
+        t = dict(t)
+        idx = t["idx"]
+        strike = t["strike"]
+        action = t["action"]
+        chain = chains.get(idx, {}) if chains else {}
+        sd = chain.get(strike, {}) if isinstance(chain, dict) else {}
+        opt_key = "ce_ltp" if "CE" in action else "pe_ltp"
+        # last-known live LTP, fallback to current_ltp / entry
+        exit_price = sd.get(opt_key, 0) or t.get("current_ltp") or t.get("entry_price") or 0
+        if exit_price <= 0:
+            continue
+        entry = t.get("entry_price", 0) or 0
+        qty = t.get("qty", 0) or 0
+        pnl_pts = round(exit_price - entry, 2)
+        pnl_rupees = round(pnl_pts * qty, 2)
+        try:
+            entry_dt = datetime.fromisoformat(t["entry_time"])
+            hold_sec = int((now - entry_dt).total_seconds())
+        except Exception:
+            hold_sec = 0
+        try:
+            conn.execute("""
+                UPDATE scalper_trades SET
+                    status='EOD_CLOSE', exit_price=?, exit_time=?, exit_reason=?,
+                    pnl_pts=?, pnl_rupees=?, hold_seconds=?, peak_ltp=?
+                WHERE id=? AND status='OPEN'
+            """, (exit_price, now.isoformat(),
+                  "Market closing 3:25 PM — scalper EOD auto-close (options intraday only).",
+                  pnl_pts, pnl_rupees, hold_sec, max(t.get("peak_ltp") or entry, exit_price),
+                  t["id"]))
+            closed += 1
+            print(f"[SCALPER-EOD] Closed #{t['id']} {idx} {action} {strike} @ ₹{exit_price} → ₹{pnl_rupees:+,.0f}")
+            try:
+                from capital_tracker import record_trade_pnl
+                record_trade_pnl("SCALPER", pnl_rupees, trade_id=t["id"],
+                                 description=f"EOD auto-close: {idx} {action} {strike}")
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[SCALPER-EOD] failed to close #{t.get('id')}: {e}")
+    conn.commit()
+    conn.close()
+    if closed:
+        print(f"[SCALPER-EOD] Closed {closed} open scalper trade(s) at 3:25 PM IST.")
+
+
+def get_market_close_status():
+    """Return market-close countdown info for the UI banner.
+    States: NORMAL → CLOSING_SOON (3:20-3:25) → CLOSING_NOW (3:25-3:30) → CLOSED
+    """
+    now = ist_now()
+    h, m = now.hour, now.minute
+    # Pre-3:20 = normal, 3:20-3:24 = warning, 3:25-3:30 = auto-closing, post = closed
+    state = "NORMAL"
+    seconds_to_close = None
+    if h == 15 and 20 <= m < 25:
+        state = "CLOSING_SOON"
+        # seconds until 3:25
+        target = now.replace(hour=15, minute=25, second=0, microsecond=0)
+        seconds_to_close = int((target - now).total_seconds())
+    elif h == 15 and 25 <= m < 30:
+        state = "AUTO_CLOSING"
+        seconds_to_close = 0
+    elif h == 15 and m >= 30:
+        state = "CLOSED"
+    elif h >= 16:
+        state = "CLOSED"
+    elif h < 9 or (h == 9 and m < 15):
+        state = "PRE_OPEN"
+
+    return {
+        "state": state,
+        "seconds_to_close": seconds_to_close,
+        "now_ist": now.strftime("%H:%M:%S"),
+        "warning_active": state in ("CLOSING_SOON", "AUTO_CLOSING"),
+        "auto_close_active": state == "AUTO_CLOSING",
+    }
+
+
 def check_scalper_exits(chains):
     """Monitor open scalper trades — quick exit logic.
     Smart SL applied if enabled in smart_sl_config (else static SL)."""
@@ -734,6 +820,13 @@ def check_scalper_exits(chains):
     spot_anchor_pct = smart_cfg.get("spot_anchor_pct", 0.4)
 
     now = ist_now()
+
+    # ── EOD AUTO-CLOSE: close all scalper trades at 3:25 PM IST ──
+    # Options are intraday only. Holding past 3:25 risks settlement at
+    # closing-auction prices and loss of any meaningful exit liquidity.
+    if now.hour == 15 and now.minute >= 25:
+        _eod_close_all_scalper(open_trades, chains, now)
+        return
 
     for t in open_trades:
         t = dict(t)

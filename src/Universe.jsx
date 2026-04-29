@@ -42,6 +42,7 @@ import { exportSignalsToPDF, exportFullReport } from "./pdfExport";
 import { fetchTrapScan, fetchAIAnalysis, fetchTrapHistory, fetchTrapToday, fetchPriceAction, fetchTrapVerdict } from "./api";
 import AIChat from "./components/AIChat";
 import LiveExitAlert from "./components/LiveExitAlert";
+import MarketCloseBanner from "./components/MarketCloseBanner";
 
 const ACCENT = "#0A84FF";
 const BG = "#0A0A0F";
@@ -3157,6 +3158,9 @@ export default function Universe({ onLogout }) {
 
       {/* Active Position Watcher — critical-health alerts (PnL + Scalper) */}
       <LiveExitAlert />
+
+      {/* 3:20 PM warning + 3:25 PM auto-close banner — visible on every tab */}
+      <MarketCloseBanner />
     </div>
   );
 }
