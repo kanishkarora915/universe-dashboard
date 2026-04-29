@@ -1179,6 +1179,39 @@ async def zones_analysis(index: str):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Backtest Validator endpoints ──
+
+@app.get("/api/backtest/full")
+async def backtest_full():
+    """Replay all closed trades through 18 filters. Compare system vs reality."""
+    try:
+        from backtest_validator import run_full_backtest
+        return run_full_backtest()
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/backtest/filter-stats")
+async def backtest_filter_stats():
+    """Quick filter performance summary (no full trade list)."""
+    try:
+        from backtest_validator import get_filter_stats_only
+        return get_filter_stats_only()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/backtest/trade/{trade_id}")
+async def backtest_one_trade(trade_id: int, source: str = "MAIN"):
+    """Backtest analysis for a specific trade."""
+    try:
+        from backtest_validator import get_trade_analysis
+        return get_trade_analysis(trade_id, source=source.upper())
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Times Tab Real Engine endpoints (Phase 1) ──
 
 @app.get("/api/times/events")

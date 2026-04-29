@@ -22,6 +22,7 @@ const TrinityTab = lazy(() => import("./TrinityTab"));
 const ReportsTab = lazy(() => import("./ReportsTab"));
 const TradingTimesTab = lazy(() => import("./TradingTimesTab"));
 const TradeAutopsyTab = lazy(() => import("./TradeAutopsyTab"));
+const BacktestTab = lazy(() => import("./BacktestTab"));
 const SignalDashboard = lazy(() => import("./components/SignalDashboard"));
 const StrikeSearch = lazy(() => import("./components/StrikeSearch"));
 const StrikeDetail = lazy(() => import("./components/StrikeDetail"));
@@ -70,8 +71,9 @@ const TAB_GROUPS = [
     { id: "priceact",icon: "\uD83D\uDCA5", label: "Price Act" },
   ]},
   { group: "Intelligence", tabs: [
-    { id: "ttimes",  icon: "⏱\uFE0F", label: "Times" },
-    { id: "autopsy", icon: "\uD83D\uDD2C", label: "Autopsy" },
+    { id: "ttimes",   icon: "⏱\uFE0F", label: "Times" },
+    { id: "autopsy",  icon: "\uD83D\uDD2C", label: "Autopsy" },
+    { id: "backtest", icon: "\uD83D\uDD01", label: "Backtest" },
   ]},
   { group: "Trading", tabs: [
     { id: "pnl",     icon: "\uD83D\uDCB0", label: "PnL" },
@@ -2873,6 +2875,7 @@ export default function Universe({ onLogout }) {
       case "trinity": return <TrinityTab />;
       case "ttimes":  return <TradingTimesTab />;
       case "autopsy": return <TradeAutopsyTab />;
+      case "backtest":return <BacktestTab />;
       case "reports": return <ReportsTab />;
       default:        return null;
     }
