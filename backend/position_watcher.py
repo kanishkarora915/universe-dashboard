@@ -593,10 +593,27 @@ def _stub_health(trade: Dict, source: str, note: str) -> Dict:
 def _process_trade(trade: Dict, source: str, engine, cfg: Dict, snapshot: Dict):
     """Compute health + apply action for a single trade.
 
-    Always writes at least a stub entry to _last_health_cache so the UI
-    never shows perpetual "pending data" — partial health is better than
-    no health.
+    GUARANTEE: writes at least a stub entry to _last_health_cache for
+    every call, even if every internal step blows up. The frontend
+    must never see "pending data" while a trade is open in the DB.
     """
+    trade_id = trade.get("id")
+    sid = f"{source}:{trade_id}"
+    # Pre-emptive stub so any later exception still leaves an entry behind
+    _last_health_cache[sid] = _stub_health(trade, source, "computing…")
+
+    try:
+        _process_trade_inner(trade, source, engine, cfg, snapshot)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # Replace with stub that surfaces the error
+        _last_health_cache[sid] = _stub_health(trade, source, f"engine error: {e}")
+        snapshot["errors"].append(f"{source} #{trade_id}: {e}")
+
+
+def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: Dict):
+    """Real logic — wrapped by _process_trade for exception safety."""
     idx = trade.get("idx", "")
     action = trade.get("action", "BUY_CE")
     strike = trade.get("strike", 0)

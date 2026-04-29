@@ -1236,6 +1236,76 @@ async def position_health_one(trade_id: int, source: str = "MAIN"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/positions/watcher-debug")
+async def positions_watcher_debug():
+    """Full diagnostic: DB paths, trades found in DB vs trades cached
+    by the watcher. Use this to debug 'open trades zero' issues."""
+    try:
+        from position_watcher import (
+            _get_open_main_trades, _get_open_scalper_trades,
+            _trades_db_path, _scalper_db_path, _last_health_cache,
+            WATCHER_DB, DATA_DIR
+        )
+        import os, time as _time
+        main = _get_open_main_trades()
+        scalper = _get_open_scalper_trades()
+        cache = _last_health_cache
+        last_ts = max([h.get("ts", 0) for h in cache.values()], default=0)
+        return {
+            "data_dir": DATA_DIR,
+            "data_dir_is_data": DATA_DIR == "/data",
+            "trades_db_path": _trades_db_path(),
+            "trades_db_exists": os.path.exists(_trades_db_path()),
+            "trades_db_size": os.path.getsize(_trades_db_path()) if os.path.exists(_trades_db_path()) else 0,
+            "scalper_db_path": _scalper_db_path(),
+            "scalper_db_exists": os.path.exists(_scalper_db_path()),
+            "scalper_db_size": os.path.getsize(_scalper_db_path()) if os.path.exists(_scalper_db_path()) else 0,
+            "watcher_db_path": WATCHER_DB,
+            "open_main_in_db": len(main),
+            "open_scalper_in_db": len(scalper),
+            "main_trade_ids": [t.get("id") for t in main],
+            "main_trade_summary": [
+                {"id": t.get("id"), "idx": t.get("idx"), "action": t.get("action"),
+                 "strike": t.get("strike"), "entry": t.get("entry_price"),
+                 "current_ltp": t.get("current_ltp"), "status": t.get("status")}
+                for t in main[:5]
+            ],
+            "scalper_trade_ids": [t.get("id") for t in scalper],
+            "scalper_trade_summary": [
+                {"id": t.get("id"), "idx": t.get("idx"), "action": t.get("action"),
+                 "strike": t.get("strike"), "entry": t.get("entry_price"),
+                 "current_ltp": t.get("current_ltp"), "status": t.get("status")}
+                for t in scalper[:5]
+            ],
+            "cached_count": len(cache),
+            "cached_keys": list(cache.keys()),
+            "last_pulse_age_sec": round(_time.time() - last_ts, 1) if last_ts else None,
+            "engine_alive": engine is not None,
+            "engine_has_chains": hasattr(engine, "chains") if engine else False,
+            "engine_has_spot_tokens": hasattr(engine, "spot_tokens") if engine else False,
+            "spot_tokens_keys": list(engine.spot_tokens.keys())[:10] if (engine and hasattr(engine, "spot_tokens")) else [],
+            "chains_keys": list(engine.chains.keys()) if (engine and hasattr(engine, "chains")) else [],
+        }
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": str(e), "trace": traceback.format_exc()}, status_code=500)
+
+
+@app.post("/api/positions/watcher-pulse-now")
+async def positions_watcher_pulse_now():
+    """Force a watcher pulse immediately (don't wait for the 30s tick).
+    Returns the snapshot of what happened. Useful right after deploy."""
+    try:
+        if not engine:
+            return JSONResponse({"error": "engine not started"}, status_code=503)
+        from position_watcher import watcher_pulse
+        snap = watcher_pulse(engine)
+        return snap
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": str(e), "trace": traceback.format_exc()}, status_code=500)
+
+
 @app.get("/api/positions/watcher-status")
 async def positions_watcher_status():
     """Liveness signal for the position watcher loop.

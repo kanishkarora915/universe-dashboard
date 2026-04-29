@@ -3735,15 +3735,19 @@ class MarketEngine:
         # Computes 0-10 health score for every open trade (both PnL + Scalper),
         # fires triggers (REVERSAL / VIX_CRUSH / THETA / DAY_HIGH_TRAP / POST_LUNCH /
         # PATTERN_LOSER) and applies SL-tighten or auto-exit per config.
+        # Runs regardless of market_active so cold-start always populates the
+        # health cache (otherwise frontend shows "INITIALISING" forever after
+        # market close).
         if not hasattr(self, "_watcher_last_pulse"):
             self._watcher_last_pulse = 0
-        if market_active and now - self._watcher_last_pulse >= 30:
+        if now - self._watcher_last_pulse >= 30:
             self._watcher_last_pulse = now
             def _watcher_run():
                 try:
                     import position_watcher
                     position_watcher.watcher_pulse(self)
                 except Exception as e:
+                    import traceback; traceback.print_exc()
                     print(f"[WATCHER] pulse error: {e}")
             threading.Thread(target=_watcher_run, daemon=True, name="position-watcher").start()
 
