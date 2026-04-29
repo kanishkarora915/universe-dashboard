@@ -3731,6 +3731,22 @@ class MarketEngine:
         # Trinity auto-prune DISABLED per user request — all data persists forever.
         # Only manual user action via API can delete data.
 
+        # ── Position Watcher — Active health monitoring (every 30s) ──
+        # Computes 0-10 health score for every open trade (both PnL + Scalper),
+        # fires triggers (REVERSAL / VIX_CRUSH / THETA / DAY_HIGH_TRAP / POST_LUNCH /
+        # PATTERN_LOSER) and applies SL-tighten or auto-exit per config.
+        if not hasattr(self, "_watcher_last_pulse"):
+            self._watcher_last_pulse = 0
+        if market_active and now - self._watcher_last_pulse >= 30:
+            self._watcher_last_pulse = now
+            def _watcher_run():
+                try:
+                    import position_watcher
+                    position_watcher.watcher_pulse(self)
+                except Exception as e:
+                    print(f"[WATCHER] pulse error: {e}")
+            threading.Thread(target=_watcher_run, daemon=True, name="position-watcher").start()
+
         # ── Rejection Zone Engine — 5-min snapshots ──
         if not hasattr(self, "_rejection_last_capture"):
             self._rejection_last_capture = 0

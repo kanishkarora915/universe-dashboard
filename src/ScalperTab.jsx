@@ -17,6 +17,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { createChart, LineSeries } from "lightweight-charts";
 import SmartSLLadder from "./components/SmartSLLadder";
 import CapitalTracker from "./components/CapitalTracker";
+import PositionHealthCard from "./components/PositionHealthCard";
+import WatcherControls from "./components/WatcherControls";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -603,6 +605,9 @@ export default function ScalperTab() {
         </div>
       </details>
 
+      {/* Active Position Watcher — auto-exit / tight SL toggles + recent exits */}
+      <WatcherControls mode="SCALPER" />
+
       {/* OPEN TRADES — with live ticks */}
       <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "16px 20px" }}>
         <div style={{ color: "#aaa", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
@@ -797,6 +802,18 @@ function ScalperTradeCard({ t, livePrice, isExpanded, onToggleExpand, onManualEx
           {" · "}Prob: {t.probability || 0}%
           {!isExpanded && <span style={{ color: ACCENT, marginLeft: 8 }}>↓ click to expand</span>}
         </div>
+
+        {/* Active Position Watcher — health score for OPEN trades only */}
+        {isOpen && (
+          <div onClick={(e) => e.stopPropagation()}>
+            <PositionHealthCard
+              source="SCALPER"
+              tradeId={t.id}
+              action={t.action}
+              compact={!isExpanded}
+            />
+          </div>
+        )}
       </div>
 
       {/* EXPANDED VIEW */}

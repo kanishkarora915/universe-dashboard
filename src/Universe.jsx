@@ -41,6 +41,7 @@ import { FONT, RADIUS, SPACE, TEXT_SIZE, TEXT_WEIGHT } from "./theme";
 import { exportSignalsToPDF, exportFullReport } from "./pdfExport";
 import { fetchTrapScan, fetchAIAnalysis, fetchTrapHistory, fetchTrapToday, fetchPriceAction, fetchTrapVerdict } from "./api";
 import AIChat from "./components/AIChat";
+import LiveExitAlert from "./components/LiveExitAlert";
 
 const ACCENT = "#0A84FF";
 const BG = "#0A0A0F";
@@ -3153,6 +3154,9 @@ export default function Universe({ onLogout }) {
 
       {/* AI BRAIN — floating chat (Claude Haiku) — visible on all tabs */}
       <AIChat />
+
+      {/* Active Position Watcher — critical-health alerts (PnL + Scalper) */}
+      <LiveExitAlert />
     </div>
   );
 }

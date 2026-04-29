@@ -1212,6 +1212,59 @@ async def backtest_one_trade(trade_id: int, source: str = "MAIN"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Position Watcher endpoints (Active Position Manager) ──
+
+@app.get("/api/positions/health")
+async def positions_health():
+    """Latest health snapshots for all open trades (both PnL + Scalper)."""
+    try:
+        from position_watcher import get_last_health
+        return {"positions": get_last_health()}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/positions/health/{trade_id}")
+async def position_health_one(trade_id: int, source: str = "MAIN"):
+    """Latest health for one trade + history."""
+    try:
+        from position_watcher import get_health_for_trade, get_health_history
+        cur = get_health_for_trade(source.upper(), trade_id)
+        hist = get_health_history(source.upper(), trade_id, limit=200)
+        return {"current": cur, "history": hist}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/positions/exits")
+async def positions_exits(limit: int = 50):
+    """Recent watcher-triggered exits with full reason chains."""
+    try:
+        from position_watcher import get_recent_exits
+        return {"exits": get_recent_exits(limit)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/positions/config")
+async def positions_config_get():
+    try:
+        from position_watcher import get_config
+        return get_config()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/positions/config")
+async def positions_config_set(payload: dict):
+    """Update watcher config: auto_exit_main, auto_exit_scalper, tight_sl_*, thresholds."""
+    try:
+        from position_watcher import set_config
+        return set_config(**payload)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Times Tab Real Engine endpoints (Phase 1) ──
 
 @app.get("/api/times/events")

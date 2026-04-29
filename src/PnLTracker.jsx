@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import CapitalTracker from "./components/CapitalTracker";
+import PositionHealthCard from "./components/PositionHealthCard";
+import WatcherControls from "./components/WatcherControls";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -529,6 +531,8 @@ export default function PnLTracker() {
       {/* CONTENT */}
       {tab === "open" && (
         <>
+          {/* Active Position Watcher — auto-exit / tight SL toggles + recent exits */}
+          <WatcherControls mode="MAIN" />
           {openTrades.length === 0 && (
             <div style={{ textAlign: "center", padding: 40, color: "#555" }}>
               <div style={{ fontSize: 13 }}>No open trades. Auto-enters when verdict shows {">"}60% probability.</div>
@@ -782,6 +786,11 @@ function TradeCard({ t, onExit }) {
         <div style={{ marginTop: 6, padding: "6px 10px", background: PURPLE + "11", borderRadius: 6, color: PURPLE, fontSize: 11 }}>
           Reversal: price recovered to {"₹"}{(t.reversal_price || 0).toFixed?.(1) || t.reversal_price} after institutional SL flush
         </div>
+      )}
+
+      {/* Active Position Watcher — health score for OPEN trades */}
+      {t.status === "OPEN" && (
+        <PositionHealthCard source="MAIN" tradeId={t.id} action={t.action} />
       )}
 
       {/* MANUAL EXIT BUTTON */}
