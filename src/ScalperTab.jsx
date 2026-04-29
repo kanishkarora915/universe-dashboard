@@ -19,6 +19,8 @@ import SmartSLLadder from "./components/SmartSLLadder";
 import CapitalTracker from "./components/CapitalTracker";
 import PositionHealthCard from "./components/PositionHealthCard";
 import WatcherControls from "./components/WatcherControls";
+import WatcherStatusBadge from "./components/WatcherStatusBadge";
+import LivePositionChart from "./components/LivePositionChart";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -605,6 +607,11 @@ export default function ScalperTab() {
         </div>
       </details>
 
+      {/* Watcher liveness badge */}
+      <div style={{ marginBottom: 8 }}>
+        <WatcherStatusBadge />
+      </div>
+
       {/* Active Position Watcher — auto-exit / tight SL toggles + recent exits */}
       <WatcherControls mode="SCALPER" />
 
@@ -818,7 +825,57 @@ function ScalperTradeCard({ t, livePrice, isExpanded, onToggleExpand, onManualEx
 
       {/* EXPANDED VIEW */}
       {isExpanded && (
-        <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${BORDER}` }}>
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${BORDER}` }}
+             onClick={(e) => e.stopPropagation()}>
+
+          {/* Top toolbar: Close + Manual Exit */}
+          <div style={{
+            display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 10,
+          }}>
+            {isOpen && onManualExit && (
+              <button
+                onClick={() => {
+                  if (confirm(`Exit ${t.action} ${t.idx} ${t.strike} at ₹${cur?.toFixed?.(2) || cur}?`)) {
+                    onManualExit();
+                  }
+                }}
+                style={{
+                  background: RED + "22", border: `1px solid ${RED}`,
+                  color: RED, fontSize: 11, fontWeight: 700,
+                  padding: "5px 12px", borderRadius: 6, cursor: "pointer",
+                  letterSpacing: 0.4,
+                }}>
+                ⚡ EXIT NOW
+              </button>
+            )}
+            <button
+              onClick={onToggleExpand}
+              style={{
+                background: "transparent", border: `1px solid ${BORDER}`,
+                color: "#aaa", fontSize: 11, padding: "5px 12px",
+                borderRadius: 6, cursor: "pointer",
+              }}>
+              ✕ Close
+            </button>
+          </div>
+
+          {/* LIVE PREMIUM CHART (only for open trades) */}
+          {isOpen && (
+            <Section title="📈 LIVE PREMIUM CHART — entry / SL / T1 / T2">
+              <LivePositionChart
+                tradeId={t.id}
+                source="SCALPER"
+                entry={t.entry_price}
+                sl={t.sl_price}
+                t1={t.t1_price}
+                t2={t.t2_price}
+                qty={t.qty}
+                action={t.action}
+                currentLtp={cur}
+              />
+            </Section>
+          )}
+
           {/* ENTRY LOGIC */}
           <Section title="🎯 ENTRY LOGIC — kyu liya">
             {t.entry_reasoning ? (

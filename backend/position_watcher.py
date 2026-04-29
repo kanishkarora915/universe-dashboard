@@ -88,6 +88,19 @@ def init_watcher_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_health_trade ON health_log(source, trade_id)")
 
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS position_ticks (
+            source TEXT,
+            trade_id INTEGER,
+            ts REAL,
+            premium REAL,
+            spot REAL,
+            score REAL,
+            pnl_pct REAL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pt ON position_ticks(source, trade_id, ts)")
+
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS exit_log (
             ts REAL,
             source TEXT,
@@ -681,6 +694,23 @@ def _process_trade(trade: Dict, source: str, engine, cfg: Dict, snapshot: Dict):
     # Cache for API
     _last_health_cache[sid] = health
 
+    # Record tick for live chart
+    try:
+        pnl_pct = ((current_premium - entry_price) / entry_price * 100) if entry_price > 0 else 0
+        conn = sqlite3.connect(WATCHER_DB)
+        conn.execute("""
+            INSERT INTO position_ticks(source, trade_id, ts, premium, spot, score, pnl_pct)
+            VALUES (?,?,?,?,?,?,?)
+        """, (source, trade_id, time.time(), float(current_premium),
+              float(spot or 0), float(health.get("score", 0)),
+              round(pnl_pct, 2)))
+        # Cleanup ticks older than 8 hours
+        conn.execute("DELETE FROM position_ticks WHERE ts < ?", (time.time() - 8*3600,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[WATCHER] tick record err: {e}")
+
     # Evaluate trigger
     trigger = _evaluate_triggers(trade, health, action)
     action_taken = "NONE"
@@ -751,6 +781,28 @@ def get_recent_exits(limit: int = 50) -> List[Dict]:
             })
         return out
     except Exception:
+        return []
+
+
+def get_position_ticks(source: str, trade_id: int, limit: int = 500) -> List[Dict]:
+    """Per-trade premium tick stream — used for live LTP chart."""
+    init_watcher_db()
+    try:
+        conn = sqlite3.connect(WATCHER_DB)
+        rows = conn.execute("""
+            SELECT ts, premium, spot, score, pnl_pct FROM position_ticks
+            WHERE source=? AND trade_id=? ORDER BY ts ASC LIMIT ?
+        """, (source, trade_id, limit)).fetchall()
+        conn.close()
+        return [{
+            "ts": int(r[0] * 1000),
+            "premium": r[1],
+            "spot": r[2],
+            "score": r[3],
+            "pnl_pct": r[4],
+        } for r in rows]
+    except Exception as e:
+        print(f"[WATCHER] get_position_ticks err: {e}")
         return []
 
 

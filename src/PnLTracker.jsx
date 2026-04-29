@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import CapitalTracker from "./components/CapitalTracker";
 import PositionHealthCard from "./components/PositionHealthCard";
 import WatcherControls from "./components/WatcherControls";
+import WatcherStatusBadge from "./components/WatcherStatusBadge";
+import LivePositionChart from "./components/LivePositionChart";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -531,6 +533,10 @@ export default function PnLTracker() {
       {/* CONTENT */}
       {tab === "open" && (
         <>
+          {/* Watcher liveness badge */}
+          <div style={{ marginBottom: 8 }}>
+            <WatcherStatusBadge />
+          </div>
           {/* Active Position Watcher — auto-exit / tight SL toggles + recent exits */}
           <WatcherControls mode="MAIN" />
           {openTrades.length === 0 && (
@@ -678,6 +684,7 @@ export default function PnLTracker() {
 }
 
 function TradeCard({ t, onExit }) {
+  const [expanded, setExpanded] = useState(false);
   const sc = statusColor[t.status] || (t.status === "TRAIL_EXIT" ? GREEN : t.status === "BREAKEVEN_EXIT" ? ACCENT : "#555");
   const pc = (t.pnl_rupees || 0) > 0 ? GREEN : (t.pnl_rupees || 0) < 0 ? RED : "#888";
   const ac = t.action?.includes("CE") ? GREEN : RED;
@@ -793,19 +800,49 @@ function TradeCard({ t, onExit }) {
         <PositionHealthCard source="MAIN" tradeId={t.id} action={t.action} />
       )}
 
-      {/* MANUAL EXIT BUTTON */}
-      {t.status === "OPEN" && onExit && (
-        <button onClick={() => onExit(t.id)} style={{
-          marginTop: 8, width: "100%", padding: "8px 0",
-          background: RED + "22", color: RED, border: `1px solid ${RED}44`,
-          borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
-          transition: "all 0.15s",
-        }}
-        onMouseOver={e => { e.target.style.background = RED; e.target.style.color = "#fff"; }}
-        onMouseOut={e => { e.target.style.background = RED + "22"; e.target.style.color = RED; }}
-        >
-          EXIT NOW
-        </button>
+      {/* Expand/Collapse + Manual Exit row (OPEN trades only) */}
+      {t.status === "OPEN" && (
+        <div style={{
+          display: "flex", gap: 8, marginTop: 10,
+        }}>
+          <button onClick={() => setExpanded(v => !v)} style={{
+            flex: 1, padding: "8px 0",
+            background: expanded ? "#1E1E2E" : ACCENT + "22",
+            color: expanded ? "#aaa" : ACCENT,
+            border: `1px solid ${expanded ? "#2A2A3F" : ACCENT + "44"}`,
+            borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
+          }}>
+            {expanded ? "✕ Close Chart" : "📈 Show Live Chart"}
+          </button>
+          {onExit && (
+            <button onClick={() => onExit(t.id)} style={{
+              flex: 1, padding: "8px 0",
+              background: RED + "22", color: RED, border: `1px solid ${RED}44`,
+              borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
+              transition: "all 0.15s",
+            }}
+            onMouseOver={e => { e.target.style.background = RED; e.target.style.color = "#fff"; }}
+            onMouseOut={e => { e.target.style.background = RED + "22"; e.target.style.color = RED; }}
+            >
+              ⚡ EXIT NOW
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* LIVE PREMIUM CHART (only for open + expanded) */}
+      {t.status === "OPEN" && expanded && (
+        <LivePositionChart
+          tradeId={t.id}
+          source="MAIN"
+          entry={t.entry_price}
+          sl={t.sl_price}
+          t1={t.t1_price}
+          t2={t.t2_price}
+          qty={t.qty}
+          action={t.action}
+          currentLtp={t.current_ltp}
+        />
       )}
     </div>
   );

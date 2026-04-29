@@ -1236,6 +1236,79 @@ async def position_health_one(trade_id: int, source: str = "MAIN"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/positions/watcher-status")
+async def positions_watcher_status():
+    """Liveness signal for the position watcher loop.
+    Frontend uses this to draw the green/red 'WATCHER LIVE' badge."""
+    try:
+        from position_watcher import get_last_health, _last_health_cache
+        cached = list(_last_health_cache.values())
+        last_pulse_ts = max([h.get("ts", 0) for h in cached], default=0)
+        now = __import__("time").time()
+        age = (now - last_pulse_ts) if last_pulse_ts else None
+        is_live = age is not None and age < 90  # 3× pulse interval
+        return {
+            "live": bool(is_live),
+            "last_pulse_age_sec": round(age, 1) if age is not None else None,
+            "cached_positions": len(cached),
+            "main_count": len([h for h in cached if h.get("source") == "MAIN"]),
+            "scalper_count": len([h for h in cached if h.get("source") == "SCALPER"]),
+            "stub_count": len([h for h in cached if h.get("stub")]),
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e), "live": False}, status_code=500)
+
+
+@app.get("/api/positions/ticks/{trade_id}")
+async def position_ticks(trade_id: int, source: str = "MAIN", limit: int = 500):
+    """Live LTP tick history for a specific trade (used for the live chart).
+    Both MAIN and SCALPER ticks come from watcher's position_ticks table
+    so the chart format is identical regardless of mode.
+    """
+    try:
+        src = source.upper()
+        from position_watcher import get_position_ticks
+        ticks = get_position_ticks(src, trade_id, limit=limit)
+        return {"trade_id": trade_id, "source": src, "ticks": ticks}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/positions/exit/{trade_id}")
+async def position_force_exit(trade_id: int, source: str = "MAIN"):
+    """Manually exit a trade from any tab — uses watcher's force-close machinery."""
+    try:
+        src = source.upper()
+        if src == "SCALPER":
+            import scalper_mode
+            # use scalper's existing manual_exit
+            import sqlite3
+            conn = sqlite3.connect(str(scalper_mode.SCALPER_DB))
+            row = conn.execute("SELECT current_ltp, entry_price FROM scalper_trades WHERE id=? AND status='OPEN'",
+                               (trade_id,)).fetchone()
+            conn.close()
+            if not row:
+                return {"status": "not_found"}
+            ltp = row[0] or row[1]
+            res = scalper_mode.manual_exit(trade_id, ltp, reason="USER_MANUAL_EXIT")
+            return {"status": "closed", **(res or {})}
+        else:
+            from position_watcher import _force_close_main, _trades_db_path
+            import sqlite3
+            conn = sqlite3.connect(_trades_db_path())
+            row = conn.execute("SELECT current_ltp, entry_price FROM trades WHERE id=? AND status='OPEN'",
+                               (trade_id,)).fetchone()
+            conn.close()
+            if not row:
+                return {"status": "not_found"}
+            ltp = row[0] or row[1]
+            ok = _force_close_main(trade_id, ltp, "USER_MANUAL_EXIT")
+            return {"status": "closed" if ok else "failed", "exit_price": ltp}
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/positions/exits")
 async def positions_exits(limit: int = 50):
     """Recent watcher-triggered exits with full reason chains."""
