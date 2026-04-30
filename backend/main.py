@@ -1403,6 +1403,41 @@ async def why_no_trade():
         return JSONResponse({"error": str(e), "trace": traceback.format_exc()}, status_code=500)
 
 
+@app.get("/api/reversal/live")
+async def reversal_live():
+    """Live capitulation state for both NIFTY and BANKNIFTY."""
+    try:
+        from capitulation_engine import get_live_state
+        return get_live_state()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/reversal/history")
+async def reversal_history(idx: str = "", limit: int = 50):
+    """Today's capitulation events log."""
+    try:
+        from capitulation_engine import get_history
+        return {"events": get_history(idx.upper() if idx else None, limit)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/reversal/pulse-now")
+async def reversal_pulse_now():
+    """Force an immediate capitulation pulse."""
+    try:
+        if not engine:
+            return JSONResponse({"error": "engine not started"}, status_code=503)
+        from capitulation_engine import pulse, set_live_state
+        snap = pulse(engine)
+        set_live_state(snap)
+        return snap
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": str(e), "trace": traceback.format_exc()}, status_code=500)
+
+
 @app.get("/api/market/close-status")
 async def market_close_status():
     """Market close countdown for the UI banner (3:20 PM warning → 3:25 PM auto-close)."""

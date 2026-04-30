@@ -23,6 +23,7 @@ const ReportsTab = lazy(() => import("./ReportsTab"));
 const TradingTimesTab = lazy(() => import("./TradingTimesTab"));
 const TradeAutopsyTab = lazy(() => import("./TradeAutopsyTab"));
 const BacktestTab = lazy(() => import("./BacktestTab"));
+const ReversalTab = lazy(() => import("./ReversalTab"));
 const SignalDashboard = lazy(() => import("./components/SignalDashboard"));
 const StrikeSearch = lazy(() => import("./components/StrikeSearch"));
 const StrikeDetail = lazy(() => import("./components/StrikeDetail"));
@@ -43,6 +44,7 @@ import { fetchTrapScan, fetchAIAnalysis, fetchTrapHistory, fetchTrapToday, fetch
 import AIChat from "./components/AIChat";
 import LiveExitAlert from "./components/LiveExitAlert";
 import MarketCloseBanner from "./components/MarketCloseBanner";
+import CapitulationAlert from "./components/CapitulationAlert";
 
 const ACCENT = "#0A84FF";
 const BG = "#0A0A0F";
@@ -73,6 +75,7 @@ const TAB_GROUPS = [
     { id: "priceact",icon: "\uD83D\uDCA5", label: "Price Act" },
   ]},
   { group: "Intelligence", tabs: [
+    { id: "reversal", icon: "\uD83C\uDFAF", label: "Reversal" },
     { id: "ttimes",   icon: "⏱\uFE0F", label: "Times" },
     { id: "autopsy",  icon: "\uD83D\uDD2C", label: "Autopsy" },
     { id: "backtest", icon: "\uD83D\uDD01", label: "Backtest" },
@@ -2878,6 +2881,7 @@ export default function Universe({ onLogout }) {
       case "ttimes":  return <TradingTimesTab />;
       case "autopsy": return <TradeAutopsyTab />;
       case "backtest":return <BacktestTab />;
+      case "reversal":return <ReversalTab />;
       case "reports": return <ReportsTab />;
       default:        return null;
     }
@@ -3161,6 +3165,9 @@ export default function Universe({ onLogout }) {
 
       {/* 3:20 PM warning + 3:25 PM auto-close banner — visible on every tab */}
       <MarketCloseBanner />
+
+      {/* Capitulation Engine — STRONG capitulation alert (CE/PE buy opportunity) */}
+      <CapitulationAlert />
     </div>
   );
 }

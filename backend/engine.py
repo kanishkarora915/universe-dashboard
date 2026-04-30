@@ -3731,6 +3731,24 @@ class MarketEngine:
         # Trinity auto-prune DISABLED per user request — all data persists forever.
         # Only manual user action via API can delete data.
 
+        # ── Capitulation Engine — Reversal detection (every 60s) ──
+        # Aggregates 7 leading signals (OI flush, PCR flip, premium collapse,
+        # VIX cooling/spike, higher-lows / lower-highs) and emits BULLISH /
+        # BEARISH capitulation scores per index. Strong score triggers alert.
+        if not hasattr(self, "_capitulation_last"):
+            self._capitulation_last = 0
+        if now - self._capitulation_last >= 60:
+            self._capitulation_last = now
+            def _capitulation_run():
+                try:
+                    import capitulation_engine
+                    snap = capitulation_engine.pulse(self)
+                    capitulation_engine.set_live_state(snap)
+                except Exception as e:
+                    import traceback; traceback.print_exc()
+                    print(f"[CAPITULATION] pulse error: {e}")
+            threading.Thread(target=_capitulation_run, daemon=True, name="capitulation").start()
+
         # ── Position Watcher — Active health monitoring (every 30s) ──
         # Computes 0-10 health score for every open trade (both PnL + Scalper),
         # fires triggers (REVERSAL / VIX_CRUSH / THETA / DAY_HIGH_TRAP / POST_LUNCH /
