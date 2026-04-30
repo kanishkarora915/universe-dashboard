@@ -95,8 +95,49 @@ event_loop: Optional[asyncio.AbstractEventLoop] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global event_loop
+    global event_loop, engine
     event_loop = asyncio.get_event_loop()
+
+    # ── AUTO-RESUME engine from cached access_token after deploys ──
+    # Render restarts the container on every deploy, which wipes in-memory
+    # state including `engine = None`. Without this, we'd need a manual
+    # login click each deploy and lose 2-3 min of pulse data.
+    # access_token.json lives on the /data persistent disk so survives.
+    try:
+        token_file = _data_dir / "access_token.json"
+        if token_file.exists() and engine is None:
+            token_data = json.loads(token_file.read_text())
+            api_key = token_data.get("api_key", "")
+            access_token = token_data.get("access_token", "")
+            api_secret = token_data.get("api_secret", "")
+            if api_key and access_token:
+                kite = KiteConnect(api_key=api_key)
+                kite.set_access_token(access_token)
+                session["api_key"] = api_key
+                session["api_secret"] = api_secret
+                session["access_token"] = access_token
+                session["kite"] = kite
+                try:
+                    from trade_logger import save_nse_holidays_from_kite
+                    save_nse_holidays_from_kite(kite)
+                except Exception:
+                    pass
+                engine = MarketEngine(api_key=api_key, access_token=access_token, loop=event_loop)
+                engine.start()
+                try:
+                    from trinity import api_routes as _tr
+                    _tr.attach_engine(engine)
+                except Exception as _e:
+                    print(f"[TRINITY] attach_engine failed: {_e}")
+                print(f"[STARTUP] Engine auto-resumed from cached token {access_token[:8]}…")
+            else:
+                print("[STARTUP] access_token.json present but missing fields — manual login needed")
+        elif engine is None:
+            print("[STARTUP] No access_token.json found — waiting for manual login")
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        print(f"[STARTUP] Auto-resume failed (will need manual login): {e}")
+
     yield
     if engine:
         engine.stop()
