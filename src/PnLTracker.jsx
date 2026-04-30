@@ -535,7 +535,7 @@ export default function PnLTracker() {
         <>
           {/* Watcher liveness badge */}
           <div style={{ marginBottom: 8 }}>
-            <WatcherStatusBadge />
+            <WatcherStatusBadge mode="MAIN" />
           </div>
           {/* Active Position Watcher — auto-exit / tight SL toggles + recent exits */}
           <WatcherControls mode="MAIN" />

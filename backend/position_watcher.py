@@ -552,6 +552,30 @@ def watcher_pulse(engine) -> Dict:
         snapshot["errors"].append(f"scalper loop: {e}")
         import traceback; traceback.print_exc()
 
+    # ── Cleanup stale cache entries (closed trades) ──
+    # Cache should only hold entries for currently-OPEN trades. Anything
+    # else is residue from previously-closed trades that the user keeps
+    # seeing as a phantom "MISMATCH".
+    try:
+        live_keys = set()
+        try:
+            for t in _get_open_main_trades():
+                live_keys.add(f"MAIN:{t.get('id')}")
+        except Exception:
+            pass
+        try:
+            for t in _get_open_scalper_trades():
+                live_keys.add(f"SCALPER:{t.get('id')}")
+        except Exception:
+            pass
+        stale = [k for k in list(_last_health_cache.keys()) if k not in live_keys]
+        for k in stale:
+            _last_health_cache.pop(k, None)
+        if stale:
+            print(f"[WATCHER] cleaned {len(stale)} stale cache entries")
+    except Exception as e:
+        print(f"[WATCHER] cache cleanup err: {e}")
+
     print(f"[WATCHER] pulse done · main={snapshot['main_count']} "
           f"scalper={snapshot['scalper_count']} actions={len(snapshot['actions'])} "
           f"errors={len(snapshot['errors'])} cached={len(_last_health_cache)}")

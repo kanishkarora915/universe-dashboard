@@ -10,7 +10,9 @@ import { useEffect, useState } from "react";
 
 const API = import.meta.env.VITE_API_URL || "";
 
-export default function WatcherStatusBadge() {
+export default function WatcherStatusBadge({ mode = null }) {
+  // mode: "MAIN" | "SCALPER" | null (global)
+  // When provided, mismatch & counts apply only to that mode's trades.
   const [status, setStatus] = useState(null);
   const [debug, setDebug] = useState(null);
   const [forcing, setForcing] = useState(false);
@@ -48,11 +50,15 @@ export default function WatcherStatusBadge() {
 
   const dbMain = debug.open_main_in_db || 0;
   const dbScalper = debug.open_scalper_in_db || 0;
-  const totalDb = dbMain + dbScalper;
   const cachedMain = status.main_count || 0;
   const cachedScalper = status.scalper_count || 0;
-  const totalCached = cachedMain + cachedScalper;
+
+  // If mode is specified, only count that mode's trades.
+  // Otherwise show global totals (PnL+Scalper combined).
+  const totalDb     = mode === "MAIN" ? dbMain     : mode === "SCALPER" ? dbScalper     : (dbMain + dbScalper);
+  const totalCached = mode === "MAIN" ? cachedMain : mode === "SCALPER" ? cachedScalper : (cachedMain + cachedScalper);
   const mismatch = totalDb !== totalCached;
+  const modeLabel = mode ? ` · ${mode}` : "";
   const stubs = status.stub_count || 0;
   const live = status.live;
   const age = status.last_pulse_age_sec;
@@ -61,27 +67,27 @@ export default function WatcherStatusBadge() {
   let color, label, detail;
   if (totalDb === 0) {
     color = "#888";
-    label = "WATCHER · NO OPEN TRADES";
+    label = `WATCHER${modeLabel} · NO OPEN TRADES`;
     detail = `DB scan clean · last pulse ${age != null ? Math.round(age) + "s ago" : "—"}`;
   } else if (mismatch) {
     color = "#FF9F0A";
-    label = "WATCHER · MISMATCH";
+    label = `WATCHER${modeLabel} · MISMATCH`;
     detail = `DB=${totalDb} but cache=${totalCached} — pulse may be erroring`;
   } else if (live && stubs === 0) {
     color = "#30D158";
-    label = "WATCHER · LIVE";
+    label = `WATCHER${modeLabel} · LIVE`;
     detail = `Last pulse ${Math.round(age)}s ago · ${totalCached} tracked`;
   } else if (live && stubs > 0) {
     color = "#A0DC5A";
-    label = "WATCHER · WARMING";
+    label = `WATCHER${modeLabel} · WARMING`;
     detail = `${totalCached} tracked · ${stubs} initialising · last ${Math.round(age)}s`;
   } else if (age == null) {
     color = "#FFD60A";
-    label = "WATCHER · INITIALISING";
+    label = `WATCHER${modeLabel} · INITIALISING`;
     detail = `${totalDb} open trade${totalDb !== 1 ? "s" : ""} found · waiting for first pulse`;
   } else {
     color = "#FF453A";
-    label = "WATCHER · STALLED";
+    label = `WATCHER${modeLabel} · STALLED`;
     detail = `No pulse for ${Math.round(age)}s — engine may be down`;
   }
 

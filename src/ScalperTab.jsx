@@ -609,7 +609,7 @@ export default function ScalperTab() {
 
       {/* Watcher liveness badge */}
       <div style={{ marginBottom: 8 }}>
-        <WatcherStatusBadge />
+        <WatcherStatusBadge mode="SCALPER" />
       </div>
 
       {/* Active Position Watcher — auto-exit / tight SL toggles + recent exits */}
