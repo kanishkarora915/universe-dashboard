@@ -281,6 +281,19 @@ async def callback(request: Request, request_token: str = Query(...), status: st
 
         print(f"[AUTH] Login successful. Access token: {access_token[:8]}...")
 
+        # Persist access token to /data so engine auto-resumes after redeploys
+        try:
+            token_file = _data_dir / "access_token.json"
+            token_file.write_text(json.dumps({
+                "api_key": session["api_key"],
+                "access_token": access_token,
+                "api_secret": session["api_secret"],
+                "saved_at": __import__("time").time(),
+            }))
+            print(f"[AUTH] Saved access_token.json for auto-resume on next deploy")
+        except Exception as e:
+            print(f"[AUTH] Could not save token cache (auto-resume disabled): {e}")
+
         # Fetch NSE holidays from Kite API (auto-cache for the year)
         try:
             from trade_logger import save_nse_holidays_from_kite

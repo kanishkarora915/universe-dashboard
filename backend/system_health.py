@@ -158,10 +158,15 @@ def run_full_check(engine) -> Dict:
 
     def chk_volatility():
         try:
-            from volatility_detector import classify_regime, get_recommendations
+            from volatility_detector import classify_regime, build_recommendations, get_time_window, get_vix, get_atr_ratio, is_expiry_day
+            if not engine:
+                return {"status": "WARN", "detail": "module loadable, engine None"}
             rd = classify_regime(engine)
-            rec = get_recommendations(rd)
-            return {"status": "PASS", "detail": f"regime={rd.get('regime')} window={rd.get('time_window')} main_pnl_allowed={rec.get('main_pnl_allowed')}"}
+            tw = rd.get("time_window")
+            vix = rd.get("vix", 0)
+            atr = rd.get("atr_ratio", 0)
+            rec = build_recommendations(rd.get("regime"), tw, vix, atr, is_expiry_day())
+            return {"status": "PASS", "detail": f"regime={rd.get('regime')} window={tw} main_pnl_allowed={rec.get('main_pnl_allowed')}"}
         except Exception as e:
             return {"status": "FAIL", "detail": str(e)}
     cat.append(_check("Volatility detector", chk_volatility))
@@ -184,11 +189,11 @@ def run_full_check(engine) -> Dict:
 
     def chk_risk_tier():
         try:
-            from risk_tier_manager import get_current_tier
-            tier = get_current_tier("MAIN")
-            return {"status": "PASS", "detail": f"MAIN tier={tier}"}
+            from risk_tier_manager import get_state, get_tier_qty_multiplier, get_tier_min_probability
+            state = get_state()
+            return {"status": "PASS", "detail": f"tier={state.get('tier')} qty_mult={get_tier_qty_multiplier()} min_prob={get_tier_min_probability()}"}
         except Exception as e:
-            return {"status": "WARN", "detail": str(e)}
+            return {"status": "FAIL", "detail": str(e)}
     cat.append(_check("Risk Tier Manager", chk_risk_tier))
 
     def chk_capital_tracker():
@@ -202,8 +207,8 @@ def run_full_check(engine) -> Dict:
 
     def chk_quality_score():
         try:
-            from quality_score import compute_quality_score
-            return {"status": "PASS", "detail": "module loadable"}
+            from quality_score import calculate_quality
+            return {"status": "PASS", "detail": "module loadable (calculate_quality)"}
         except Exception as e:
             return {"status": "FAIL", "detail": str(e)}
     cat.append(_check("Quality Score Engine", chk_quality_score))
