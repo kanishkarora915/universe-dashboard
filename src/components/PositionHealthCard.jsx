@@ -196,6 +196,9 @@ export default function PositionHealthCard({ source = "MAIN", tradeId, action, c
           display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
           gap: 6, fontSize: 10,
         }}>
+          <ComponentChip label="Drawdown" data={health.components.drawdown} extra={
+            health.profit_pct != null ? `${health.profit_pct >= 0 ? "+" : ""}${health.profit_pct.toFixed(1)}%` : null
+          }/>
           <ComponentChip label="Candle" data={health.components.candle} />
           <ComponentChip label="VIX" data={health.components.vix} extra={
             health.components.vix?.delta_15m != null

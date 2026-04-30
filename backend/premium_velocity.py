@@ -95,7 +95,13 @@ class PremiumVelocityTracker:
 
         # CE: spot flat or up, but premium ↓ >2-3% in 10min = theta winning
         if is_ce:
-            if abs(spot_chg) < 0.1 and prem_chg < -3.0:
+            # NEW: directional thesis broken — spot fell against CE position
+            if spot_chg < -0.2 and prem_chg < -2.0:
+                out["severity"] = "HIGH"
+                out["warning"] = (f"DIRECTION WRONG: spot fell {spot_chg:+.2f}% — "
+                                  f"CE thesis broken, premium {prem_chg:+.1f}%")
+                out["score_penalty"] = 3
+            elif abs(spot_chg) < 0.1 and prem_chg < -3.0:
                 out["theta_winning"] = True
                 out["severity"] = "HIGH"
                 out["warning"] = (f"Theta winning: spot flat ({spot_chg:+.2f}%), "
@@ -114,7 +120,13 @@ class PremiumVelocityTracker:
                 out["score_penalty"] = 2
         else:
             # PE: spot flat or down but premium ↓ = theta winning on PE
-            if abs(spot_chg) < 0.1 and prem_chg < -3.0:
+            # NEW: directional thesis broken — spot rallied against PE position
+            if spot_chg > 0.2 and prem_chg < -2.0:
+                out["severity"] = "HIGH"
+                out["warning"] = (f"DIRECTION WRONG: spot rallied +{spot_chg:.2f}% — "
+                                  f"PE thesis broken, premium {prem_chg:+.1f}%")
+                out["score_penalty"] = 3
+            elif abs(spot_chg) < 0.1 and prem_chg < -3.0:
                 out["theta_winning"] = True
                 out["severity"] = "HIGH"
                 out["warning"] = (f"Theta winning (PE): spot flat, premium {prem_chg:+.1f}% in 10m")
