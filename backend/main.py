@@ -1403,6 +1403,21 @@ async def why_no_trade():
         return JSONResponse({"error": str(e), "trace": traceback.format_exc()}, status_code=500)
 
 
+@app.get("/api/system/health-check")
+async def system_health_check():
+    """Comprehensive end-to-end diagnostic across the entire dashboard:
+    engine, all 12 databases, every trading intelligence engine, position
+    watcher, capitulation engine, velocity trackers, today's activity,
+    background threads, disk usage. Returns category-grouped PASS/WARN/FAIL
+    with overall verdict (HEALTHY / OK_WITH_WARNINGS / DEGRADED / BROKEN)."""
+    try:
+        from system_health import run_full_check
+        return run_full_check(engine)
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": str(e), "trace": traceback.format_exc()}, status_code=500)
+
+
 @app.get("/api/reversal/live")
 async def reversal_live():
     """Live capitulation state for both NIFTY and BANKNIFTY."""

@@ -24,6 +24,7 @@ const TradingTimesTab = lazy(() => import("./TradingTimesTab"));
 const TradeAutopsyTab = lazy(() => import("./TradeAutopsyTab"));
 const BacktestTab = lazy(() => import("./BacktestTab"));
 const ReversalTab = lazy(() => import("./ReversalTab"));
+const SystemHealthTab = lazy(() => import("./SystemHealthTab"));
 const SignalDashboard = lazy(() => import("./components/SignalDashboard"));
 const StrikeSearch = lazy(() => import("./components/StrikeSearch"));
 const StrikeDetail = lazy(() => import("./components/StrikeDetail"));
@@ -89,6 +90,7 @@ const TAB_GROUPS = [
   ]},
   { group: "System", tabs: [
     { id: "reports", icon: "\uD83D\uDCCA", label: "Reports" },
+    { id: "health",  icon: "\uD83D\uDD2C", label: "Health Check" },
   ]},
 ];
 // Flat list for renderTab lookup
@@ -2882,6 +2884,7 @@ export default function Universe({ onLogout }) {
       case "autopsy": return <TradeAutopsyTab />;
       case "backtest":return <BacktestTab />;
       case "reversal":return <ReversalTab />;
+      case "health":  return <SystemHealthTab />;
       case "reports": return <ReportsTab />;
       default:        return null;
     }
