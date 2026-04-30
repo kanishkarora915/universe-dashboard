@@ -779,8 +779,27 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
                 })
         # WARNING zone gets SL tighten
         elif health["score"] < cfg["min_score_for_tight_sl"] and tight_sl:
-            new_sl = round(entry_price * 1.005, 2)  # entry + 0.5% (lock small win)
-            if new_sl > trade.get("sl_price", 0):
+            # Tight SL strategy by trade state:
+            #   profitable (>0.5% gain) → lock breakeven (entry × 1.005)
+            #   flat / losing            → cap further downside at current × 0.97
+            # CRITICAL invariant: candidate_sl MUST be < current_premium,
+            # otherwise scalper / trade_logger will trigger an instant SL_HIT
+            # at the next tick (caused real ~₹20k loss on 30 Apr).
+            if current_premium >= entry_price * 1.005:
+                candidate_sl = round(entry_price * 1.005, 2)  # lock breakeven
+                trade_state = "PROFIT"
+            else:
+                candidate_sl = round(current_premium * 0.97, 2)  # cap +3% further loss
+                trade_state = "LOSS_OR_FLAT"
+
+            # Hard safety: never sit within 1% of current price
+            max_safe_sl = round(current_premium * 0.99, 2)
+            candidate_sl = min(candidate_sl, max_safe_sl)
+
+            existing_sl = trade.get("sl_price", 0) or 0
+            # Only tighten if (a) raises existing SL AND (b) sits below current price
+            if candidate_sl > existing_sl and candidate_sl < current_premium:
+                new_sl = candidate_sl
                 ok = (_tighten_main_sl(trade_id, new_sl, f"{trigger}: tight SL")
                       if source == "MAIN"
                       else _tighten_scalper_sl(trade_id, new_sl, f"{trigger}: tight SL"))
@@ -789,6 +808,9 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
                     snapshot["actions"].append({
                         "source": source, "trade_id": trade_id, "trigger": trigger,
                         "action": "TIGHT_SL", "new_sl": new_sl,
+                        "old_sl": existing_sl,
+                        "current_premium": current_premium,
+                        "trade_state": trade_state,
                     })
 
     # Log every health computation (sampled — every 30s naturally)
