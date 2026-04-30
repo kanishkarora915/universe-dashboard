@@ -446,10 +446,20 @@ export default function ScalperTab() {
     await fullLoad();
   };
 
-  const manualExit = async (tradeId) => {
-    if (!window.confirm("Manually exit this trade at current LTP?")) return;
-    await postJSON(`/api/scalper/trades/${tradeId}/exit`, {});
-    await fullLoad();
+  const manualExit = async (tradeId, skipConfirm = true) => {
+    // skipConfirm: button itself shows a rich confirm dialog with P&L
+    // already, so we don't double-prompt by default
+    if (!skipConfirm && !window.confirm("Manually exit this trade at current LTP?")) return;
+    try {
+      const res = await postJSON(`/api/scalper/trades/${tradeId}/exit`, {});
+      console.log("[SCALPER] manual exit response:", res);
+      await fullLoad();
+    } catch (e) {
+      // Fallback: try the unified endpoint if mode-specific one fails
+      console.warn("[SCALPER] /api/scalper/.../exit failed, trying /api/positions/exit", e);
+      await postJSON(`/api/positions/exit/${tradeId}?source=SCALPER`, {});
+      await fullLoad();
+    }
   };
 
   // Smart SL toggle state
@@ -783,9 +793,32 @@ function ScalperTradeCard({ t, livePrice, isExpanded, onToggleExpand, onManualEx
               <span style={{ color: GREEN, fontSize: 9, animation: "pulse 1s infinite" }}>● TICK</span>
             )}
           </div>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ color: pnlColor, fontSize: 16, fontWeight: 800 }}>{rupees(livePnl)}</div>
-            <div style={{ color: pnlColor, fontSize: 10 }}>{pctFmt(pnlPct)}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ color: pnlColor, fontSize: 16, fontWeight: 800 }}>{rupees(livePnl)}</div>
+              <div style={{ color: pnlColor, fontSize: 10 }}>{pctFmt(pnlPct)}</div>
+            </div>
+            {isOpen && onManualExit && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (confirm(`Exit ${t.action} ${t.idx} ${t.strike} at ₹${cur?.toFixed?.(2) || cur}?\n\nLive P&L: ${rupees(livePnl)} (${pctFmt(pnlPct)})`)) {
+                    onManualExit();
+                  }
+                }}
+                style={{
+                  background: RED, color: "#fff",
+                  border: "none", padding: "7px 14px", borderRadius: 6,
+                  fontSize: 11, fontWeight: 800, cursor: "pointer",
+                  letterSpacing: 0.5, boxShadow: `0 0 10px ${RED}55`,
+                  transition: "all 0.15s",
+                }}
+                onMouseOver={e => { e.target.style.boxShadow = `0 0 16px ${RED}99`; e.target.style.transform = "scale(1.05)"; }}
+                onMouseOut={e => { e.target.style.boxShadow = `0 0 10px ${RED}55`; e.target.style.transform = "scale(1)"; }}
+              >
+                ⚡ EXIT
+              </button>
+            )}
           </div>
         </div>
 
