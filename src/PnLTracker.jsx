@@ -4,6 +4,7 @@ import PositionHealthCard from "./components/PositionHealthCard";
 import WatcherControls from "./components/WatcherControls";
 import WatcherStatusBadge from "./components/WatcherStatusBadge";
 import LivePositionChart from "./components/LivePositionChart";
+import WhyNoTradePanel from "./components/WhyNoTradePanel";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -540,10 +541,15 @@ export default function PnLTracker() {
           {/* Active Position Watcher — auto-exit / tight SL toggles + recent exits */}
           <WatcherControls mode="MAIN" />
           {openTrades.length === 0 && (
-            <div style={{ textAlign: "center", padding: 40, color: "#555" }}>
-              <div style={{ fontSize: 13 }}>No open trades. Auto-enters when verdict shows {">"}60% probability.</div>
-              <div style={{ fontSize: 11, color: "#444", marginTop: 4 }}>NIFTY: 20L × 65 = 1,300 qty | BANKNIFTY: 20L × 30 = 600 qty | SL: 15% max</div>
-            </div>
+            <>
+              <div style={{ textAlign: "center", padding: 40, color: "#555" }}>
+                <div style={{ fontSize: 13 }}>No open trades. Auto-enters when verdict shows {">"}60% probability.</div>
+                <div style={{ fontSize: 11, color: "#444", marginTop: 4 }}>NIFTY: 20L × 65 = 1,300 qty | BANKNIFTY: 20L × 30 = 600 qty | SL: 15% max</div>
+              </div>
+              {/* Read-only diagnostic — shows WHY no trade is being entered.
+                  Does NOT change any entry logic. */}
+              <WhyNoTradePanel />
+            </>
           )}
           {openTrades.map((t, i) => <TradeCard key={i} t={t} onExit={async (id) => {
             if (!confirm(`Exit ${t.action} ${t.idx} ${t.strike} at current price?`)) return;

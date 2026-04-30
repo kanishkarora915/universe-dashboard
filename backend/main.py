@@ -1236,6 +1236,173 @@ async def position_health_one(trade_id: int, source: str = "MAIN"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/trades/why-no-trade")
+async def why_no_trade():
+    """Diagnostic: explain why auto-trader is not entering trades right now.
+    Walks through every gate (volatility, probability, caps, filters, momentum)
+    and returns pass/fail for each + the current verdict. PnL tab uses this."""
+    try:
+        if not engine:
+            return {"engine_alive": False, "error": "engine not started"}
+
+        from datetime import datetime, timezone, timedelta
+        IST = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(IST)
+
+        # Volatility regime
+        try:
+            from volatility_detector import classify_regime, get_recommendations
+            regime_data = classify_regime(engine)
+            vol_rec = get_recommendations(regime_data)
+        except Exception as e:
+            regime_data = {"regime": "UNKNOWN", "error": str(e)}
+            vol_rec = {"main_pnl_allowed": True, "min_probability": 50, "warnings": []}
+
+        # Get latest verdict for both indices
+        verdict = {}
+        try:
+            verdict = engine.get_full_verdict() if hasattr(engine, "get_full_verdict") else {}
+        except Exception as e:
+            verdict = {"error": str(e)}
+
+        # Today + open counts
+        import sqlite3
+        from position_watcher import _trades_db_path
+        today_iso = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        try:
+            conn = sqlite3.connect(_trades_db_path())
+            today_count = conn.execute(
+                "SELECT COUNT(*) FROM trades WHERE entry_time > ?", (today_iso,)
+            ).fetchone()[0]
+            open_count = conn.execute(
+                "SELECT COUNT(*) FROM trades WHERE status='OPEN'"
+            ).fetchone()[0]
+            today_pnl = conn.execute(
+                "SELECT COALESCE(SUM(pnl_rupees),0) FROM trades WHERE entry_time > ? AND status != 'OPEN'",
+                (today_iso,)
+            ).fetchone()[0]
+            today_trades_summary = conn.execute(
+                "SELECT id, idx, action, strike, status, pnl_rupees FROM trades WHERE entry_time > ? ORDER BY entry_time DESC LIMIT 10",
+                (today_iso,)
+            ).fetchall()
+            conn.close()
+        except Exception as e:
+            today_count = -1; open_count = -1; today_pnl = 0; today_trades_summary = []
+
+        # Market hours check
+        market_open = ((now.hour == 9 and now.minute >= 20)
+                       or (10 <= now.hour <= 14)
+                       or (now.hour == 15 and now.minute <= 15))
+
+        # Trade manager state
+        tm = getattr(engine, "trade_manager", None)
+        pending_entries = {}
+        if tm and hasattr(tm, "_pending_entry"):
+            for k, v in tm._pending_entry.items():
+                pending_entries[k] = {
+                    "action": v.get("action"),
+                    "strike": v.get("strike"),
+                    "entry_price": v.get("entry_price"),
+                    "probability": v.get("probability"),
+                    "age_sec": round(__import__("time").time() - tm._pending_entry_time.get(k, 0), 1)
+                              if k in (tm._pending_entry_time or {}) else None,
+                }
+
+        # Per-index gate analysis
+        idx_analysis = {}
+        for idx in ("NIFTY", "BANKNIFTY"):
+            v = verdict.get(idx.lower(), {}) if isinstance(verdict, dict) else {}
+            action = v.get("action", "NO_DATA")
+            win_prob = v.get("winProbability", 0)
+            min_prob = vol_rec.get("min_probability", 50)
+            gates = []
+            gates.append({"name": "Volatility Allowed",
+                          "pass": vol_rec.get("main_pnl_allowed", True),
+                          "detail": f"regime={regime_data.get('regime')}"})
+            gates.append({"name": "Action != NO TRADE",
+                          "pass": action and action != "NO TRADE",
+                          "detail": f"action='{action}'"})
+            gates.append({"name": "Probability >= base 50%",
+                          "pass": win_prob >= 50,
+                          "detail": f"prob={win_prob}%"})
+            gates.append({"name": f"Probability >= regime min {min_prob}%",
+                          "pass": win_prob >= min_prob,
+                          "detail": f"prob={win_prob}% vs need {min_prob}%"})
+            gates.append({"name": "Market hours",
+                          "pass": market_open,
+                          "detail": f"now={now.strftime('%H:%M')} IST"})
+            gates.append({"name": "Daily cap (<15)",
+                          "pass": today_count < 15,
+                          "detail": f"today={today_count}"})
+            gates.append({"name": "Concurrent cap (<10)",
+                          "pass": open_count < 10,
+                          "detail": f"open={open_count}"})
+
+            # Duplicate open same idx+action
+            try:
+                conn = sqlite3.connect(_trades_db_path())
+                dup = conn.execute(
+                    "SELECT COUNT(*) FROM trades WHERE status='OPEN' AND idx=? AND action=?",
+                    (idx, action)
+                ).fetchone()[0]
+                conn.close()
+            except Exception:
+                dup = 0
+            gates.append({"name": "No duplicate open",
+                          "pass": dup == 0,
+                          "detail": f"existing open same direction={dup}"})
+
+            # Pending entry status
+            pe = pending_entries.get(idx)
+            if pe:
+                gates.append({"name": "Pending momentum confirmation",
+                              "pass": False,  # waiting
+                              "detail": f"pending {pe['action']} {pe['strike']} @ ₹{pe['entry_price']} for {pe['age_sec']}s (max 120s)"})
+
+            all_pass = all(g["pass"] for g in gates if "Pending" not in g["name"])
+            idx_analysis[idx] = {
+                "verdict_action": action,
+                "win_probability": win_prob,
+                "would_take_trade": all_pass,
+                "blocking_gates": [g for g in gates if not g["pass"]],
+                "all_gates": gates,
+                "pending_entry": pe,
+            }
+
+        # Recent block log (best-effort)
+        block_log_hint = ("Server logs (Render dashboard) will show "
+                          "[TRADE] BLOCKED ... lines from OI shift / divergence / "
+                          "truth-lie / regime gates if any of these are firing.")
+
+        return {
+            "now_ist": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "market_open": market_open,
+            "regime": regime_data,
+            "vol_recommendations": vol_rec,
+            "today_trade_count": today_count,
+            "open_trade_count": open_count,
+            "today_realised_pnl": today_pnl,
+            "today_recent_trades": [
+                {"id": r[0], "idx": r[1], "action": r[2], "strike": r[3],
+                 "status": r[4], "pnl": r[5]} for r in today_trades_summary
+            ],
+            "trade_manager_alive": tm is not None,
+            "pending_entries": pending_entries,
+            "verdict_snapshot": {
+                k: {"action": (v.get("action") if isinstance(v, dict) else None),
+                    "winProbability": (v.get("winProbability") if isinstance(v, dict) else None),
+                    "topReasons": (v.get("topReasons", [])[:3] if isinstance(v, dict) else [])}
+                for k, v in (verdict.items() if isinstance(verdict, dict) else [])
+                if k in ("nifty", "banknifty")
+            },
+            "per_index": idx_analysis,
+            "block_log_hint": block_log_hint,
+        }
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": str(e), "trace": traceback.format_exc()}, status_code=500)
+
+
 @app.get("/api/market/close-status")
 async def market_close_status():
     """Market close countdown for the UI banner (3:20 PM warning → 3:25 PM auto-close)."""
