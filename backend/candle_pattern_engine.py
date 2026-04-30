@@ -235,8 +235,10 @@ def detect_patterns(
 
     # Filter to post-entry candles if entry_time given
     if entry_time:
+        # Strip timezone for safe comparison with _to_dt() output (naive)
+        et = entry_time.replace(tzinfo=None) if getattr(entry_time, "tzinfo", None) else entry_time
         candles = [c for c in candles if c.get("timestamp") and
-                   _to_dt(c["timestamp"]) >= entry_time]
+                   _to_dt(c["timestamp"]) >= et]
 
     if not candles:
         return []

@@ -196,6 +196,9 @@ def compute_health(
     profit_pct = ((current_premium - entry_price) / entry_price * 100) if entry_price > 0 else 0
     hold_min = 0.0
     if entry_time:
+        # Defensive: strip timezone so subtraction with naive datetime.now() works
+        if getattr(entry_time, "tzinfo", None) is not None:
+            entry_time = entry_time.replace(tzinfo=None)
         hold_min = (datetime.now() - entry_time).total_seconds() / 60.0
     entry_hour = entry_time.hour if entry_time else 12
 

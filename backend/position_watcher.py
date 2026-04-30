@@ -353,6 +353,8 @@ def _evaluate_triggers(trade: Dict, health: Dict, action: str) -> Optional[str]:
     entry_iso = trade.get("entry_time", "")
     try:
         entry_dt = datetime.fromisoformat(entry_iso) if entry_iso else None
+        if entry_dt and entry_dt.tzinfo is not None:
+            entry_dt = entry_dt.replace(tzinfo=None)
     except Exception:
         entry_dt = None
     is_post_lunch = entry_dt and entry_dt.hour >= 13
@@ -696,10 +698,12 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
     if day_low <= 0:
         day_low = spot
 
-    # Entry time
+    # Entry time — strip timezone so it's comparable to datetime.now() (naive)
     entry_iso = trade.get("entry_time", "")
     try:
         entry_dt = datetime.fromisoformat(entry_iso) if entry_iso else None
+        if entry_dt and entry_dt.tzinfo is not None:
+            entry_dt = entry_dt.replace(tzinfo=None)
     except Exception:
         entry_dt = None
 
