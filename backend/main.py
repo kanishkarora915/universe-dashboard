@@ -1553,6 +1553,20 @@ async def structure_snapshot(tag: str = "MANUAL"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.post("/api/structure/pulse-now")
+async def structure_pulse_now():
+    """Force a polarity-flip detection pulse immediately (skip 60s wait).
+    Discovers levels, updates registry, detects any pending flips."""
+    try:
+        if not engine:
+            return JSONResponse({"error": "engine not started"}, status_code=503)
+        from polarity_flip_detector import pulse
+        return pulse(engine)
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": str(e), "trace": traceback.format_exc()}, status_code=500)
+
+
 @app.get("/api/market/close-status")
 async def market_close_status():
     """Market close countdown for the UI banner (3:20 PM warning → 3:25 PM auto-close)."""
