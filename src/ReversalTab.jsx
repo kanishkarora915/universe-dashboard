@@ -92,6 +92,9 @@ export default function ReversalTab() {
         </div>
       )}
 
+      {/* MARKET STRUCTURE EVOLUTION (S/R polarity flips) */}
+      <MarketStructureSection />
+
       {/* TODAY'S CAPITULATION EVENTS */}
       <div style={{ background: "#111118", border: "1px solid #1E1E2E", borderRadius: 12, padding: "16px 20px" }}>
         <div style={{ color: "#aaa", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
@@ -280,6 +283,246 @@ function EventRow({ event }) {
           {event.recommended_action}
         </span>
       )}
+    </div>
+  );
+}
+
+
+/* ═════════════════════════════════════════════════════════════════════
+   MARKET STRUCTURE / POLARITY FLIP SECTION
+   "Pehle kya tha vs ab kya hai" — S/R role tracking
+   ═════════════════════════════════════════════════════════════════════ */
+
+function MarketStructureSection() {
+  const [idx, setIdx] = useState("NIFTY");
+  const [levels, setLevels] = useState(null);
+  const [flips, setFlips] = useState([]);
+  const [timeline, setTimeline] = useState([]);
+
+  const refresh = async () => {
+    try {
+      const [l, f, t] = await Promise.all([
+        fetch(`${API}/api/structure/levels?idx=${idx}`).then(r => r.ok ? r.json() : null),
+        fetch(`${API}/api/structure/flips?idx=${idx}&limit=20`).then(r => r.ok ? r.json() : null),
+        fetch(`${API}/api/structure/timeline?idx=${idx}`).then(r => r.ok ? r.json() : null),
+      ]);
+      if (l) setLevels(l);
+      if (f) setFlips(f.events || []);
+      if (t) setTimeline(t.snapshots || []);
+    } catch (e) { /* silent */ }
+  };
+
+  useEffect(() => {
+    refresh();
+    const tt = setInterval(refresh, 15000);
+    return () => clearInterval(tt);
+  }, [idx]);
+
+  return (
+    <div style={{
+      background: "#111118", border: "1px solid #1E1E2E",
+      borderRadius: 12, padding: "16px 20px", marginBottom: 20,
+    }}>
+      <div style={{
+        display: "flex", justifyContent: "space-between",
+        alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8,
+      }}>
+        <div>
+          <div style={{
+            color: "#A0DC5A", fontSize: 14, fontWeight: 800,
+            textTransform: "uppercase", letterSpacing: 0.8,
+          }}>
+            🔁 Market Structure Evolution
+          </div>
+          <div style={{ color: "#888", fontSize: 11, marginTop: 4 }}>
+            S/R role tracking — pehle kya tha vs ab kya hai. Detects R↔S polarity flips.
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {["NIFTY", "BANKNIFTY"].map(i => (
+            <button key={i} onClick={() => setIdx(i)} style={{
+              background: idx === i ? "#A0DC5A22" : "transparent",
+              color: idx === i ? "#A0DC5A" : "#888",
+              border: `1px solid ${idx === i ? "#A0DC5A55" : "#2A2A3F"}`,
+              padding: "5px 12px", fontSize: 11, fontWeight: 700,
+              borderRadius: 6, cursor: "pointer", letterSpacing: 0.4,
+            }}>
+              {i}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* CURRENT LEVELS — TWO COLUMNS (R / S) */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+        <LevelColumn title="🔴 RESISTANCE (above spot)"
+                     levels={levels?.resistances || []} role="R" />
+        <LevelColumn title="🟢 SUPPORT (below spot)"
+                     levels={levels?.supports || []} role="S" />
+      </div>
+
+      {/* FLIPPED LEVELS HIGHLIGHT */}
+      {levels?.flipped_count > 0 && (
+        <div style={{
+          background: "rgba(160,220,90,0.08)", border: "1px solid #A0DC5A55",
+          borderRadius: 8, padding: "8px 12px", marginBottom: 12,
+        }}>
+          <div style={{
+            color: "#A0DC5A", fontSize: 10, fontWeight: 700,
+            textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 4,
+          }}>
+            ⚡ {levels.flipped_count} levels FLIPPED today
+          </div>
+          {levels.all_levels.filter(l => l.is_flipped).map((l, i) => (
+            <div key={i} style={{ color: "#ddd", fontSize: 11, lineHeight: 1.5 }}>
+              · <strong>{Math.round(l.level)}</strong>: {l.initial_role === "R" ? "Resistance" : "Support"}
+              {" → "}
+              <span style={{ color: l.current_role === "S" ? "#30D158" : "#FF453A", fontWeight: 700 }}>
+                {l.current_role === "R" ? "Resistance" : "Support"}
+              </span>
+              <span style={{ color: "#666", fontSize: 10, marginLeft: 6 }}>
+                ({l.touches} touches · {l.flip_count} flip{l.flip_count !== 1 ? "s" : ""})
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* FLIP EVENTS TODAY */}
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ color: "#888", fontSize: 10, fontWeight: 700,
+                      textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 6 }}>
+          ⚡ Today's Polarity Flips ({flips.length})
+        </div>
+        {flips.length === 0 ? (
+          <div style={{ color: "#555", fontSize: 11, padding: "8px 0", textAlign: "center" }}>
+            No flips detected yet today. Engine fires when spot crosses + holds for 3 min.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {flips.slice(0, 10).map((f, i) => <FlipEventRow key={i} flip={f} />)}
+          </div>
+        )}
+      </div>
+
+      {/* TIMELINE: pehle kya tha vs ab kya hai */}
+      {timeline.length >= 2 && (
+        <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px dashed #1E1E2E" }}>
+          <div style={{ color: "#888", fontSize: 10, fontWeight: 700,
+                        textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 8 }}>
+            📜 Pehle vs Ab — S/R Snapshots
+          </div>
+          <TimelineComparison snapshots={timeline} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LevelColumn({ title, levels, role }) {
+  const isR = role === "R";
+  const color = isR ? "#FF453A" : "#30D158";
+  return (
+    <div style={{ background: "#0A0A0F", border: "1px solid #1E1E2E",
+                  borderRadius: 8, padding: "10px 12px" }}>
+      <div style={{ color, fontSize: 10, fontWeight: 700,
+                    textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+        {title}
+      </div>
+      {levels.length === 0 ? (
+        <div style={{ color: "#555", fontSize: 10, padding: "6px 0" }}>None tracked yet</div>
+      ) : (
+        levels.slice(0, 6).map((l, i) => (
+          <div key={i} style={{
+            display: "flex", justifyContent: "space-between",
+            padding: "4px 0", fontSize: 11, borderBottom: i < levels.length - 1 ? "1px dashed #1E1E2E20" : "none",
+          }}>
+            <span style={{ color: "#fff", fontWeight: 700 }}>
+              {Math.round(l.level)}
+              <span style={{ color: "#666", fontSize: 9, marginLeft: 6, fontWeight: 500 }}>
+                {l.source}
+              </span>
+            </span>
+            <span style={{ color: "#888", fontSize: 10 }}>
+              {l.touches > 0 && <span>{l.touches}× touched</span>}
+              {l.is_flipped && <span style={{ color: "#A0DC5A", marginLeft: 6, fontWeight: 700 }}>⚡FLIPPED</span>}
+            </span>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+function FlipEventRow({ flip }) {
+  const t = new Date(flip.ts * 1000).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false });
+  const isBreakout = flip.to_role === "S";
+  const color = isBreakout ? "#30D158" : "#FF453A";
+  return (
+    <div style={{
+      display: "flex", justifyContent: "space-between", alignItems: "center",
+      padding: "6px 10px", background: `${color}10`, borderRadius: 5,
+      border: `1px solid ${color}33`, fontSize: 11, gap: 8, flexWrap: "wrap",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
+        <span style={{ color: "#666", fontFamily: "ui-monospace, monospace", fontSize: 10 }}>{t}</span>
+        <span style={{
+          background: color, color: "#000", padding: "1px 6px", borderRadius: 3,
+          fontSize: 9, fontWeight: 700, letterSpacing: 0.3,
+        }}>
+          {isBreakout ? "BREAKOUT" : "BREAKDOWN"}
+        </span>
+        <span style={{ color: "#fff", fontWeight: 700 }}>
+          {Math.round(flip.level)}
+        </span>
+        <span style={{ color: "#888", fontSize: 10 }}>
+          {flip.from_role === "R" ? "Resistance" : "Support"} → {flip.to_role === "S" ? "Support" : "Resistance"}
+        </span>
+        {flip.oi_change_pct !== 0 && (
+          <span style={{ color: "#888", fontSize: 9 }}>
+            OI {flip.oi_change_pct > 0 ? "+" : ""}{flip.oi_change_pct}%
+          </span>
+        )}
+      </div>
+      <span style={{ color: "#aaa", fontSize: 10 }}>
+        spot ₹{Math.round(flip.spot_at_flip)}
+      </span>
+    </div>
+  );
+}
+
+function TimelineComparison({ snapshots }) {
+  const first = snapshots[0];
+  const last = snapshots[snapshots.length - 1];
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+      <SnapshotCard title="🌅 PEHLE (Earliest)" snap={first} />
+      <SnapshotCard title="📍 AB (Latest)" snap={last} />
+    </div>
+  );
+}
+
+function SnapshotCard({ title, snap }) {
+  if (!snap) return null;
+  const t = new Date(snap.ts * 1000).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false });
+  return (
+    <div style={{ background: "#0A0A0F", border: "1px solid #1E1E2E",
+                  borderRadius: 8, padding: "10px 12px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+        <span style={{ color: "#fff", fontSize: 11, fontWeight: 700 }}>{title}</span>
+        <span style={{ color: "#666", fontSize: 10, fontFamily: "ui-monospace, monospace" }}>
+          {t} · {snap.tag}
+        </span>
+      </div>
+      <div style={{ color: "#aaa", fontSize: 11, marginBottom: 6 }}>
+        Spot ₹{snap.spot?.toFixed(0)}
+      </div>
+      <div style={{ fontSize: 10, color: "#888", marginBottom: 4 }}>
+        🔴 R: {(snap.resistances || []).slice(0, 3).map(r => Math.round(r.level)).join(", ") || "—"}
+      </div>
+      <div style={{ fontSize: 10, color: "#888" }}>
+        🟢 S: {(snap.supports || []).slice(0, 3).map(s => Math.round(s.level)).join(", ") || "—"}
+      </div>
     </div>
   );
 }

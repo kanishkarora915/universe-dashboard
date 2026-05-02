@@ -1507,6 +1507,52 @@ async def reversal_pulse_now():
         return JSONResponse({"error": str(e), "trace": traceback.format_exc()}, status_code=500)
 
 
+# ── Polarity Flip Detector endpoints (S/R role tracking) ──
+@app.get("/api/structure/levels")
+async def structure_levels(idx: str = "NIFTY"):
+    """All currently tracked S/R levels with full state — initial role,
+    current role, touches, OI evolution, last flip timestamp."""
+    try:
+        from polarity_flip_detector import get_current_levels
+        return get_current_levels(idx.upper())
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/structure/flips")
+async def structure_flips(idx: str = "", limit: int = 50):
+    """Today's confirmed polarity flip events (R→S breakouts, S→R breakdowns)."""
+    try:
+        from polarity_flip_detector import get_flip_events
+        return {"events": get_flip_events(idx.upper() if idx else None, limit)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/structure/timeline")
+async def structure_timeline(idx: str = "NIFTY"):
+    """Hourly + event-tagged S/R snapshots showing 'pehle kya tha vs ab kya hai'.
+    Returns chronological list — open / hourly / capitulation / trend-change anchors."""
+    try:
+        from polarity_flip_detector import get_timeline
+        return get_timeline(idx.upper())
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/structure/snapshot")
+async def structure_snapshot(tag: str = "MANUAL"):
+    """Force-capture current S/R structure as a named snapshot."""
+    try:
+        if not engine:
+            return JSONResponse({"error": "engine not started"}, status_code=503)
+        from polarity_flip_detector import trigger_snapshot
+        trigger_snapshot(engine, tag=tag)
+        return {"status": "snapshot captured", "tag": tag}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/market/close-status")
 async def market_close_status():
     """Market close countdown for the UI banner (3:20 PM warning → 3:25 PM auto-close)."""

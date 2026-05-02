@@ -3749,6 +3749,25 @@ class MarketEngine:
                     print(f"[CAPITULATION] pulse error: {e}")
             threading.Thread(target=_capitulation_run, daemon=True, name="capitulation").start()
 
+        # ── Polarity Flip Detector — S/R role tracking (every 60s) ──
+        # Tracks every major level (CE/PE walls, day H/L, max pain, round
+        # numbers) and detects when role flips: R→S (breakout = old ceiling
+        # becomes new floor) or S→R (breakdown = old floor becomes new
+        # ceiling). Confirmed only after 3 consecutive pulses with spot
+        # ≥0.3% on the new side. Captures "pehle kya tha vs ab kya hai".
+        if not hasattr(self, "_polarity_last"):
+            self._polarity_last = 0
+        if now - self._polarity_last >= 60:
+            self._polarity_last = now
+            def _polarity_run():
+                try:
+                    import polarity_flip_detector
+                    polarity_flip_detector.pulse(self)
+                except Exception as e:
+                    import traceback; traceback.print_exc()
+                    print(f"[POLARITY] pulse error: {e}")
+            threading.Thread(target=_polarity_run, daemon=True, name="polarity-flip").start()
+
         # ── Position Watcher — Active health monitoring (every 30s) ──
         # Computes 0-10 health score for every open trade (both PnL + Scalper),
         # fires triggers (REVERSAL / VIX_CRUSH / THETA / DAY_HIGH_TRAP / POST_LUNCH /
