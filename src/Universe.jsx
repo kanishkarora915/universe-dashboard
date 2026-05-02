@@ -59,44 +59,44 @@ const ORANGE = "#FF9F0A";
 
 const TAB_GROUPS = [
   { group: "Home", tabs: [
-    { id: "dashboard", icon: "\uD83D\uDCE1", label: "Dashboard" },
-    { id: "trinity",   icon: "\u269B\uFE0F", label: "Trinity" },
-    { id: "zones",     icon: "\uD83C\uDFAF", label: "Zones" },
+    { id: "dashboard", icon: "📡", label: "Dashboard" },
+    { id: "trinity",   icon: "⚛️", label: "Trinity" },
+    { id: "zones",     icon: "🎯", label: "Zones" },
   ]},
   { group: "Market", tabs: [
-    { id: "live",    icon: "\u26A1", label: "Live" },
-    { id: "signals", icon: "\uD83C\uDFAF", label: "Signals" },
-    { id: "oichange",icon: "\uD83D\uDCC8", label: "OI Change" },
-    { id: "unusual", icon: "\uD83D\uDEA8", label: "Unusual" },
+    { id: "live",    icon: "⚡", label: "Live" },
+    { id: "signals", icon: "🎯", label: "Signals" },
+    { id: "oichange",icon: "📈", label: "OI Change" },
+    { id: "unusual", icon: "🚨", label: "Unusual" },
   ]},
   { group: "Analysis", tabs: [
-    { id: "sellers", icon: "\uD83E\uDD88", label: "Sellers" },
-    { id: "trap",    icon: "\uD83E\uDDE8", label: "Trap" },
-    { id: "hidden",  icon: "\uD83D\uDD75\uFE0F", label: "Hidden" },
-    { id: "priceact",icon: "\uD83D\uDCA5", label: "Price Act" },
+    { id: "sellers", icon: "🦈", label: "Sellers" },
+    { id: "trap",    icon: "🧨", label: "Trap" },
+    { id: "hidden",  icon: "🕵️", label: "Hidden" },
+    { id: "priceact",icon: "💥", label: "Price Act" },
   ]},
   { group: "Intelligence", tabs: [
-    { id: "reversal", icon: "\uD83C\uDFAF", label: "Reversal" },
-    { id: "ttimes",   icon: "⏱\uFE0F", label: "Times" },
-    { id: "autopsy",  icon: "\uD83D\uDD2C", label: "Autopsy" },
-    { id: "backtest", icon: "\uD83D\uDD01", label: "Backtest" },
+    { id: "reversal", icon: "🎯", label: "Reversal" },
+    { id: "ttimes",   icon: "⏱️", label: "Times" },
+    { id: "autopsy",  icon: "🔬", label: "Autopsy" },
+    { id: "backtest", icon: "🔁", label: "Backtest" },
   ]},
   { group: "Trading", tabs: [
-    { id: "pnl",     icon: "\uD83D\uDCB0", label: "PnL" },
-    { id: "scalper", icon: "\u26A1",        label: "Scalper" },
-    { id: "intraday",icon: "\uD83D\uDCCA", label: "Intraday" },
-    { id: "nextday", icon: "\uD83D\uDD2D", label: "Next Day" },
-    { id: "weekly",  icon: "\uD83D\uDCC5", label: "Weekly" },
+    { id: "pnl",     icon: "💰", label: "PnL" },
+    { id: "scalper", icon: "⚡",        label: "Scalper" },
+    { id: "intraday",icon: "📊", label: "Intraday" },
+    { id: "nextday", icon: "🔭", label: "Next Day" },
+    { id: "weekly",  icon: "📅", label: "Weekly" },
   ]},
   { group: "System", tabs: [
-    { id: "reports", icon: "\uD83D\uDCCA", label: "Reports" },
-    { id: "health",  icon: "\uD83D\uDD2C", label: "Health Check" },
+    { id: "reports", icon: "📊", label: "Reports" },
+    { id: "health",  icon: "🔬", label: "Health Check" },
   ]},
 ];
 // Flat list for renderTab lookup
 const TABS = TAB_GROUPS.flatMap(g => g.tabs);
 
-const MASTER_PROMPT = `# UNIVERSE \u2014 MASTER CLAUDE PROMPT
+const MASTER_PROMPT = `# UNIVERSE — MASTER CLAUDE PROMPT
 ## Nifty & BankNifty Options Intelligence Engine
 ## Broker: Zerodha Kite Connect | Market: NSE India
 
@@ -104,7 +104,7 @@ const MASTER_PROMPT = `# UNIVERSE \u2014 MASTER CLAUDE PROMPT
 
 ## SYSTEM ROLE
 
-You are UNIVERSE, an elite options trading intelligence engine specialized exclusively in Nifty and BankNifty option BUYING on NSE India. You analyze real-time Zerodha Kite Connect data and generate precise, actionable signals with complete reasoning transparency. You are not a financial advisor \u2014 you are a signal engine. The trader makes all execution decisions.
+You are UNIVERSE, an elite options trading intelligence engine specialized exclusively in Nifty and BankNifty option BUYING on NSE India. You analyze real-time Zerodha Kite Connect data and generate precise, actionable signals with complete reasoning transparency. You are not a financial advisor — you are a signal engine. The trader makes all execution decisions.
 
 ---
 
@@ -120,11 +120,11 @@ You are UNIVERSE, an elite options trading intelligence engine specialized exclu
 - Strike-wise CE/PE: OI, OI Change, Volume, LTP, IV
 - PCR overall and strike-wise
 - Max Pain Strike
-- IVR = (current IV \u2212 52w low IV) / (52w high IV \u2212 52w low IV) × 100
+- IVR = (current IV − 52w low IV) / (52w high IV − 52w low IV) × 100
 
 ### 3. GREEKS (Per Strike)
 - Delta, Gamma, Theta, Vega
-- GEX (Gamma Exposure) \u2014 flag GEX flip zones
+- GEX (Gamma Exposure) — flag GEX flip zones
 
 ### 4. INSTITUTIONAL FLOW
 - FII net: index futures + index options
@@ -134,11 +134,11 @@ You are UNIVERSE, an elite options trading intelligence engine specialized exclu
 ### 5. TECHNICALS (5min / 15min / 1hr / Daily)
 - EMA 9, 20, 50, 200
 - RSI 14
-- MACD (12,26,9) \u2014 histogram + signal line
+- MACD (12,26,9) — histogram + signal line
 - VWAP intraday
 - Bollinger Bands (20,2)
 - Supertrend (10,3)
-- ATR 14 \u2014 for stop loss sizing
+- ATR 14 — for stop loss sizing
 - Volume vs 20-period average
 - Pivot Points: R1 R2 R3 S1 S2 S3
 
@@ -146,30 +146,30 @@ You are UNIVERSE, an elite options trading intelligence engine specialized exclu
 
 ## SIGNAL SCORING ENGINE (Out of 9)
 
-### TECHNICAL \u2014 4 pts
-1. Price above/below EMA 20+50 confluence \u2014 1 pt
-2. RSI momentum aligned with direction \u2014 1 pt
-3. MACD histogram momentum confirmed \u2014 1 pt
-4. Chart pattern confirmed (M-Top, HnS, Flag, Triangle) \u2014 1 pt
+### TECHNICAL — 4 pts
+1. Price above/below EMA 20+50 confluence — 1 pt
+2. RSI momentum aligned with direction — 1 pt
+3. MACD histogram momentum confirmed — 1 pt
+4. Chart pattern confirmed (M-Top, HnS, Flag, Triangle) — 1 pt
 
-### OPTIONS FLOW \u2014 3 pts
-5. OI buildup at resistance/support matches directional bias \u2014 1 pt
-6. PCR extreme (<0.70 bearish / >1.30 bullish) or trending strongly \u2014 1 pt
-7. Big CE/PE writing at key strike (institutional positioning) \u2014 1 pt
+### OPTIONS FLOW — 3 pts
+5. OI buildup at resistance/support matches directional bias — 1 pt
+6. PCR extreme (<0.70 bearish / >1.30 bullish) or trending strongly — 1 pt
+7. Big CE/PE writing at key strike (institutional positioning) — 1 pt
 
-### MARKET STRUCTURE \u2014 2 pts
-8. IVR in safe buying zone (20\u201360) \u2014 1 pt
-9. FII/institutional flow confirming direction \u2014 1 pt
+### MARKET STRUCTURE — 2 pts
+8. IVR in safe buying zone (20–60) — 1 pt
+9. FII/institutional flow confirming direction — 1 pt
 
 ### THRESHOLDS
-Score 5\u20136 → MODERATE CONFIDENCE (watchlist only)
-Score 7\u20138 → HIGH CONFIDENCE (execute with discipline)
+Score 5–6 → MODERATE CONFIDENCE (watchlist only)
+Score 7–8 → HIGH CONFIDENCE (execute with discipline)
 Score 9   → MAX CONFIDENCE (prime setup, full size)
-Score <5  → NO TRADE \u2014 wait
+Score <5  → NO TRADE — wait
 
 ### STRIKE SELECTION RULES
 - ATM or 1-strike OTM only
-- Premium range ₹80\u2013₹400
+- Premium range ₹80–₹400
 - Avoid below ₹50 (lottery) and above ₹500 (slow mover)
 - Avoid last 2 days before expiry unless IVR > 60
 
@@ -182,87 +182,87 @@ Score <5  → NO TRADE \u2014 wait
 
 ## SIGNAL OUTPUT FORMAT
 
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-\uD83C\uDFAF UNIVERSE SIGNAL \u2014 [INSTRUMENT]
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 UNIVERSE SIGNAL — [INSTRUMENT]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Time           : [HH:MM AM/PM IST]
 Signal         : BUY CALL / BUY PUT
 Strike         : [Strike] [CE/PE] [Expiry]
-Entry Zone     : ₹[X] \u2013 ₹[Y]
+Entry Zone     : ₹[X] – ₹[Y]
 Target 1       : ₹[T1]  (+X%)
 Target 2       : ₹[T2]  (+X%)
-Stop Loss      : ₹[SL]  (\u221240% hard stop)
+Stop Loss      : ₹[SL]  (−40% hard stop)
 Risk:Reward    : 1:[X.X]
 CONFLUENCE     : [X]/9
 
 REASONING:
-[\u2705] [Condition with exact values \u2014 not vague]
-[\u2705] [Condition with exact values]
-[⚠\uFE0F] [Borderline condition + what to watch]
-[\u274C] [Failed condition \u2014 reason]
+[✅] [Condition with exact values — not vague]
+[✅] [Condition with exact values]
+[⚠️] [Borderline condition + what to watch]
+[❌] [Failed condition — reason]
 ... all 9 conditions shown always
 
 INVALIDATION   : [Exact condition that kills this trade]
-TIME SENSITIVE : [Scalp 30min / Intraday / Swing 2\u20133 days]
+TIME SENSITIVE : [Scalp 30min / Intraday / Swing 2–3 days]
 STATUS         : ACTIVE / CLOSED WIN / CLOSED SL HIT
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ---
 
 ## NEXT DAY LEVELS FORMAT
-## Generate between 2:30 PM \u2013 3:00 PM IST daily
+## Generate between 2:30 PM – 3:00 PM IST daily
 
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-\uD83D\uDD2D UNIVERSE \u2014 NEXT DAY FORECAST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔭 UNIVERSE — NEXT DAY FORECAST
 Generated : [TIME] IST
 For       : [DATE]
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 NIFTY TOMORROW
 Bias           : BULLISH / BEARISH / NEUTRAL
-Probable Range : [LOW] \u2013 [HIGH]
+Probable Range : [LOW] – [HIGH]
 Pivot          : [level]
 Max Pain       : [strike]
 
 RESISTANCE:
-  R1: [level] \u2014 [why this is resistance \u2014 exact reason]
-  R2: [level] \u2014 [why]
-  R3: [level] \u2014 [why]
+  R1: [level] — [why this is resistance — exact reason]
+  R2: [level] — [why]
+  R3: [level] — [why]
 
 SUPPORT:
-  S1: [level] \u2014 [why this is support \u2014 exact reason]
-  S2: [level] \u2014 [why]
-  S3: [level] \u2014 [why]
+  S1: [level] — [why this is support — exact reason]
+  S2: [level] — [why]
+  S3: [level] — [why]
 
 KEY OI WALLS:
-  Big CE Wall : [Strike] CE \u2014 [OI in Lakhs] \u2014 [implication]
-  Big PE Wall : [Strike] PE \u2014 [OI in Lakhs] \u2014 [implication]
-  Unusual     : [Strike] \u2014 [unusual activity description]
+  Big CE Wall : [Strike] CE — [OI in Lakhs] — [implication]
+  Big PE Wall : [Strike] PE — [OI in Lakhs] — [implication]
+  Unusual     : [Strike] — [unusual activity description]
 
 OPENING BIAS  : [Gap up / flat / down + reasoning]
 STRATEGY      : [Exact action plan for tomorrow]
 
-MORNING  (9:15\u201310:30) : [Action]
-MIDDAY   (10:30\u20131:00) : [Action]
-CLOSING  (2:00\u20133:00)  : [Action]
+MORNING  (9:15–10:30) : [Action]
+MIDDAY   (10:30–1:00) : [Action]
+CLOSING  (2:00–3:00)  : [Action]
 
 [SAME STRUCTURE REPEATED FOR BANKNIFTY]
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ---
 
 ## WEEKLY OUTLOOK FORMAT
 ## Generate Monday morning 9:00 AM
 
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-\uD83D\uDCC5 UNIVERSE \u2014 WEEKLY OUTLOOK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📅 UNIVERSE — WEEKLY OUTLOOK
 Week: [DATE RANGE]
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 NIFTY WEEKLY BIAS     : BULLISH / BEARISH / SIDEWAYS
 BANKNIFTY WEEKLY BIAS : BULLISH / BEARISH / SIDEWAYS
-Expected Nifty Range  : [LOW]\u2013[HIGH]
-Expected BN Range     : [LOW]\u2013[HIGH]
+Expected Nifty Range  : [LOW]–[HIGH]
+Expected BN Range     : [LOW]–[HIGH]
 
 WEEKLY OI ANALYSIS:
 - [Big CE wall + implication]
@@ -282,17 +282,17 @@ WEEKLY TRADING PLAN:
   Monday    : [Strategy]
   Tuesday   : [Strategy]
   Wednesday : [Strategy]
-  Thursday  : ⚠\uFE0F THETA WARNING \u2014 No option buying after 2 PM
-  Friday    : \uD83D\uDEAB No new positions \u2014 [specific risk reason]
+  Thursday  : ⚠️ THETA WARNING — No option buying after 2 PM
+  Friday    : 🚫 No new positions — [specific risk reason]
 
 KEY MAKE-OR-BREAK LEVELS:
-  Nifty     : [level] \u2014 if this breaks, full trend reversal
-  BankNifty : [level] \u2014 if this breaks, full trend reversal
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+  Nifty     : [level] — if this breaks, full trend reversal
+  BankNifty : [level] — if this breaks, full trend reversal
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ---
 
-## UNUSUAL ACTIVITY \u2014 DETECTION TRIGGERS
+## UNUSUAL ACTIVITY — DETECTION TRIGGERS
 
 Flag immediately when ANY of these occur:
 1. Strike volume > 3x its 5-day average
@@ -304,7 +304,7 @@ Flag immediately when ANY of these occur:
 7. GEX flips from positive to negative (bearish acceleration zone)
 
 ALERT FORMAT:
-\uD83D\uDEA8 UNUSUAL ACTIVITY
+🚨 UNUSUAL ACTIVITY
 Time      : [TIME]
 Strike    : [INSTRUMENT + STRIKE]
 Type      : BIG WRITING / BIG BUYING / VOL SPIKE / GEX FLIP
@@ -320,40 +320,40 @@ Level     : CRITICAL / HIGH / MEDIUM
 - Within 15 min of major macro event (RBI, Fed, NFP)
 - Last 30 min of expiry day
 - LTP exactly at max pain (market confused)
-- PCR between 0.85\u20131.10 (no directional edge)
+- PCR between 0.85–1.10 (no directional edge)
 
 ---
 
 ## BEST TRADE WINDOWS
 
-- 9:30\u201310:30 AM  → Trend establishment, highest quality setups
-- 11:00\u201312:30 PM → Momentum continuation
-- 2:00\u20132:30 PM   → EOD institutional positioning window
+- 9:30–10:30 AM  → Trend establishment, highest quality setups
+- 11:00–12:30 PM → Momentum continuation
+- 2:00–2:30 PM   → EOD institutional positioning window
 
 ---
 
 ## SELF-AUDIT BEFORE EVERY SIGNAL
 
-\u25A1 Am I chasing a move already completed? → DO NOT signal
-\u25A1 Is IVR above 80? → Premium too expensive, abort
-\u25A1 Is expiry < 2 days and strike OTM? → Avoid
-\u25A1 Is this against the weekly bias? → Reduce score by 2, reconsider
-\u25A1 Did I check both Nifty AND BankNifty? → Always verify both
+☐ Am I chasing a move already completed? → DO NOT signal
+☐ Is IVR above 80? → Premium too expensive, abort
+☐ Is expiry < 2 days and strike OTM? → Avoid
+☐ Is this against the weekly bias? → Reduce score by 2, reconsider
+☐ Did I check both Nifty AND BankNifty? → Always verify both
 
 ---
 
 ## REASONING TRANSPARENCY RULES
 
 Every signal MUST show:
-1. Exact numbers \u2014 not vague statements
-2. All 9 conditions: \u2705 passed / ⚠\uFE0F borderline / \u274C failed
+1. Exact numbers — not vague statements
+2. All 9 conditions: ✅ passed / ⚠️ borderline / ❌ failed
 3. Why THIS specific strike vs adjacent strikes
 4. Exact invalidation condition
 5. Time sensitivity (scalp / intraday / swing)
 
 ---
 
-UNIVERSE \u2014 Built for Kanishk
+UNIVERSE — Built for Kanishk
 Nifty & BankNifty Option Buying Engine
 Broker: Zerodha Kite Connect | NSE India`;
 
@@ -516,11 +516,11 @@ function LiveDataTab({ liveData }) {
               sub={d.pcr < 0.7 ? "Bearish extreme" : d.pcr > 1.3 ? "Bullish extreme" : "Neutral zone"} />
             <Stat label="IVR" value={`${d.ivr}%`}
               color={d.ivr < 20 ? YELLOW : d.ivr < 60 ? GREEN : RED}
-              sub={d.ivr < 20 ? "Low \u2014 avoid buying" : d.ivr < 60 ? "Safe for buying" : "Costly \u2014 avoid"} />
+              sub={d.ivr < 20 ? "Low — avoid buying" : d.ivr < 60 ? "Safe for buying" : "Costly — avoid"} />
             <Stat label="Max Pain" value={d.maxPain.toLocaleString("en-IN")} color={PURPLE} />
             <Stat label="VIX"      value={d.vix}
               color={d.vix > 18 ? RED : d.vix > 14 ? YELLOW : GREEN}
-              sub={d.vix > 18 ? "High \u2014 be careful" : "Normal range"} />
+              sub={d.vix > 18 ? "High — be careful" : "Normal range"} />
           </div>
           <div style={{ background: "#0D0D15", borderRadius: 8, padding: "12px 14px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12 }}>
             <div>
@@ -586,10 +586,10 @@ function SignalsTab({ realSignals }) {
             <Stat label="Entry"    value={`₹${s.entry}`} />
             <Stat label="Target 1" value={`₹${s.t1}`}    color={GREEN} />
             <Stat label="Target 2" value={`₹${s.t2}`}    color={GREEN} />
-            <Stat label="Stop Loss" value={`₹${s.sl}`}   color={RED} sub="\u221240% hard stop" />
+            <Stat label="Stop Loss" value={`₹${s.sl}`}   color={RED} sub="−40% hard stop" />
           </div>
           <div style={{ background: "#0D0D15", borderRadius: 8, padding: "12px 14px", marginBottom: 10 }}>
-            <Label>Reasoning \u2014 All 9 Conditions</Label>
+            <Label>Reasoning — All 9 Conditions</Label>
             {s.reasoning.map((r, i) => (
               <div key={i} style={{
                 display: "flex", gap: 8, marginBottom: 7,
@@ -597,7 +597,7 @@ function SignalsTab({ realSignals }) {
                 fontSize: 12, lineHeight: 1.6,
               }}>
                 <span style={{ flexShrink: 0 }}>
-                  {r.pass === true ? "\u2705" : r.pass === "warn" ? "⚠\uFE0F" : "\u274C"}
+                  {r.pass === true ? "✅" : r.pass === "warn" ? "⚠️" : "❌"}
                 </span>
                 <span>{r.text}</span>
               </div>
@@ -616,23 +616,23 @@ function SignalsTab({ realSignals }) {
 
 function IntradayTab({ realData }) {
   const sessions = [
-    { label: "\uD83D\uDFE2 Morning Session", time: "9:15\u201310:30 AM", color: GREEN,
+    { label: "🟢 Morning Session", time: "9:15–10:30 AM", color: GREEN,
       desc: "Trend establishment window. Best setups form here. Wait for 15-min candle confirmation before entry. Never trade first 5 candles blind." },
-    { label: "\uD83D\uDD35 Mid Session",     time: "10:30 AM\u201312:30 PM", color: ACCENT,
+    { label: "🔵 Mid Session",     time: "10:30 AM–12:30 PM", color: ACCENT,
       desc: "Momentum continuation. VWAP is king. Trade with trend only. Avoid reversal trades unless score is 8+." },
-    { label: "\uD83D\uDFE0 Closing Window",  time: "2:00\u20132:30 PM", color: ORANGE,
+    { label: "🟠 Closing Window",  time: "2:00–2:30 PM", color: ORANGE,
       desc: "Institutional positioning window. High OI changes. Watch unusual activity. Best time to read next-day setup." },
-    { label: "\uD83D\uDD34 Avoid Zone",      time: "12:30\u20132:00 PM", color: RED,
+    { label: "🔴 Avoid Zone",      time: "12:30–2:00 PM", color: RED,
       desc: "Low liquidity, choppy price action. Maximum premium decay. No new positions unless strong breakout with score 8+." },
   ];
   const rules = [
-    { icon: "\uD83D\uDEAB", col: RED,   text: "VIX > 20 and score < 8 → Skip the trade entirely" },
-    { icon: "\uD83D\uDEAB", col: RED,   text: "Within 15 min of RBI / Fed / NFP event → No new trades" },
-    { icon: "\uD83D\uDEAB", col: RED,   text: "PCR between 0.85\u20131.10 → No directional edge, stay out" },
-    { icon: "\uD83D\uDEAB", col: RED,   text: "Expiry day last 30 min → Do NOT buy options, theta crush" },
-    { icon: "\u2705", col: GREEN, text: "VWAP rejection confirmed on 5min → Valid entry setup" },
-    { icon: "\u2705", col: GREEN, text: "EMA 9 crosses 20 with volume surge → Strong directional signal" },
-    { icon: "\u2705", col: GREEN, text: "Score \u2265 7 in morning session 9:30\u201310:30 AM → Prime setup, full conviction" },
+    { icon: "🚫", col: RED,   text: "VIX > 20 and score < 8 → Skip the trade entirely" },
+    { icon: "🚫", col: RED,   text: "Within 15 min of RBI / Fed / NFP event → No new trades" },
+    { icon: "🚫", col: RED,   text: "PCR between 0.85–1.10 → No directional edge, stay out" },
+    { icon: "🚫", col: RED,   text: "Expiry day last 30 min → Do NOT buy options, theta crush" },
+    { icon: "✅", col: GREEN, text: "VWAP rejection confirmed on 5min → Valid entry setup" },
+    { icon: "✅", col: GREEN, text: "EMA 9 crosses 20 with volume surge → Strong directional signal" },
+    { icon: "✅", col: GREEN, text: "Score ≥ 7 in morning session 9:30–10:30 AM → Prime setup, full conviction" },
   ];
 
   // Build REAL tech levels from API data
@@ -645,11 +645,11 @@ function IntradayTab({ realData }) {
   const techLevels = hasReal ? [
     { label: "NIFTY VWAP",          value: n.vwap?.toLocaleString("en-IN") || "N/A", color: ACCENT },
     { label: "NIFTY Supertrend",     value: n.supertrendLabel || "N/A", color: n.supertrendLabel?.includes("BUY") ? GREEN : RED },
-    { label: "NIFTY RSI (14)",       value: `${n.rsi} \u2014 ${n.rsiLabel}`, color: rsiColor(n.rsi) },
+    { label: "NIFTY RSI (14)",       value: `${n.rsi} — ${n.rsiLabel}`, color: rsiColor(n.rsi) },
     { label: "NIFTY MACD",          value: n.macdLabel || "N/A", color: macdColor(n.macdLabel) },
     { label: "BANKNIFTY VWAP",       value: b.vwap?.toLocaleString("en-IN") || "N/A", color: ACCENT },
     { label: "BANKNIFTY Supertrend", value: b.supertrendLabel || "N/A", color: b.supertrendLabel?.includes("BUY") ? GREEN : RED },
-    { label: "BANKNIFTY RSI (14)",   value: `${b.rsi} \u2014 ${b.rsiLabel}`, color: rsiColor(b.rsi) },
+    { label: "BANKNIFTY RSI (14)",   value: `${b.rsi} — ${b.rsiLabel}`, color: rsiColor(b.rsi) },
     { label: "BANKNIFTY MACD",       value: b.macdLabel || "N/A", color: macdColor(b.macdLabel) },
   ] : [
     { label: "NIFTY VWAP", value: "Loading...", color: "#555" },
@@ -735,7 +735,7 @@ function NextDayTab({ realData }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", background: "#0D0D15", borderRadius: 10, border: `1px solid ${ACCENT}33` }}>
-        <span style={{ color: ACCENT, fontWeight: 700 }}>\uD83D\uDD2D {d.date}</span>
+        <span style={{ color: ACCENT, fontWeight: 700 }}>🔭 {d.date}</span>
         <span style={{ color: "#555", fontSize: 12 }}>Generated: {d.generatedAt}</span>
       </div>
       {[{ name: "NIFTY", data: d.nifty }, { name: "BANKNIFTY", data: d.banknifty }].map(({ name, data }) => (
@@ -747,7 +747,7 @@ function NextDayTab({ realData }) {
           <div style={{ background: "#0D0D15", borderRadius: 8, padding: "12px 14px", marginBottom: 12, display: "flex", justifyContent: "space-between" }}>
             <div>
               <div style={{ color: "#555", fontSize: 10, marginBottom: 4 }}>PROBABLE RANGE</div>
-              <div style={{ color: "#fff", fontWeight: 700 }}>{data.rangeLow.toLocaleString("en-IN")} \u2013 {data.rangeHigh.toLocaleString("en-IN")}</div>
+              <div style={{ color: "#fff", fontWeight: 700 }}>{data.rangeLow.toLocaleString("en-IN")} – {data.rangeHigh.toLocaleString("en-IN")}</div>
             </div>
             <div>
               <div style={{ color: "#555", fontSize: 10, marginBottom: 4 }}>PIVOT</div>
@@ -786,9 +786,9 @@ function NextDayTab({ realData }) {
           </div>
           <div style={{ background: "#0D0D15", borderRadius: 8, padding: "12px 14px", marginBottom: 12 }}>
             <Label>Key OI Strikes Tomorrow</Label>
-            <div style={{ color: RED,    fontSize: 12, marginBottom: 6 }}>\uD83D\uDD34 {data.bigCEWall}</div>
-            <div style={{ color: GREEN,  fontSize: 12, marginBottom: 6 }}>\uD83D\uDFE2 {data.bigPEWall}</div>
-            <div style={{ color: YELLOW, fontSize: 12 }}>⚠\uFE0F {data.unusual}</div>
+            <div style={{ color: RED,    fontSize: 12, marginBottom: 6 }}>🔴 {data.bigCEWall}</div>
+            <div style={{ color: GREEN,  fontSize: 12, marginBottom: 6 }}>🟢 {data.bigPEWall}</div>
+            <div style={{ color: YELLOW, fontSize: 12 }}>⚠️ {data.unusual}</div>
           </div>
           <div style={{ background: ACCENT + "11", border: `1px solid ${ACCENT}33`, borderRadius: 8, padding: "12px 14px", marginBottom: 12 }}>
             <Label>Trading Strategy</Label>
@@ -829,8 +829,8 @@ function WeeklyTab({ realData }) {
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
           {[
-            { label: "Nifty Bias",     value: w.niftyBias, range: `${w.niftyRange.low}\u2013${w.niftyRange.high}`, color: RED },
-            { label: "BankNifty Bias", value: w.bnBias,    range: `${w.bnRange.low}\u2013${w.bnRange.high}`,       color: RED },
+            { label: "Nifty Bias",     value: w.niftyBias, range: `${w.niftyRange.low}–${w.niftyRange.high}`, color: RED },
+            { label: "BankNifty Bias", value: w.bnBias,    range: `${w.bnRange.low}–${w.bnRange.high}`,       color: RED },
           ].map(item => (
             <div key={item.label} style={{ background: "#0D0D15", borderRadius: 8, padding: "12px 14px" }}>
               <div style={{ color: "#555", fontSize: 10, marginBottom: 4 }}>{item.label}</div>
@@ -856,7 +856,7 @@ function WeeklyTab({ realData }) {
         <div style={{ background: "#0D0D15", borderRadius: 8, padding: "12px 14px", marginBottom: 12 }}>
           <Label>Macro Events This Week</Label>
           {w.macro.map((m, i) => (
-            <div key={i} style={{ color: "#aaa", fontSize: 12, marginBottom: 6 }}>\u26A1 {m}</div>
+            <div key={i} style={{ color: "#aaa", fontSize: 12, marginBottom: 6 }}>⚡ {m}</div>
           ))}
         </div>
         <div style={{ background: "#0D0D15", borderRadius: 8, padding: "12px 14px", marginBottom: 12 }}>
@@ -871,10 +871,10 @@ function WeeklyTab({ realData }) {
         <div style={{ background: RED + "11", border: `1px solid ${RED}33`, borderRadius: 8, padding: "14px" }}>
           <Label>Make-or-Break Levels</Label>
           <div style={{ color: RED, fontSize: 13, fontWeight: 700, marginBottom: 6 }}>
-            Nifty: {w.niftyMoB.toLocaleString("en-IN")} \u2014 Break below = Full bearish trend reversal
+            Nifty: {w.niftyMoB.toLocaleString("en-IN")} — Break below = Full bearish trend reversal
           </div>
           <div style={{ color: RED, fontSize: 13, fontWeight: 700 }}>
-            BankNifty: {w.bnMoB.toLocaleString("en-IN")} \u2014 Break below = Full bearish trend reversal
+            BankNifty: {w.bnMoB.toLocaleString("en-IN")} — Break below = Full bearish trend reversal
           </div>
         </div>
       </Card>
@@ -986,7 +986,7 @@ function UnusualTab({ unusualData, oiData }) {
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
                   <div>
                     <div style={{ color: alertColor[u.alert], fontWeight: 700, fontSize: 14, marginBottom: 4 }}>
-                      {u.type} {"\u2014"} {u.instrument}
+                      {u.type} {"—"} {u.instrument}
                     </div>
                     <div style={{ color: "#555", fontSize: 11 }}>{u.time} {u.expiry && <span style={{ color: ORANGE, marginLeft: 6 }}>Exp: {u.expiry}</span>}</div>
                   </div>
@@ -1774,7 +1774,7 @@ function AIBrainTab() {
         <Card style={{ background: RED + "06", border: `1px solid ${RED}22` }}>
           <div style={{ color: RED, fontWeight: 700, fontSize: 12, marginBottom: 6 }}>DO NOT</div>
           {data.avoidList.map((a, i) => (
-            <div key={i} style={{ color: "#aaa", fontSize: 11, marginBottom: 3 }}>{"\u26D4"} {a}</div>
+            <div key={i} style={{ color: "#aaa", fontSize: 11, marginBottom: 3 }}>{"⛔"} {a}</div>
           ))}
         </Card>
       )}
@@ -2280,7 +2280,7 @@ function TrapFinderTab() {
                   <span style={{ color: s.optionType === "CE" ? RED : GREEN, fontWeight: 900, fontSize: 16 }}>{s.optionType}</span>
                   <span style={{ background: ac + "22", color: ac, padding: "3px 12px", borderRadius: 6, fontSize: 12, fontWeight: 900 }}>{s.alertLevel}</span>
                 </div>
-                <button onClick={() => setSelectedStrike(null)} style={{ background: "transparent", color: "#555", border: "none", fontSize: 20, cursor: "pointer" }}>{"\u2715"}</button>
+                <button onClick={() => setSelectedStrike(null)} style={{ background: "transparent", color: "#555", border: "none", fontSize: 20, cursor: "pointer" }}>{"✕"}</button>
               </div>
 
               {/* Score Bar */}
@@ -2332,7 +2332,7 @@ function TrapFinderTab() {
                 ].map((item, i) => (
                   <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
                     <span style={{ color: item.check ? GREEN : item.partial ? YELLOW : RED, fontSize: 12, width: 16 }}>
-                      {item.check ? "✓" : item.partial ? "~" : "\u2717"}
+                      {item.check ? "✓" : item.partial ? "~" : "✗"}
                     </span>
                     <span style={{ color: item.check ? GREEN : item.partial ? YELLOW : "#555", fontSize: 11, fontWeight: item.check ? 700 : 400 }}>
                       {item.text}
@@ -2644,7 +2644,7 @@ function PromptTab() {
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <Card>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <span style={{ color: ACCENT, fontWeight: 900, fontSize: 15 }}>\uD83E\uDD16 UNIVERSE MASTER PROMPT</span>
+          <span style={{ color: ACCENT, fontWeight: 900, fontSize: 15 }}>🤖 UNIVERSE MASTER PROMPT</span>
           <button onClick={copy} style={{
             background: copied ? GREEN + "22" : ACCENT + "22",
             color: copied ? GREEN : ACCENT,
@@ -2652,7 +2652,7 @@ function PromptTab() {
             borderRadius: 8, padding: "6px 18px",
             cursor: "pointer", fontSize: 12, fontWeight: 700,
           }}>
-            {copied ? "\u2705 COPIED" : "\uD83D\uDCCB COPY ALL"}
+            {copied ? "✅ COPIED" : "📋 COPY ALL"}
           </button>
         </div>
         <div style={{ color: "#666", fontSize: 11, marginBottom: 14, lineHeight: 1.6 }}>

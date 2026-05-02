@@ -168,7 +168,7 @@ export default function OIChangeTab({ oiData }) {
                   background: s.isATM ? ACCENT + "11" : i % 2 === 0 ? "transparent" : "#0A0A12",
                 }}>
                   <div style={{ color: s.isATM ? ACCENT : "#888", fontWeight: s.isATM ? 900 : 400 }}>
-                    {fmt(s.strike)} {s.isATM && "\u25C6"}
+                    {fmt(s.strike)} {s.isATM && "◆"}
                   </div>
                   <div style={{ color: "#ccc" }}>{fmtL(s.ceOI)}</div>
                   <OIChangeCell value={s.ceOIChange} />

@@ -699,7 +699,7 @@ function TradeCard({ t, onExit }) {
   const profitPct = t.entry_price > 0 ? Math.round(((t.current_ltp || t.exit_price || t.entry_price) - t.entry_price) / t.entry_price * 100) : 0;
   const slLabel = t.breakeven_active ? (t.trailing_active ? `TRAIL SL` : "BREAKEVEN") : "SL";
   const slColor = t.breakeven_active ? (t.sl_price > t.entry_price ? GREEN : ACCENT) : RED;
-  const statusLbl = { ...statusLabel, TRAIL_EXIT: "TRAIL EXIT ✓", BREAKEVEN_EXIT: "BE EXIT \u2248" };
+  const statusLbl = { ...statusLabel, TRAIL_EXIT: "TRAIL EXIT ✓", BREAKEVEN_EXIT: "BE EXIT ≈" };
 
   return (
     <div style={{ background: "#111118", borderRadius: 10, padding: "12px 14px", border: `1px solid ${sc}33` }}>
@@ -777,7 +777,7 @@ function TradeCard({ t, onExit }) {
         <div style={{ marginTop: 6, padding: "4px 10px", background: ACCENT + "11", borderRadius: 6, color: ACCENT, fontSize: 10 }}>
           {t.trailing_active
             ? `Trailing SL active at ₹${t.sl_price} (locking ${t.sl_price > t.entry_price ? Math.round((t.sl_price - t.entry_price) * t.qty) : 0} profit). Peak: ₹${(t.peak_ltp || 0).toFixed?.(1)}`
-            : `Breakeven active \u2014 SL moved to entry ₹${t.entry_price}. Zero loss guaranteed.`
+            : `Breakeven active — SL moved to entry ₹${t.entry_price}. Zero loss guaranteed.`
           }
         </div>
       ) : null}
