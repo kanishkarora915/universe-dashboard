@@ -1553,6 +1553,59 @@ async def structure_snapshot(tag: str = "MANUAL"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Smart Money Detector endpoints (institutional flow tracking) ──
+@app.get("/api/smart-money/live")
+async def smart_money_live():
+    """Latest smart money classification per index — WRITER_DRIP /
+    BUYER_DRIP / WRITER_COVER / BUYER_EXIT for every active NTM strike,
+    plus net institutional view + buyer recommendations."""
+    try:
+        from smart_money_detector import get_live_state
+        return get_live_state()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/smart-money/history")
+async def smart_money_history(idx: str = "", limit: int = 50):
+    """Today's logged strong findings (score ≥ 6)."""
+    try:
+        from smart_money_detector import get_strike_history_log
+        return {"events": get_strike_history_log(idx.upper() if idx else None, limit)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/smart-money/strike/{strike}")
+async def smart_money_strike_history(strike: int, idx: str = "NIFTY", minutes: int = 60):
+    """Per-strike per-minute history (for drill-down chart)."""
+    try:
+        from oi_minute_capture import get_strike_history
+        return {
+            "idx": idx.upper(), "strike": strike,
+            "minutes": minutes,
+            "history": get_strike_history(idx.upper(), strike, minutes),
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/smart-money/pulse-now")
+async def smart_money_pulse_now():
+    """Force an immediate smart money analysis (bypass 2-min cycle)."""
+    try:
+        if not engine:
+            return JSONResponse({"error": "engine not started"}, status_code=503)
+        # Trigger an OI minute capture first to ensure latest data
+        from oi_minute_capture import capture_pulse
+        capture_pulse(engine)
+        from smart_money_detector import analyze_pulse
+        return analyze_pulse()
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": str(e), "trace": traceback.format_exc()}, status_code=500)
+
+
 @app.post("/api/structure/pulse-now")
 async def structure_pulse_now():
     """Force a polarity-flip detection pulse immediately (skip 60s wait).

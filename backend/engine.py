@@ -3749,6 +3749,38 @@ class MarketEngine:
                     print(f"[CAPITULATION] pulse error: {e}")
             threading.Thread(target=_capitulation_run, daemon=True, name="capitulation").start()
 
+        # ── OI Minute Capture — per-strike NTM snapshots (every 60s) ──
+        # Feeds smart_money_detector with high-resolution OI history so
+        # institutional drip-accumulation patterns can be detected.
+        if not hasattr(self, "_oi_minute_last"):
+            self._oi_minute_last = 0
+        if now - self._oi_minute_last >= 60:
+            self._oi_minute_last = now
+            def _oi_minute_run():
+                try:
+                    import oi_minute_capture
+                    oi_minute_capture.capture_pulse(self)
+                except Exception as e:
+                    print(f"[OI-MIN] capture err: {e}")
+            threading.Thread(target=_oi_minute_run, daemon=True, name="oi-minute").start()
+
+        # ── Smart Money Detector — analyze 4 patterns (every 2 min) ──
+        # Classifies every NTM strike into WRITER_DRIP / BUYER_DRIP /
+        # WRITER_COVER / BUYER_EXIT and generates buyer-actionable
+        # recommendations. Surfaced in OI Change tab.
+        if not hasattr(self, "_smart_money_last"):
+            self._smart_money_last = 0
+        if now - self._smart_money_last >= 120:
+            self._smart_money_last = now
+            def _smart_money_run():
+                try:
+                    import smart_money_detector
+                    smart_money_detector.analyze_pulse()
+                except Exception as e:
+                    import traceback; traceback.print_exc()
+                    print(f"[SMART-MONEY] analyze err: {e}")
+            threading.Thread(target=_smart_money_run, daemon=True, name="smart-money").start()
+
         # ── Polarity Flip Detector — S/R role tracking (every 60s) ──
         # Tracks every major level (CE/PE walls, day H/L, max pain, round
         # numbers) and detects when role flips: R→S (breakout = old ceiling

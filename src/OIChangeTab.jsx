@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { exportOIToPDF } from "./pdfExport";
 import { fetchExpiries, fetchExpiryChain } from "./api";
+import SmartMoneyPanel from "./components/SmartMoneyPanel";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -187,6 +188,9 @@ export default function OIChangeTab({ oiData }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* 💰 SMART MONEY TRACKER — institutional flow detector for option buyers */}
+      <SmartMoneyPanel />
+
       {renderIndex("nifty", niftyExpiries, selectedNiftyExpiry, setSelectedNiftyExpiry, niftyExpiryData, loading.nifty)}
       {renderIndex("banknifty", bnExpiries, selectedBnExpiry, setSelectedBnExpiry, bnExpiryData, loading.banknifty)}
 
