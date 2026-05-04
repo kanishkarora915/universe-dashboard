@@ -3665,6 +3665,62 @@ async def websocket_ticks(ws: WebSocket):
 
 # ── Serve React Frontend (Production) ────────────────────────────────────
 
+# ── Diagnostic endpoint (always registered, even if dist missing) ─────
+@app.get("/api/system/build-info")
+async def build_info():
+    """Diagnose why root URL might be 404 — checks DIST_DIR existence."""
+    import os
+    dist_path = str(DIST_DIR)
+    dist_exists = DIST_DIR.exists()
+    index_path = DIST_DIR / "index.html"
+    index_exists = index_path.exists()
+    assets_dir = DIST_DIR / "assets"
+
+    # Walk a few levels up to see what's there
+    parents_listing = {}
+    try:
+        cwd = os.getcwd()
+        parent1 = Path(__file__).parent.parent
+        parents_listing = {
+            "cwd": cwd,
+            "main.py_path": str(Path(__file__)),
+            "parent1 (project root)": str(parent1),
+            "parent1_listing": [p.name for p in parent1.iterdir()][:30] if parent1.exists() else [],
+            "dist_listing": [p.name for p in DIST_DIR.iterdir()][:30] if dist_exists else [],
+            "assets_listing": [p.name for p in assets_dir.iterdir()][:30] if assets_dir.exists() else [],
+        }
+    except Exception as e:
+        parents_listing = {"error": str(e)}
+
+    return {
+        "DIST_DIR": dist_path,
+        "DIST_DIR_exists": dist_exists,
+        "index_html_exists": index_exists,
+        "index_html_path": str(index_path),
+        "static_routes_registered": dist_exists,
+        "diagnosis": (
+            "OK — frontend should serve" if (dist_exists and index_exists)
+            else "BROKEN — dist/ folder not generated. Check Render build logs for npm errors."
+        ),
+        "filesystem": parents_listing,
+    }
+
+
+# ── Fallback root handler — runs ONLY if dist/ missing ────────────────
+# Without this, GET / returns FastAPI default 404 with no info.
+# This gives the user something useful when build fails.
+if not DIST_DIR.exists():
+    @app.get("/")
+    async def fallback_root():
+        return JSONResponse({
+            "error": "Frontend build not found",
+            "message": "The dist/ folder was not generated during deploy. "
+                       "Check Render build logs.",
+            "debug_endpoint": "/api/system/build-info",
+            "api_status": "API endpoints work — only frontend is missing",
+        }, status_code=503)
+
+
 if DIST_DIR.exists():
     # Serve static assets (JS, CSS, images)
     app.mount("/assets", StaticFiles(directory=str(DIST_DIR / "assets")), name="static-assets")
