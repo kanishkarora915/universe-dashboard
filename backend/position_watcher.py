@@ -74,7 +74,37 @@ DEFAULT_CONFIG = {
     "hard_loss_cap_pct": -8.0,         # absolute floor — exit if profit_pct <= this
     "fast_loss_cap_pct": -5.0,         # tighter floor within first window
     "fast_loss_window_min": 10,        # minutes from entry for fast-loss rule
+    # ────── PEAK-AWARE FLOOR (NEW: user's 2-rule simplification) ──────
+    # Rule 1: trade ever peaked ≥+5% → exit floor tightens to -5%
+    # Rule 2: never peaked +5%      → exit floor stays at HARD_LOSS_CAP (-8%)
+    # Once peak crosses +5%, even if profit reverses, we don't let it
+    # bleed past -5%. Saves the "I touched +12% then went to -10%" pain.
+    "peak_aware_floor_enable": True,
+    "peak_aware_threshold_pct": 5.0,   # peak required to trigger tighter floor
+    "peak_aware_floor_pct": -5.0,      # exit at -5% if peak ≥ threshold
 }
+
+
+# ────── Peak-profit cache (per trade — ratchets only) ──────
+# Tracks the highest profit_pct seen for each open trade. Survives
+# pulse cycles. Cleared when trade closes (handled by stale-cache
+# cleanup in watcher_pulse).
+_peak_profit_cache: Dict[str, float] = {}
+
+
+def get_peak_profit(source: str, trade_id: int) -> float:
+    """Highest profit_pct seen so far for this open trade. Ratchets only."""
+    return _peak_profit_cache.get(f"{source}:{trade_id}", 0.0)
+
+
+def update_peak_profit(source: str, trade_id: int, current_profit_pct: float) -> float:
+    """Ratchet up the peak; return current peak."""
+    sid = f"{source}:{trade_id}"
+    prev = _peak_profit_cache.get(sid, 0.0)
+    if current_profit_pct > prev:
+        _peak_profit_cache[sid] = current_profit_pct
+        return current_profit_pct
+    return prev
 
 
 def init_watcher_db():
@@ -369,6 +399,16 @@ def _evaluate_triggers(trade: Dict, health: Dict, action: str,
         if hold_min <= fast_window and profit_pct <= fast_cap:
             return "FAST_LOSS_CAP"
 
+    # ──── PRIORITY 0.5: PEAK-AWARE FLOOR (user's 2-rule simplification) ────
+    # If trade EVER peaked ≥+5%, the loss cap tightens to -5%.
+    # This is read from the per-trade peak cache via health snapshot.
+    if cfg.get("peak_aware_floor_enable", True):
+        peak = float(health.get("peak_profit_pct") or 0)
+        peak_threshold = float(cfg.get("peak_aware_threshold_pct", 5.0))
+        peak_floor = float(cfg.get("peak_aware_floor_pct", -5.0))
+        if peak >= peak_threshold and profit_pct <= peak_floor:
+            return "PEAK_FLOOR_HIT"
+
     # ──── PRIORITY 1: OI REVERSAL (per-strike writer/buyer activity) ────
     # New: per-trade-strike OI delta from oi_minute_capture.
     # Fires when writers HOSTILE to our position are stacking AND we're
@@ -626,6 +666,7 @@ def watcher_pulse(engine) -> Dict:
         stale = [k for k in list(_last_health_cache.keys()) if k not in live_keys]
         for k in stale:
             _last_health_cache.pop(k, None)
+            _peak_profit_cache.pop(k, None)  # clean peak cache too
         if stale:
             print(f"[WATCHER] cleaned {len(stale)} stale cache entries")
     except Exception as e:
@@ -808,6 +849,13 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
     # Surface raw OI numbers in health for UI
     health["ce_oi_now"] = ce_oi_now
     health["pe_oi_now"] = pe_oi_now
+
+    # ── Peak-profit ratchet (for PEAK_FLOOR_HIT trigger) ──
+    # Tracks highest profit_pct ever seen for THIS open trade. Once peak
+    # crosses +5%, the loss floor tightens to -5% (vs default -8%).
+    cur_profit_pct = health.get("profit_pct") or 0
+    peak_now = update_peak_profit(source, trade_id, cur_profit_pct)
+    health["peak_profit_pct"] = peak_now
     health["trade_id"] = trade_id
     health["source"] = source
     health["idx"] = idx
@@ -875,6 +923,35 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
                 return
         # If profit_pct > -3%, fall through to normal score-based action
         # (will trigger SL tighten if score < 5)
+
+    # ──── PEAK_FLOOR_HIT — bypass-gate exit ────
+    # User's Rule 1: trade peaked ≥+5%, now down to ≤-5% → exit immediately.
+    # Saves the "I touched +12%, now I'm -10%" pain. Same bypass behavior
+    # as HARD_LOSS_CAP (ignores auto_exit_main/scalper gating).
+    if trigger == "PEAK_FLOOR_HIT" and cfg.get("peak_aware_floor_enable", True):
+        profit_pct = health.get("profit_pct", 0)
+        peak = health.get("peak_profit_pct", 0)
+        peak_floor = float(cfg.get("peak_aware_floor_pct", -5.0))
+        reason_str = (f"PEAK_FLOOR_HIT: peaked {peak:+.2f}% then fell to "
+                      f"{profit_pct:+.2f}% — capped at {peak_floor:.0f}%")
+        ok = (_force_close_main(trade_id, current_premium, reason_str)
+              if source == "MAIN"
+              else _force_close_scalper(trade_id, current_premium, reason_str))
+        if ok:
+            action_taken = "EXIT"
+            _log_exit(source, trade, current_premium, trigger,
+                      [reason_str] + (health.get("reasons") or []))
+            snapshot["actions"].append({
+                "source": source, "trade_id": trade_id, "trigger": trigger,
+                "action": "EXIT", "exit_price": current_premium,
+                "profit_pct": profit_pct, "peak_profit_pct": peak,
+                "peak_floor_pct": peak_floor,
+                "bypass_gate": True,
+            })
+            print(f"[WATCHER] PEAK_FLOOR exit · {source} #{trade_id} · "
+                  f"peak {peak:+.2f}% → now {profit_pct:+.2f}% (cap {peak_floor:.0f}%)")
+            _log_health(source, trade_id, idx, action, health, trigger, action_taken)
+            return
 
     # ──── HARD LOSS FLOOR — bypasses auto_exit gating ────
     # User rule: "agar position lete hi trade loss mein jara hai toh

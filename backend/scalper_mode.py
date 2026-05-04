@@ -153,13 +153,22 @@ def init_scalper_db():
         "VALUES (1, 1000000, 0, 0, 0.08, 0.15, 0.30, ?)",
         (ist_now().isoformat(),)
     )
-    # B1.1 migration: existing rows with sl_pct=0.12 get bumped down to 0.08
-    # (one-time auto-migration to user's new safety rule).
+    # B1.1 FORCE migration: existing rows with sl_pct ≥ 0.10 get bumped to
+    # 0.08. The original migration had `updated_at IS NULL` guard which
+    # SKIPPED any user who had ever saved config — leaving them on the
+    # old 12% SL. Today's 5 trades hit -12% Stage 0 instead of -8%
+    # (~₹57k extra loss). Forcing the migration on next boot.
+    # daily_cap also clamped to 15 max (was 30 in the wild — explains
+    # the cap violation today).
     try:
         conn.execute("""
             UPDATE scalper_config
-               SET sl_pct = 0.08, t1_pct = 0.15, t2_pct = 0.30, updated_at = ?
-             WHERE id = 1 AND sl_pct >= 0.12 AND updated_at IS NULL
+               SET sl_pct = 0.08,
+                   t1_pct = 0.15,
+                   t2_pct = 0.30,
+                   daily_cap = MIN(daily_cap, 15),
+                   updated_at = ?
+             WHERE id = 1 AND sl_pct >= 0.10
         """, (ist_now().isoformat(),))
     except Exception:
         pass
@@ -988,6 +997,21 @@ def check_scalper_exits(chains):
         exit_price = 0
         sl_reason_text = None
 
+        # ─── PEAK-AWARE FLOOR (Rule 1: peaked ≥+5% → exit at -5%) ───
+        # Tick-level enforcement on scalper (watcher fires every 10s,
+        # this runs every tick — much faster reaction).
+        # Uses peak_ltp from DB row (already tracked) — entry × 1.05 threshold.
+        peak_profit_pct_local = ((peak - entry) / entry * 100) if entry > 0 else 0
+        cur_profit_pct = ((current_ltp - entry) / entry * 100) if entry > 0 else 0
+        if peak_profit_pct_local >= 5.0 and cur_profit_pct <= -5.0:
+            new_status = "PEAK_FLOOR_EXIT"
+            exit_price = current_ltp
+            exit_reason = (f"PEAK_FLOOR: peaked {peak_profit_pct_local:+.2f}% then fell to "
+                           f"{cur_profit_pct:+.2f}% — capped at -5%")
+            sl_reason_text = exit_reason
+            print(f"[SCALPER] PEAK_FLOOR exit · #{t['id']} {idx} {action} {strike} "
+                  f"· peak {peak_profit_pct_local:+.1f}% → now {cur_profit_pct:+.1f}%")
+
         # ─── PROFIT-LOCK TRAILING SL (runs FIRST, raises sl_price in DB) ───
         # 8-stage ladder auto-trails SL up as profit grows.
         try:
@@ -1123,7 +1147,9 @@ def check_scalper_exits(chains):
         # ─── Exit logic (priority order) ───
         active_sl_used = smart_active_sl if smart_enabled else sl
 
-        if reversal_exit:
+        if new_status == "PEAK_FLOOR_EXIT":
+            pass  # already set — skip everything else
+        elif reversal_exit:
             pass  # already set above — skip SL/T1/T2 logic
         elif current_ltp <= active_sl_used:
             new_status = "SL_HIT"
