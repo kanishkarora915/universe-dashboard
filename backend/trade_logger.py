@@ -638,7 +638,12 @@ class TradeManager:
             # ══════════════════════════════════════════════
             # ADAPTIVE SL: tighten on reversal, widen on stop-hunt
             # Only adjusts BEFORE breakeven (once in profit, trailing takes over)
+            #
+            # ⚠ CLASH GUARD: Profit-Trail / Time-Decay may have already raised
+            # `new_sl` above the original DB sl. If so, STOP_HUNT widening would
+            # NULLIFY their protection. So skip widening when new systems active.
             # ══════════════════════════════════════════════
+            sl_raised_by_new_system = (new_sl > sl)  # sl = original DB value
             if not breakeven_active:
                 context = self._detect_trade_context(t, idx, action, chain, current_ltp)
                 original_sl = t.get("original_sl", sl) or sl
@@ -649,13 +654,18 @@ class TradeManager:
                         new_sl = tight_sl
                         trail_level = "OI_REVERSAL_TIGHT"
                         alerts_list.append(f"OI REVERSAL detected — SL tightened to 10% (₹{new_sl}). Exit fast if triggered.")
-                elif context == "STOP_HUNT":
+                elif context == "STOP_HUNT" and not sl_raised_by_new_system:
                     # Price was hunted → 20% SL (wider, give room)
+                    # ONLY if Profit-Trail/Time-Decay haven't already tightened
+                    # (those systems provide better protection than wide -20%)
                     wide_sl = round(entry * 0.80)
                     if wide_sl < new_sl and current_ltp > wide_sl:
                         new_sl = wide_sl
                         trail_level = "STOP_HUNT_WIDE"
                         alerts_list.append(f"STOP HUNT pattern detected — SL widened to 20% (₹{new_sl}) to avoid hunt. Recovery expected.")
+                elif context == "STOP_HUNT" and sl_raised_by_new_system:
+                    # Profit-Trail or Time-Decay already tightened — skip widening
+                    print(f"[TRADE] STOP_HUNT detected but skipping widening — Profit-Trail/Time-Decay already raised SL to ₹{new_sl}")
 
             # ══════════════════════════════════════════════
             # SMART SL MANAGEMENT
@@ -755,17 +765,31 @@ class TradeManager:
                     else:
                         new_status = "BREAKEVEN_EXIT"
                         exit_reason = f"Breakeven exit at ₹{entry} — no loss. Price reached ₹{peak:.1f} (+{round((peak/entry-1)*100)}%) then reversed"
-                elif self._engines_favor_hold(t, idx, action):
-                    # ENGINES SAY HOLD — keep SL same (don't widen), just don't exit yet
-                    # SL stays at 15% — it will NOT change
-                    # But we give it one more check cycle before closing
+                elif self._engines_favor_hold(t, idx, action) and not sl_raised_by_new_system:
+                    # ENGINES SAY HOLD + SL still at original (un-tightened by new systems)
+                    # Old behavior: extend to 15% hard stop. Only kicks in when our
+                    # new SL systems haven't already protected this trade.
+                    #
+                    # ⚠ CLASH GUARD: If Time-Decay/Profit-Trail tightened SL to e.g.
+                    # -5%, we MUST exit there — NOT extend to -15%. That would defeat
+                    # the entire point of those systems.
                     alerts_list.append(f"SL ZONE: Price ₹{current_ltp:.1f} at SL ₹{new_sl} but engines favor HOLD. Giving 1 more cycle. Max loss stays 15%.")
-                    # Hard stop = same 15% SL, absolutely no more
                     hard_stop = round(entry * 0.85)
                     if current_ltp <= hard_stop:
                         new_status = "SL_HIT"
                         exit_price = hard_stop
                         exit_reason = f"Stoploss hit at ₹{hard_stop} (-15% max). Engines tried to hold but hard limit reached. Entry: ₹{entry}"
+                elif self._engines_favor_hold(t, idx, action) and sl_raised_by_new_system:
+                    # SL was tightened by Profit-Trail or Time-Decay — RESPECT it.
+                    # Don't extend to -15%. Exit at the tightened SL right now.
+                    new_status = "SL_HIT"
+                    exit_price = new_sl
+                    exit_reason = (f"Stoploss hit at ₹{new_sl} (entry ₹{entry}, "
+                                   f"loss {round((1-new_sl/entry)*100, 1)}%). "
+                                   f"Tightened by Profit-Trail/Time-Decay — engines-favor-hold "
+                                   f"override skipped to respect tighter SL.")
+                    print(f"[TRADE] SL hit at tightened ₹{new_sl} — engines-hold override "
+                          f"skipped (new SL systems active)")
                 else:
                     new_status = "SL_HIT"
                     exit_price = new_sl
