@@ -3678,7 +3678,13 @@ if DIST_DIR.exists():
     async def icons():
         return FileResponse(str(DIST_DIR / "icons.svg"))
 
-    # SPA fallback — serve index.html for all non-API routes
+    # ROOT path explicitly — `/{full_path:path}` does not match empty string
+    # so without this, GET / returns 404 (browsing dashboard.onrender.com fails).
+    @app.get("/")
+    async def serve_spa_root():
+        return FileResponse(str(DIST_DIR / "index.html"))
+
+    # SPA fallback — serve index.html for all non-API/WS routes
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         # Don't serve index.html for API/WS routes

@@ -58,6 +58,7 @@ def _init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS smart_money_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts REAL,
             idx TEXT,
             strike INTEGER,
@@ -73,6 +74,35 @@ def _init_db():
             details_json TEXT
         )
     """)
+    # Migration: add id column if older schema (without id) exists on /data disk
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(smart_money_log)").fetchall()]
+        if "id" not in cols:
+            # Older deployments created the table without `id` — recreate.
+            # Since this is a log table (no critical data lost on rebuild),
+            # we just rename + recreate + carry over what we can.
+            conn.execute("ALTER TABLE smart_money_log RENAME TO smart_money_log_old")
+            conn.execute("""
+                CREATE TABLE smart_money_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts REAL, idx TEXT, strike INTEGER, side TEXT, activity TEXT,
+                    score REAL, rate_per_min REAL, duration_min REAL,
+                    total_change_lots INTEGER, ltp_change_pct REAL,
+                    spot_at_detection REAL, recommendation TEXT, details_json TEXT
+                )
+            """)
+            conn.execute("""
+                INSERT INTO smart_money_log
+                (ts, idx, strike, side, activity, score, rate_per_min, duration_min,
+                 total_change_lots, ltp_change_pct, spot_at_detection, recommendation, details_json)
+                SELECT ts, idx, strike, side, activity, score, rate_per_min, duration_min,
+                       total_change_lots, ltp_change_pct, spot_at_detection, recommendation, details_json
+                FROM smart_money_log_old
+            """)
+            conn.execute("DROP TABLE smart_money_log_old")
+            print("[SMART-MONEY] Migrated smart_money_log schema (added id column)")
+    except Exception as _e:
+        print(f"[SMART-MONEY] schema migration check err: {_e}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sml_ts ON smart_money_log(ts)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sml_idx ON smart_money_log(idx, ts)")
     conn.commit()
