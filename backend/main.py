@@ -1553,6 +1553,41 @@ async def structure_snapshot(tag: str = "MANUAL"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Spread + Liquidity Filter endpoints ──
+@app.get("/api/spread/strike/{strike}")
+async def spread_strike(strike: int, idx: str = "NIFTY"):
+    """Live spread + depth for one strike (both CE and PE)."""
+    try:
+        if not engine:
+            return JSONResponse({"error": "engine not started"}, status_code=503)
+        from spread_filter import get_strike_liquidity
+        return get_strike_liquidity(engine, idx.upper(), strike)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/spread/chain")
+async def spread_chain(idx: str = "NIFTY"):
+    """Liquidity scan of all NTM ±10 strikes."""
+    try:
+        if not engine:
+            return JSONResponse({"error": "engine not started"}, status_code=503)
+        from spread_filter import get_chain_liquidity
+        return get_chain_liquidity(engine, idx.upper())
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/spread/blocks")
+async def spread_blocks(idx: str = "", limit: int = 50):
+    """Today's spread-blocked entry attempts."""
+    try:
+        from spread_filter import get_blocks_today
+        return {"blocks": get_blocks_today(idx.upper() if idx else None, limit)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Time-Decay SL endpoints ──
 @app.get("/api/time-decay/status/{trade_id}")
 async def time_decay_status(trade_id: int, source: str = "MAIN"):

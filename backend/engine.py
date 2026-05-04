@@ -4235,6 +4235,24 @@ class MarketEngine:
                             except Exception as _e:
                                 pass
 
+                            # ── A9: Spread + Liquidity Filter ──
+                            # Block illiquid strikes (spread > 2%); soft-warn on
+                            # 1.5-2% spread (caller can apply qty multiplier).
+                            try:
+                                from spread_filter import check_spread_gate
+                                allowed_sp, sp_reason, sp_qty_mult = check_spread_gate(
+                                    self, idx, action, pending_strike
+                                )
+                                if not allowed_sp:
+                                    print(f"[TRADE] BLOCKED by spread: {sp_reason}")
+                                    self.trade_manager._pending_entry.pop(idx, None)
+                                    self.trade_manager._pending_entry_time.pop(idx, None)
+                                    continue
+                                elif sp_qty_mult < 1.0:
+                                    print(f"[TRADE] Spread WARN: {sp_reason} (qty multiplier {sp_qty_mult})")
+                            except Exception as _e:
+                                pass
+
                             whale_aligned = False
                             try:
                                 from smart_money import is_smart_money_aligned
