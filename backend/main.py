@@ -1553,6 +1553,46 @@ async def structure_snapshot(tag: str = "MANUAL"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Buyer Filters endpoints (Pump + Max Pain + Vega/Theta) ──
+@app.get("/api/buyer-filters/check")
+async def buyer_filters_check(idx: str, strike: int, action: str = "BUY_CE"):
+    """Pre-trade check — runs all 3 buyer filters and returns combined verdict.
+    Used by Buyer Cockpit + manual entry confirm."""
+    try:
+        if not engine:
+            return JSONResponse({"error": "engine not started"}, status_code=503)
+        from buyer_filters import check_buyer_filters
+        chain = engine.chains.get(idx.upper(), {})
+        sd = chain.get(strike) or chain.get(str(strike)) or {}
+        side = "ce_ltp" if "CE" in action.upper() else "pe_ltp"
+        current_premium = sd.get(side, 0) or 0
+        allowed, reason, qty_mult, details = check_buyer_filters(
+            engine, idx.upper(), action, strike, current_premium
+        )
+        return {
+            "allowed": allowed,
+            "reason": reason,
+            "qty_multiplier": qty_mult,
+            "details": details,
+            "current_premium": current_premium,
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/buyer-filters/capture-day-open")
+async def buyer_filters_capture():
+    """Manual trigger for day-open capture (debug)."""
+    try:
+        if not engine:
+            return JSONResponse({"error": "engine not started"}, status_code=503)
+        from buyer_filters import capture_day_open
+        capture_day_open(engine)
+        return {"status": "captured"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Spread + Liquidity Filter endpoints ──
 @app.get("/api/spread/strike/{strike}")
 async def spread_strike(strike: int, idx: str = "NIFTY"):

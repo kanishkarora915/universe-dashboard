@@ -3944,6 +3944,30 @@ class MarketEngine:
                     print(f"[POLARITY] pulse error: {e}")
             threading.Thread(target=_polarity_run, daemon=True, name="polarity-flip").start()
 
+        # ── Day-Open Premium Capture — fires once at 9:15:30 IST ──
+        # Captures ATM ±15 strike premiums for premium-pump detection.
+        if not hasattr(self, "_day_open_captured_date"):
+            self._day_open_captured_date = ""
+        try:
+            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+            _IST = _tz(_td(hours=5, minutes=30))
+            now_ist = _dt.now(_IST)
+            today_str = now_ist.strftime("%Y-%m-%d")
+            # Capture once between 9:15:20 and 9:16:00
+            if (self._day_open_captured_date != today_str
+                    and now_ist.hour == 9
+                    and 15 <= now_ist.minute <= 16):
+                def _day_open_run():
+                    try:
+                        import buyer_filters
+                        buyer_filters.capture_day_open(self)
+                    except Exception as e:
+                        print(f"[BUYER-FILTERS] day-open err: {e}")
+                threading.Thread(target=_day_open_run, daemon=True, name="day-open-capture").start()
+                self._day_open_captured_date = today_str
+        except Exception:
+            pass
+
         # ── Position Watcher — Active health monitoring (every 30s) ──
         # Computes 0-10 health score for every open trade (both PnL + Scalper),
         # fires triggers (REVERSAL / VIX_CRUSH / THETA / DAY_HIGH_TRAP / POST_LUNCH /
@@ -4236,8 +4260,6 @@ class MarketEngine:
                                 pass
 
                             # ── A9: Spread + Liquidity Filter ──
-                            # Block illiquid strikes (spread > 2%); soft-warn on
-                            # 1.5-2% spread (caller can apply qty multiplier).
                             try:
                                 from spread_filter import check_spread_gate
                                 allowed_sp, sp_reason, sp_qty_mult = check_spread_gate(
@@ -4250,6 +4272,26 @@ class MarketEngine:
                                     continue
                                 elif sp_qty_mult < 1.0:
                                     print(f"[TRADE] Spread WARN: {sp_reason} (qty multiplier {sp_qty_mult})")
+                            except Exception as _e:
+                                pass
+
+                            # ── A10: Buyer Filters (Pump + Max Pain + Vega/Theta) ──
+                            # Block obvious buyer traps:
+                            #  - Premium pumped >25% from open (chasing top)
+                            #  - Expiry day ATM near max pain (pin death)
+                            #  - VIX > 25 + ATM (vega bomb)
+                            try:
+                                from buyer_filters import check_buyer_filters
+                                allowed_bf, bf_reason, bf_qty_mult, bf_details = check_buyer_filters(
+                                    self, idx, action, pending_strike, locked_ltp
+                                )
+                                if not allowed_bf:
+                                    print(f"[TRADE] BLOCKED by buyer-filter: {bf_reason}")
+                                    self.trade_manager._pending_entry.pop(idx, None)
+                                    self.trade_manager._pending_entry_time.pop(idx, None)
+                                    continue
+                                elif bf_qty_mult < 1.0:
+                                    print(f"[TRADE] Buyer-filter WARN: {bf_reason} (qty mult {bf_qty_mult})")
                             except Exception as _e:
                                 pass
 
