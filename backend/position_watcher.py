@@ -31,6 +31,16 @@ from collections import defaultdict, deque
 from typing import Dict, List, Optional, Any
 import os
 from pathlib import Path
+import pytz
+
+# B1.2 FIX — Render runs in UTC; entry_time is IST (+05:30). Mixing them
+# wrote garbage exit_time (showing exit before entry, hold_seconds=0).
+IST = pytz.timezone("Asia/Kolkata")
+
+
+def _ist_now_iso() -> str:
+    """ISO string in IST timezone (matches scalper's ist_now())."""
+    return datetime.now(IST).isoformat()
 
 from candle_pattern_engine import build_candles_from_ticks, detect_patterns
 from vix_velocity import push_vix, get_tracker as get_vix_tracker
@@ -433,7 +443,7 @@ def _tighten_scalper_sl(trade_id: int, new_sl: float, reason: str):
 def _force_close_main(trade_id: int, exit_price: float, reason: str):
     try:
         conn = sqlite3.connect(_trades_db_path())
-        now_iso = datetime.now().isoformat()
+        now_iso = _ist_now_iso()  # B1.2 — was naive UTC datetime.now()
         row = conn.execute("SELECT entry_price, qty FROM trades WHERE id=? AND status='OPEN'",
                            (trade_id,)).fetchone()
         if not row:
@@ -465,7 +475,9 @@ def _force_close_main(trade_id: int, exit_price: float, reason: str):
 def _force_close_scalper(trade_id: int, exit_price: float, reason: str):
     try:
         conn = sqlite3.connect(_scalper_db_path())
-        now_iso = datetime.now().isoformat()
+        # B1.2 FIX — must use IST so exit_time matches entry_time's tz
+        now_ist = datetime.now(IST)
+        now_iso = now_ist.isoformat()
         row = conn.execute(
             "SELECT entry_price, qty, entry_time FROM scalper_trades WHERE id=? AND status='OPEN'",
             (trade_id,)
@@ -478,7 +490,12 @@ def _force_close_scalper(trade_id: int, exit_price: float, reason: str):
         pnl_rupees = round(pnl_pts * qty, 2)
         try:
             entry_dt = datetime.fromisoformat(entry_time)
-            hold_sec = int((datetime.now() - entry_dt).total_seconds())
+            # If entry_dt is naive, treat as IST. If aware, compare tz-aware.
+            if entry_dt.tzinfo is None:
+                entry_dt = IST.localize(entry_dt)
+            hold_sec = int((now_ist - entry_dt).total_seconds())
+            if hold_sec < 0:
+                hold_sec = 0  # safety against clock skew
         except Exception:
             hold_sec = 0
         conn.execute("""

@@ -1051,6 +1051,40 @@ async def scalper_trade_ladder(trade_id: int):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Reversal Cockpit endpoints (B4.11-14) ──
+# All 4 cockpit panels in one composable view: OI delta (writer/buyer
+# pressure), per-strike minute history, capitulation score, smart money.
+# Cached briefly so a tab open with N components shares 1 fetch per panel.
+
+@app.get("/api/scalper/oi-context")
+async def scalper_oi_context(idx: str = "NIFTY"):
+    """Writer/buyer pressure breakdown for an index (B4.12 gauge data).
+    Returns: ce/pe 15m delta %, signals (writer adding/covering), PCR drift,
+    max-pain shift. Cached 10s — 60s pulse anyway."""
+    try:
+        from oi_delta_tracker import assess as _oi_assess
+        cache_key = f"scalper_oi_context:{idx.upper()}"
+        return _get_or_cache(cache_key, lambda: _oi_assess(idx.upper()), ttl=10)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/scalper/strike-history")
+async def scalper_strike_history(idx: str = "NIFTY", strike: int = 0,
+                                  minutes: int = 30):
+    """Per-strike per-minute OI history (B4.11 chart data).
+    Returns rows of {ts, ce_oi, ce_ltp, pe_oi, pe_ltp, spot}."""
+    try:
+        from oi_minute_capture import get_strike_history
+        if not strike:
+            return {"history": []}
+        history = get_strike_history(idx.upper(), int(strike), minutes=minutes)
+        return {"idx": idx.upper(), "strike": int(strike),
+                "minutes": minutes, "history": history}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.delete("/api/scalper/trades/{trade_id}")
 async def scalper_delete_trade(trade_id: int):
     """USER-ONLY manual delete. No auto-deletion happens system-wide."""

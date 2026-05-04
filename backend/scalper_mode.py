@@ -24,12 +24,12 @@ IST = pytz.timezone("Asia/Kolkata")
 _data_dir = Path("/data") if Path("/data").is_dir() else Path(__file__).parent
 SCALPER_DB = _data_dir / "scalper_trades.db"
 
-# SCALPER CONFIG (tuned after whipsaw losses)
+# SCALPER CONFIG (tuned after 2026-05-04 -₹1.37L bleed)
 SCALPER_THRESHOLD = 55         # Raised 45→55 (avoid weak signals)
 SCALPER_DAILY_CAP = 15         # 15 trades/day
-SCALPER_SL_PCT = 0.12          # 12% SL (was 8% — too tight, whipsaw)
-SCALPER_T1_PCT = 0.20          # 20% T1 (R:R 1:1.67) — was 12%
-SCALPER_T2_PCT = 0.40          # 40% T2 (R:R 1:3.3)
+SCALPER_SL_PCT = 0.08          # 8% SL (lowered 12→8 per user safety rule, B1.1)
+SCALPER_T1_PCT = 0.15          # 15% T1 (was 20% — too far given new -8% SL → R:R 1:1.875)
+SCALPER_T2_PCT = 0.30          # 30% T2 (was 40% — R:R 1:3.75)
 SCALPER_RISK_PCT = 1.0         # 1.0% risk (smaller size — 4 hard losses = -4% max)
 SCALPER_CONFIRM_SEC = 30       # 30s confirmation (was 15 — avoid noise)
 SCALPER_MAX_HOLD_MIN = 30      # 30 min max hold
@@ -38,6 +38,10 @@ SCALPER_MAX_HOLD_MIN = 30      # 30 min max hold
 COOLDOWN_SAME_STRIKE_MIN = 10  # No re-entry same strike for 10 min after exit
 COOLDOWN_FLIP_DIRECTION_MIN = 15  # No CE→PE or PE→CE same strike for 15 min
 MAX_SL_HITS_SAME_STRIKE = 2    # After 2 SL hits on same strike, pause that strike for day
+
+# B3.10 CAPITAL CONCENTRATION
+MAX_CAPITAL_PCT_PER_TRADE = 0.30   # Single trade ≤ 30% of capital
+MAX_CAPITAL_PCT_PER_DIRECTION = 0.60  # All open same-direction trades ≤ 60% of capital
 
 
 def ist_now():
@@ -136,19 +140,29 @@ def init_scalper_db():
             capital REAL DEFAULT 1000000,
             nifty_qty INTEGER DEFAULT 0,
             banknifty_qty INTEGER DEFAULT 0,
-            sl_pct REAL DEFAULT 0.12,
-            t1_pct REAL DEFAULT 0.20,
-            t2_pct REAL DEFAULT 0.40,
+            sl_pct REAL DEFAULT 0.08,
+            t1_pct REAL DEFAULT 0.15,
+            t2_pct REAL DEFAULT 0.30,
             threshold INTEGER DEFAULT 55,
             daily_cap INTEGER DEFAULT 15,
             updated_at TEXT
         )
     """)
     conn.execute(
-        "INSERT OR IGNORE INTO scalper_config (id, capital, nifty_qty, banknifty_qty, updated_at) "
-        "VALUES (1, 1000000, 0, 0, ?)",
+        "INSERT OR IGNORE INTO scalper_config (id, capital, nifty_qty, banknifty_qty, sl_pct, t1_pct, t2_pct, updated_at) "
+        "VALUES (1, 1000000, 0, 0, 0.08, 0.15, 0.30, ?)",
         (ist_now().isoformat(),)
     )
+    # B1.1 migration: existing rows with sl_pct=0.12 get bumped down to 0.08
+    # (one-time auto-migration to user's new safety rule).
+    try:
+        conn.execute("""
+            UPDATE scalper_config
+               SET sl_pct = 0.08, t1_pct = 0.15, t2_pct = 0.30, updated_at = ?
+             WHERE id = 1 AND sl_pct >= 0.12 AND updated_at IS NULL
+        """, (ist_now().isoformat(),))
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
@@ -218,18 +232,21 @@ def _conn():
     return conn
 
 
-def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None):
-    """Scalper entry rules with WHIPSAW GUARDS.
+def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
+                       engine=None):
+    """Scalper entry rules with FULL guard stack (B1+B2+B3 hardening).
 
-    Rules:
-      1. Scalper mode enabled (toggle)
-      2. Market hours
-      3. Probability >= 55% (raised from 45)
-      4. Daily 15 trade cap
-      5. No duplicate same idx+action open
-      6. COOLDOWN: No re-entry same strike for 10 min after ANY exit
-      7. FLIP GUARD: No CE↔PE flip on same strike for 15 min
-      8. WHIPSAW BLOCK: 2+ SL hits on strike today → pause that strike
+    Pipeline (rejects on first failure):
+      1. Scalper enabled toggle
+      2. Market hours (9:20–15:15)
+      3. Probability >= threshold (cfg)
+      4. B1.3 HARD daily-cap (ATOMIC, IST-aware date filter)
+      5. Capital sanity (committed + this trade ≤ capital)
+      6. B3.10 capital concentration (≤30% per-trade, ≤60% per-direction)
+      7. No duplicate same idx+action open
+      8. Cooldown after exit (same strike 10m, flip 15m, 2+ SL hits = day-pause)
+      9. B1.4 DIRECTION SANITY (OI delta + spot must agree with verdict)
+     10. B2.6 CAPITULATION GATE (block entries against reversal direction)
     """
     if not scalper_enabled:
         return False
@@ -261,16 +278,22 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None)
     if win_pct < threshold:
         return False
 
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    action_str = verdict_data.get("action", "")
+    is_ce = "CE" in action_str.upper()
+    today_iso = now.strftime("%Y-%m-%d")
     conn = _conn()
 
-    # Daily cap
+    # ── B1.3: HARD daily cap (date prefix match, IST-aware) ──
+    # Old query used `entry_time > today_start_iso` which is fragile against
+    # tz-aware/naive ISO mixing and timezone drift. Use date prefix match —
+    # entry_time is always stored as IST ISO so prefix is YYYY-MM-DD.
     today_count = conn.execute(
-        "SELECT COUNT(*) FROM scalper_trades WHERE entry_time > ?",
-        (today_start,)
+        "SELECT COUNT(*) FROM scalper_trades WHERE substr(entry_time,1,10) = ?",
+        (today_iso,)
     ).fetchone()[0]
     if today_count >= daily_cap:
         conn.close()
+        print(f"[SCALPER] REJECT entry: daily cap {daily_cap} hit ({today_count} trades today)")
         return False
 
     # ── CAPITAL CHECK — total committed across all OPEN trades must not exceed capital ──
@@ -294,16 +317,38 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None)
     if user_qty > 0:
         est_cost = user_qty * est_premium
     else:
-        # Auto-sizing: 1% risk × capital, with 12% SL → max qty cost ≈ ~10% of capital
-        est_cost = capital * 0.10
+        # Auto-sizing: 1% risk × capital, with 8% SL → max qty cost ≈ ~12% of capital
+        est_cost = capital * 0.12
 
     if est_cost > available:
         conn.close()
         print(f"[SCALPER] REJECT entry: estimated cost ₹{est_cost:,.0f} > available ₹{available:,.0f} (capital ₹{capital:,.0f}, committed ₹{committed:,.0f})")
         return False
 
+    # ── B3.10: CAPITAL CONCENTRATION (per-trade + per-direction) ──
+    if est_cost > capital * MAX_CAPITAL_PCT_PER_TRADE:
+        conn.close()
+        print(f"[SCALPER] REJECT entry: trade size ₹{est_cost:,.0f} exceeds "
+              f"{MAX_CAPITAL_PCT_PER_TRADE*100:.0f}% concentration cap (₹{capital * MAX_CAPITAL_PCT_PER_TRADE:,.0f})")
+        return False
+
+    # Per-direction cap: sum capital_used of open trades on same side (CE/PE)
+    side_filter = "BUY CE" if is_ce else "BUY PE"
+    same_side_committed_row = conn.execute("""
+        SELECT COALESCE(SUM(COALESCE(capital_used, entry_price * qty)), 0)
+        FROM scalper_trades
+        WHERE status='OPEN' AND action LIKE ?
+    """, (f"%{'CE' if is_ce else 'PE'}%",)).fetchone()
+    same_side_committed = same_side_committed_row[0] or 0
+    if (same_side_committed + est_cost) > capital * MAX_CAPITAL_PCT_PER_DIRECTION:
+        conn.close()
+        print(f"[SCALPER] REJECT entry: same-direction concentration "
+              f"₹{same_side_committed + est_cost:,.0f} would exceed "
+              f"{MAX_CAPITAL_PCT_PER_DIRECTION*100:.0f}% cap "
+              f"(₹{capital * MAX_CAPITAL_PCT_PER_DIRECTION:,.0f})")
+        return False
+
     # No duplicate open
-    action_str = verdict_data.get("action", "")
     dup_open = conn.execute(
         "SELECT COUNT(*) FROM scalper_trades WHERE status='OPEN' AND idx=? AND action=?",
         (idx, action_str)
@@ -344,14 +389,75 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None)
     # Guard 3: 2+ SL hits on same strike today → pause that strike
     sl_hits_today = conn.execute(
         """SELECT COUNT(*) FROM scalper_trades
-           WHERE idx=? AND strike=? AND status='SL_HIT' AND entry_time > ?""",
-        (idx, int(atm_strike), today_start)
+           WHERE idx=? AND strike=? AND status='SL_HIT'
+             AND substr(entry_time,1,10) = ?""",
+        (idx, int(atm_strike), today_iso)
     ).fetchone()[0]
     if sl_hits_today >= MAX_SL_HITS_SAME_STRIKE:
         conn.close()
         return False
 
     conn.close()
+
+    # ── B1.4: DIRECTION SANITY (OI delta + spot must AGREE with action) ──
+    # Today (2026-05-04) cost ₹91k: "PE dominant 80%" reasoning kept saying
+    # BUY CE while spot was falling and OI was rotating bearish.
+    # New rule: query oi_delta_tracker — for BUY CE we want CE writers
+    # COVERING (bullish reversal) OR PE writers ADDING (bullish floor).
+    # If OI signals contradict, BLOCK.
+    try:
+        from oi_delta_tracker import assess as _oi_assess
+        oi = _oi_assess(idx)
+        sigs = oi.get("signals", {}) if oi else {}
+        if is_ce:
+            # Hostile to BUY CE: CE writers ADDING (ceiling) or PE writers COVERING (bearish reversal)
+            if sigs.get("ce_writer_adding") or sigs.get("pe_writer_covering"):
+                ce15 = oi.get("ce_oi_delta_15m_pct")
+                pe15 = oi.get("pe_oi_delta_15m_pct")
+                print(f"[SCALPER] REJECT entry (B1.4): {idx} BUY CE blocked — "
+                      f"OI hostile (CE15m={ce15}%, PE15m={pe15}%, "
+                      f"ce_adding={sigs.get('ce_writer_adding')}, "
+                      f"pe_covering={sigs.get('pe_writer_covering')})")
+                return False
+        else:
+            # Hostile to BUY PE: PE writers ADDING (floor) or CE writers COVERING (bullish reversal)
+            if sigs.get("pe_writer_adding") or sigs.get("ce_writer_covering"):
+                ce15 = oi.get("ce_oi_delta_15m_pct")
+                pe15 = oi.get("pe_oi_delta_15m_pct")
+                print(f"[SCALPER] REJECT entry (B1.4): {idx} BUY PE blocked — "
+                      f"OI hostile (CE15m={ce15}%, PE15m={pe15}%, "
+                      f"pe_adding={sigs.get('pe_writer_adding')}, "
+                      f"ce_covering={sigs.get('ce_writer_covering')})")
+                return False
+    except Exception as _e:
+        # Non-fatal — if tracker isn't ready, fall through (don't block valid trades)
+        pass
+
+    # ── B2.6: CAPITULATION REVERSAL GATE ──
+    # If capitulation engine sees STRONG reversal AGAINST our direction, block.
+    # Prevents the 9:39–11:51 case today where 6 CE trades fired into a
+    # bearish capitulation that the engine had clearly flagged.
+    try:
+        from capitulation_engine import get_live_state
+        cap_state = get_live_state() or {}
+        idx_state = (cap_state.get("results") or {}).get(idx, {})
+        bull = idx_state.get("bullish") or {}
+        bear = idx_state.get("bearish") or {}
+        bull_score = float(bull.get("score") or 0)
+        bear_score = float(bear.get("score") or 0)
+        if is_ce and bear_score >= 5 and bear_score > bull_score:
+            print(f"[SCALPER] REJECT entry (B2.6): {idx} BUY CE blocked — "
+                  f"BEARISH capitulation score {bear_score} (bull {bull_score}) — "
+                  f"verdict {bear.get('verdict')}")
+            return False
+        if not is_ce and bull_score >= 5 and bull_score > bear_score:
+            print(f"[SCALPER] REJECT entry (B2.6): {idx} BUY PE blocked — "
+                  f"BULLISH capitulation score {bull_score} (bear {bear_score}) — "
+                  f"verdict {bull.get('verdict')}")
+            return False
+    except Exception:
+        pass
+
     return True
 
 
@@ -360,14 +466,18 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None)
 # ═══════════════════════════════════════════════════════════════
 
 # 7 stages: (profit_trigger_pct, sl_offset_pct, label)
+# B3.9 RETUNE (2026-05-04): Old ladder gave back winners — Stage 1 locked at -3%
+# even when premium was already +5%. New ladder anchors breakeven sooner.
+# Initial -8% matches user's new safety floor (was -15%).
 SMART_SL_LADDER = [
-    (0,   -15, "Initial"),
-    (5,   -3,  "Tight"),
-    (10,  0,   "Breakeven"),
-    (15,  +5,  "Lock +5%"),
-    (25,  +12, "Lock +12%"),
-    (40,  +25, "Lock +25%"),
-    (60,  +40, "Lock +40%"),
+    (0,   -8,  "Initial"),       # was -15 — matches new safety floor
+    (3,   -5,  "Trail-1"),       # NEW stage — early micro-trail
+    (5,   0,   "Breakeven"),     # was -3% lock — now FULL breakeven at +5%
+    (8,   +3,  "Lock +3%"),      # NEW intermediate
+    (12,  +6,  "Lock +6%"),
+    (18,  +10, "Lock +10%"),
+    (28,  +18, "Lock +18%"),
+    (40,  +28, "Lock +28%"),
 ]
 
 
@@ -920,10 +1030,83 @@ def check_scalper_exits(chains):
             except Exception:
                 pass
 
+        # ─── B2.5 + B3.8: REVERSAL & VELOCITY pre-emptive exits ───
+        # Run BEFORE SL/T1/T2 — if market context says exit, do it at LIVE
+        # price (not at SL price), saves 2-5% slippage on big moves.
+        reversal_exit = False
+        reversal_reason = None
+
+        # B2.5: OI delta reversal trigger
+        try:
+            from oi_delta_tracker import assess as _oi_assess
+            oi = _oi_assess(idx)
+            sigs = oi.get("signals", {}) if oi else {}
+            ce15 = oi.get("ce_oi_delta_15m_pct")
+            pe15 = oi.get("pe_oi_delta_15m_pct")
+            if "CE" in action:
+                # We're long CE → bearish reversal forming if:
+                #   - CE writers ADDING (new ceiling)
+                #   - OR PE writers COVERING (PE shorts buying back = bearish)
+                if sigs.get("ce_writer_adding"):
+                    reversal_exit = True
+                    reversal_reason = (f"REVERSAL_EXIT: CE writers adding {ce15:+.1f}% in 15m "
+                                       f"— ceiling forming, exit long CE")
+                elif sigs.get("pe_writer_covering"):
+                    reversal_exit = True
+                    reversal_reason = (f"REVERSAL_EXIT: PE writers covering {pe15:+.1f}% — "
+                                       f"bearish reversal, exit long CE")
+            else:
+                # Long PE → bullish reversal if:
+                #   - PE writers ADDING (new floor)
+                #   - OR CE writers COVERING
+                if sigs.get("pe_writer_adding"):
+                    reversal_exit = True
+                    reversal_reason = (f"REVERSAL_EXIT: PE writers adding {pe15:+.1f}% in 15m "
+                                       f"— floor forming, exit long PE")
+                elif sigs.get("ce_writer_covering"):
+                    reversal_exit = True
+                    reversal_reason = (f"REVERSAL_EXIT: CE writers covering {ce15:+.1f}% — "
+                                       f"bullish reversal, exit long PE")
+        except Exception:
+            pass
+
+        # B3.8: Premium velocity collapse (theta winning / direction wrong)
+        # Only fires if currently profitable enough to make exit worthwhile (>+2%)
+        # or if velocity warning is HIGH severity.
+        if not reversal_exit:
+            try:
+                from premium_velocity import register as _pv_reg, push as _pv_push, assess as _pv_assess
+                sid = f"SCALPER:{t['id']}"
+                pv = _pv_assess(sid, action)
+                # If first time seeing this trade, register
+                if pv and pv.get("samples", 0) == 0:
+                    _pv_reg(sid, entry, t.get("entry_spot", 0) or 0, action)
+                # Push current sample (need spot — try inferring; otherwise skip)
+                # Spot is not directly available here; skip push if missing
+                # (engine.py pushes premium velocity globally already via watcher)
+                if pv and pv.get("severity") == "HIGH":
+                    profit_now_pct = ((current_ltp - entry) / entry * 100) if entry > 0 else 0
+                    # Only act if not deep in loss (else SL handles) and not big win (else T1 handles)
+                    if -5 <= profit_now_pct <= 12:
+                        reversal_exit = True
+                        reversal_reason = (f"VELOCITY_EXIT: {pv.get('warning', 'velocity collapse')} "
+                                           f"(profit {profit_now_pct:+.1f}%)")
+            except Exception:
+                pass
+
+        if reversal_exit:
+            new_status = "REVERSAL_EXIT"
+            exit_price = current_ltp  # exit at market — no SL slippage
+            exit_reason = reversal_reason
+            sl_reason_text = reversal_reason
+            print(f"[SCALPER] {reversal_reason} · trade #{t['id']} {idx} {action} {strike}")
+
         # ─── Exit logic (priority order) ───
         active_sl_used = smart_active_sl if smart_enabled else sl
 
-        if current_ltp <= active_sl_used:
+        if reversal_exit:
+            pass  # already set above — skip SL/T1/T2 logic
+        elif current_ltp <= active_sl_used:
             new_status = "SL_HIT"
             exit_price = active_sl_used
             if smart_enabled:
