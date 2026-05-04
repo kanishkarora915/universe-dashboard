@@ -55,6 +55,15 @@ DEFAULT_CONFIG = {
     "tight_sl_scalper": True,
     "min_score_for_exit": 3,      # Below this = auto-exit if enabled
     "min_score_for_tight_sl": 5,
+    # ────── HARD LOSS FLOOR (always-on safety net) ──────
+    # These bypass auto_exit_main/scalper config — user's explicit
+    # request: "agar position lete hi trade loss mein jara hai toh
+    # max 5-8% loss hona chahiye". These run as hard exits regardless
+    # of any other gating.
+    "hard_loss_enforce": True,         # master switch for the floor
+    "hard_loss_cap_pct": -8.0,         # absolute floor — exit if profit_pct <= this
+    "fast_loss_cap_pct": -5.0,         # tighter floor within first window
+    "fast_loss_window_min": 10,        # minutes from entry for fast-loss rule
 }
 
 
@@ -323,14 +332,32 @@ def _log_exit(source: str, trade: Dict, exit_price: float, trigger: str, reasons
 # Trigger evaluation
 # ──────────────────────────────────────────────────────────────
 
-def _evaluate_triggers(trade: Dict, health: Dict, action: str) -> Optional[str]:
+def _evaluate_triggers(trade: Dict, health: Dict, action: str,
+                       cfg: Optional[Dict] = None) -> Optional[str]:
     """
     Determine which trigger (if any) is firing.
-    Priority order: REVERSAL > THETA > VIX_CRUSH > DAY_HIGH_TRAP > POST_LUNCH > PATTERN_LOSER
+    Priority order:
+      HARD_LOSS_CAP > FAST_LOSS_CAP > REVERSAL > THETA > VIX_CRUSH
+      > DAY_HIGH_TRAP > POST_LUNCH > PATTERN_LOSER
+    HARD/FAST loss caps are user's explicit safety floor and bypass
+    auto-exit gating downstream.
     """
     comps = health.get("components", {})
     profit_pct = health.get("profit_pct", 0)
     hold_min = health.get("hold_minutes", 0)
+    cfg = cfg or DEFAULT_CONFIG
+
+    # ──── PRIORITY 0: HARD LOSS FLOOR ────
+    # User-requested safety net. Bypasses everything else.
+    if cfg.get("hard_loss_enforce", True):
+        hard_cap = float(cfg.get("hard_loss_cap_pct", -8.0))
+        fast_cap = float(cfg.get("fast_loss_cap_pct", -5.0))
+        fast_window = float(cfg.get("fast_loss_window_min", 10))
+
+        if profit_pct <= hard_cap:
+            return "HARD_LOSS_CAP"
+        if hold_min <= fast_window and profit_pct <= fast_cap:
+            return "FAST_LOSS_CAP"
 
     candle = comps.get("candle", {})
     if candle.get("penalty", 0) >= 1.5 and profit_pct < 5:
@@ -757,8 +784,38 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
         print(f"[WATCHER] tick record err: {e}")
 
     # Evaluate trigger
-    trigger = _evaluate_triggers(trade, health, action)
+    trigger = _evaluate_triggers(trade, health, action, cfg)
     action_taken = "NONE"
+
+    # ──── HARD LOSS FLOOR — bypasses auto_exit gating ────
+    # User rule: "agar position lete hi trade loss mein jara hai toh
+    # max 5-8% loss hona chahiye". These triggers force-close even when
+    # auto_exit_main / auto_exit_scalper are False.
+    if trigger in ("HARD_LOSS_CAP", "FAST_LOSS_CAP") and cfg.get("hard_loss_enforce", True):
+        profit_pct = health.get("profit_pct", 0)
+        cap_pct = (cfg.get("hard_loss_cap_pct", -8.0)
+                   if trigger == "HARD_LOSS_CAP"
+                   else cfg.get("fast_loss_cap_pct", -5.0))
+        reason_str = (f"{trigger}: loss {profit_pct:.2f}% breached cap {cap_pct:.1f}% — "
+                      f"hold {health.get('hold_minutes',0):.1f}m")
+        ok = (_force_close_main(trade_id, current_premium, reason_str)
+              if source == "MAIN"
+              else _force_close_scalper(trade_id, current_premium, reason_str))
+        if ok:
+            action_taken = "EXIT"
+            _log_exit(source, trade, current_premium, trigger,
+                      [reason_str] + (health.get("reasons") or []))
+            snapshot["actions"].append({
+                "source": source, "trade_id": trade_id, "trigger": trigger,
+                "action": "EXIT", "exit_price": current_premium,
+                "profit_pct": profit_pct, "cap_pct": cap_pct,
+                "bypass_gate": True,
+            })
+            print(f"[WATCHER] HARD-FLOOR exit · {source} #{trade_id} · "
+                  f"{trigger} · {profit_pct:.2f}% ≤ {cap_pct:.1f}%")
+        # log + return — no further trigger evaluation needed
+        _log_health(source, trade_id, idx, action, health, trigger, action_taken)
+        return
 
     if trigger:
         # Determine if auto-action enabled

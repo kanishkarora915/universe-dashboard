@@ -438,10 +438,20 @@ class MarketEngine:
         import time as _time, threading
         now = _time.time()
 
-        # Position Watcher — every 30s
+        # Position Watcher — adaptive cadence:
+        #   trades open  → 10s (hard-loss floor needs tight reaction)
+        #   no trades    → 30s (cheap idle)
         if not hasattr(self, "_watcher_last_pulse"):
             self._watcher_last_pulse = 0
-        if now - self._watcher_last_pulse >= 30:
+        # Cheap open-trade check — read counts from cache populated by last pulse
+        try:
+            import position_watcher
+            _last_health = position_watcher.get_last_health()
+            _has_open = bool(_last_health)
+        except Exception:
+            _has_open = False
+        watcher_interval = 10 if _has_open else 30
+        if now - self._watcher_last_pulse >= watcher_interval:
             self._watcher_last_pulse = now
             def _watcher_run():
                 try:
@@ -4043,7 +4053,15 @@ class MarketEngine:
         # market close).
         if not hasattr(self, "_watcher_last_pulse"):
             self._watcher_last_pulse = 0
-        if now - self._watcher_last_pulse >= 30:
+        # Adaptive: 10s when trades open (hard-loss floor needs fast reaction),
+        # 30s when idle.
+        try:
+            import position_watcher as _pw_mod
+            _has_open_legacy = bool(_pw_mod.get_last_health())
+        except Exception:
+            _has_open_legacy = False
+        _legacy_interval = 10 if _has_open_legacy else 30
+        if now - self._watcher_last_pulse >= _legacy_interval:
             self._watcher_last_pulse = now
             def _watcher_run():
                 try:
