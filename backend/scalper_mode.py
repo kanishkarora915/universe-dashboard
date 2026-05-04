@@ -860,20 +860,29 @@ def check_scalper_exits(chains):
         sl_reason_text = None
 
         # ─── PROFIT-LOCK TRAILING SL (runs FIRST, raises sl_price in DB) ───
-        # 8-stage ladder auto-trails SL up as profit grows. Solves
-        # "winner becomes loser" reversal. ONLY raises, never lowers.
-        # Doesn't trigger any exits itself — existing exit logic handles
-        # actual exits when current_ltp <= sl_price.
+        # 8-stage ladder auto-trails SL up as profit grows.
         try:
             from profit_trailing_sl import update_scalper_trail
             trail_result = update_scalper_trail(t, current_ltp)
             if trail_result:
-                # Update local sl variable so Smart SL Ladder + exit logic
-                # use the raised value
                 new_sl_from_trail = trail_result["new_sl"]
                 if new_sl_from_trail > sl:
                     sl = new_sl_from_trail
-                    t["sl_price"] = sl  # update local copy
+                    t["sl_price"] = sl
+        except Exception as _e:
+            pass
+
+        # ─── TIME-DECAY SL (caps further loss based on hold time) ───
+        # Tighter ladder for scalper (30-min max hold):
+        # 0-3min -8%, 3-8min -6%, 8-15min -4%, 15+min -2%.
+        try:
+            from time_decay_sl import update_scalper_decay
+            decay_result = update_scalper_decay(t, current_ltp)
+            if decay_result:
+                new_sl_from_decay = decay_result["new_sl"]
+                if new_sl_from_decay > sl:
+                    sl = new_sl_from_decay
+                    t["sl_price"] = sl
         except Exception as _e:
             pass
 

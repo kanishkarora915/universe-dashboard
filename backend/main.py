@@ -1553,6 +1553,61 @@ async def structure_snapshot(tag: str = "MANUAL"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Time-Decay SL endpoints ──
+@app.get("/api/time-decay/status/{trade_id}")
+async def time_decay_status(trade_id: int, source: str = "MAIN"):
+    try:
+        from time_decay_sl import get_decay_status
+        import sqlite3
+        src = source.upper()
+        if src == "SCALPER":
+            import scalper_mode
+            conn = scalper_mode._conn()
+            row = conn.execute(
+                "SELECT id, entry_price, sl_price, current_ltp, entry_time, idx, action, strike "
+                "FROM scalper_trades WHERE id=?", (trade_id,)
+            ).fetchone()
+            conn.close()
+        else:
+            from trade_logger import _conn as _tconn
+            conn = _tconn()
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT id, entry_price, sl_price, current_ltp, entry_time, idx, action, strike "
+                "FROM trades WHERE id=?", (trade_id,)
+            ).fetchone()
+            conn.close()
+        if not row:
+            return JSONResponse({"error": "trade not found"}, status_code=404)
+        trade = dict(row) if hasattr(row, "keys") else {
+            "id": row[0], "entry_price": row[1], "sl_price": row[2],
+            "current_ltp": row[3], "entry_time": row[4], "idx": row[5],
+            "action": row[6], "strike": row[7],
+        }
+        current_premium = trade.get("current_ltp") or trade.get("entry_price") or 0
+        return get_decay_status(trade, current_premium, src)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/time-decay/log")
+async def time_decay_log(source: str = "", limit: int = 100):
+    try:
+        from time_decay_sl import get_decay_log_today
+        return {"events": get_decay_log_today(source.upper() if source else None, limit)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/time-decay/ladder")
+async def time_decay_ladder(mode: str = "MAIN"):
+    try:
+        from time_decay_sl import get_ladder_config
+        return {"mode": mode.upper(), "ladder": get_ladder_config(mode.upper())}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Profit-Lock Trailing SL endpoints ──
 @app.get("/api/profit-trail/status/{trade_id}")
 async def profit_trail_status(trade_id: int, source: str = "MAIN"):

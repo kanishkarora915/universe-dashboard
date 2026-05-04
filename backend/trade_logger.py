@@ -597,11 +597,8 @@ class TradeManager:
             trail_level = t.get("trail_level", "")
 
             # ══════════════════════════════════════════════
-            # PROFIT-LOCK TRAILING SL — runs FIRST so existing systems
-            # see the raised SL. Only RAISES, never lowers. Locks gains
-            # progressively as profit grows. New trade-in-profit reversals
-            # now hit a higher SL instead of the original -12-15% SL.
-            # No interference with entry logic. Read-only on entry data.
+            # PROFIT-LOCK TRAILING SL — locks gains as profit grows.
+            # Only fires when trade is in profit (≥+3%).
             # ══════════════════════════════════════════════
             try:
                 from profit_trailing_sl import update_main_trail
@@ -613,12 +610,29 @@ class TradeManager:
                         f"→ stage +{trail_result['stage_threshold']}% "
                         f"→ SL ₹{new_sl} (locked {trail_result['locked_pct']:+.1f}%)"
                     )
-                    # Activate breakeven flag once SL crosses entry
                     if new_sl >= entry and not breakeven_active:
                         breakeven_active = 1
                         trail_level = "PROFIT_TRAIL_BE"
             except Exception as _e:
-                # Silent fallback — never block existing logic on trail error
+                pass
+
+            # ══════════════════════════════════════════════
+            # TIME-DECAY SL — caps further loss based on hold time.
+            # Cuts losers fast: 0-5min -10%, 5-15min -8%, 15-30min -5%,
+            # 30+min -3%. Solves "loser drifts to -12% before SL hits".
+            # Works alongside Profit-Trail (max() merge).
+            # ══════════════════════════════════════════════
+            try:
+                from time_decay_sl import update_main_decay
+                decay_result = update_main_decay(t, current_ltp)
+                if decay_result and decay_result.get("new_sl", 0) > new_sl:
+                    new_sl = decay_result["new_sl"]
+                    alerts_list.append(
+                        f"TIME_DECAY: hold {decay_result['hold_minutes']:.1f}m "
+                        f"→ stage ≤{decay_result['stage_minutes']}m "
+                        f"→ SL ₹{new_sl} (cap {decay_result['cap_pct']:+.1f}%)"
+                    )
+            except Exception as _e:
                 pass
 
             # ══════════════════════════════════════════════
