@@ -15,6 +15,7 @@ from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from kiteconnect import KiteConnect
@@ -145,6 +146,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="UNIVERSE Backend", lifespan=lifespan)
 
+# GZip compression — 60-80% bandwidth reduction on JSON responses
+# Threshold 500 bytes — don't compress tiny responses
+app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=5)
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
@@ -153,6 +158,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Cache-Control headers for static assets (1-year cache for hashed JS/CSS)
+@app.middleware("http")
+async def add_cache_headers(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    # Hashed assets (Vite generates index-XXXX.js, index-XXXX.css with content hash)
+    if path.startswith("/assets/") and ("-" in path.split("/")[-1]):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    # HTML — short cache, must revalidate (so users get updates)
+    elif path == "/" or path.endswith(".html"):
+        response.headers["Cache-Control"] = "public, max-age=60, must-revalidate"
+    # API responses — no cache (FastAPI handles this internally per endpoint)
+    elif path.startswith("/api/"):
+        if "Cache-Control" not in response.headers:
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
 
 # Trinity Engine routes
 try:
@@ -1270,10 +1293,12 @@ async def backtest_one_trade(trade_id: int, source: str = "MAIN"):
 
 @app.get("/api/positions/health")
 async def positions_health():
-    """Latest health snapshots for all open trades (both PnL + Scalper)."""
+    """Latest health snapshots for all open trades (both PnL + Scalper).
+    Cached 5s — multiple components polling shouldn't recompute every time."""
     try:
         from position_watcher import get_last_health
-        return {"positions": get_last_health()}
+        return _get_or_cache("positions_health",
+                             lambda: {"positions": get_last_health()}, ttl=5)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -1474,10 +1499,10 @@ async def system_health_check():
 
 @app.get("/api/reversal/live")
 async def reversal_live():
-    """Live capitulation state for both NIFTY and BANKNIFTY."""
+    """Live capitulation state for both NIFTY and BANKNIFTY. Cached 10s."""
     try:
         from capitulation_engine import get_live_state
-        return get_live_state()
+        return _get_or_cache("reversal_live", get_live_state, ttl=10)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -1510,11 +1535,11 @@ async def reversal_pulse_now():
 # ── Polarity Flip Detector endpoints (S/R role tracking) ──
 @app.get("/api/structure/levels")
 async def structure_levels(idx: str = "NIFTY"):
-    """All currently tracked S/R levels with full state — initial role,
-    current role, touches, OI evolution, last flip timestamp."""
+    """All tracked S/R levels with full state. Cached 15s."""
     try:
         from polarity_flip_detector import get_current_levels
-        return get_current_levels(idx.upper())
+        return _get_or_cache(f"structure_levels_{idx}",
+                             lambda: get_current_levels(idx.upper()), ttl=15)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -1792,12 +1817,11 @@ async def profit_trail_ladder(mode: str = "MAIN"):
 # ── Smart Money Detector endpoints (institutional flow tracking) ──
 @app.get("/api/smart-money/live")
 async def smart_money_live():
-    """Latest smart money classification per index — WRITER_DRIP /
-    BUYER_DRIP / WRITER_COVER / BUYER_EXIT for every active NTM strike,
-    plus net institutional view + buyer recommendations."""
+    """Latest smart money classification per index. Cached 30s — analyzer
+    only runs every 120s anyway, no point recomputing per request."""
     try:
         from smart_money_detector import get_live_state
-        return get_live_state()
+        return _get_or_cache("smart_money_live", get_live_state, ttl=30)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -1938,15 +1962,14 @@ async def positions_watcher_pulse_now():
 
 @app.get("/api/positions/watcher-status")
 async def positions_watcher_status():
-    """Liveness signal for the position watcher loop.
-    Frontend uses this to draw the green/red 'WATCHER LIVE' badge."""
-    try:
+    """Liveness signal for the position watcher loop. Cached 5s."""
+    def _compute():
         from position_watcher import get_last_health, _last_health_cache
         cached = list(_last_health_cache.values())
         last_pulse_ts = max([h.get("ts", 0) for h in cached], default=0)
         now = __import__("time").time()
         age = (now - last_pulse_ts) if last_pulse_ts else None
-        is_live = age is not None and age < 90  # 3× pulse interval
+        is_live = age is not None and age < 90
         return {
             "live": bool(is_live),
             "last_pulse_age_sec": round(age, 1) if age is not None else None,
@@ -1955,6 +1978,8 @@ async def positions_watcher_status():
             "scalper_count": len([h for h in cached if h.get("source") == "SCALPER"]),
             "stub_count": len([h for h in cached if h.get("stub")]),
         }
+    try:
+        return _get_or_cache("watcher_status", _compute, ttl=5)
     except Exception as e:
         return JSONResponse({"error": str(e), "live": False}, status_code=500)
 

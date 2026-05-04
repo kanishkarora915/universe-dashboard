@@ -6,40 +6,34 @@
  * "Force Pulse Now" trigger if things look off.
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import useSWRPoll from "../hooks/useSWRPoll";
 
 const API = import.meta.env.VITE_API_URL || "";
 
 export default function WatcherStatusBadge({ mode = null }) {
   // mode: "MAIN" | "SCALPER" | null (global)
   // When provided, mismatch & counts apply only to that mode's trades.
-  const [status, setStatus] = useState(null);
-  const [debug, setDebug] = useState(null);
   const [forcing, setForcing] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
 
-  const refresh = async () => {
-    try {
-      const [s, d] = await Promise.all([
-        fetch(`${API}/api/positions/watcher-status`).then(r => r.ok ? r.json() : null),
-        fetch(`${API}/api/positions/watcher-debug`).then(r => r.ok ? r.json() : null),
-      ]);
-      setStatus(s);
-      setDebug(d);
-    } catch (e) { /* silent */ }
-  };
-
-  useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, 10000);
-    return () => clearInterval(t);
-  }, []);
+  // SWR dedupes — many WatcherStatusBadge instances across tabs share 1 fetch.
+  const { data: status, mutate: mutateStatus } = useSWRPoll(
+    "/api/positions/watcher-status",
+    { refreshInterval: 10000 }
+  );
+  const { data: debug, mutate: mutateDebug } = useSWRPoll(
+    "/api/positions/watcher-debug",
+    { refreshInterval: 10000 }
+  );
 
   const forcePulse = async () => {
     setForcing(true);
     try {
       const r = await fetch(`${API}/api/positions/watcher-pulse-now`, { method: "POST" });
-      if (r.ok) await refresh();
+      if (r.ok) {
+        await Promise.all([mutateStatus(), mutateDebug()]);
+      }
     } catch (e) { /* silent */ }
     finally { setForcing(false); }
   };

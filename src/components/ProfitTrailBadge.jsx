@@ -10,29 +10,15 @@
  *   compact (bool) — small inline badge if true, full panel otherwise
  */
 
-import { useEffect, useMemo, useState } from "react";
-
-const API = import.meta.env.VITE_API_URL || "";
+import { useMemo } from "react";
+import useSWRPoll from "../hooks/useSWRPoll";
 
 export default function ProfitTrailBadge({ tradeId, source = "MAIN",
                                             entry, currentLtp, currentSl,
                                             compact = false }) {
-  const [status, setStatus] = useState(null);
-
-  useEffect(() => {
-    let alive = true;
-    const fetchStatus = async () => {
-      try {
-        const r = await fetch(`${API}/api/profit-trail/status/${tradeId}?source=${source}`);
-        if (!r.ok) return;
-        const j = await r.json();
-        if (alive && !j.error) setStatus(j);
-      } catch (e) { /* silent */ }
-    };
-    fetchStatus();
-    const iv = setInterval(fetchStatus, 10000);
-    return () => { alive = false; clearInterval(iv); };
-  }, [tradeId, source]);
+  const path = tradeId ? `/api/profit-trail/status/${tradeId}?source=${source}` : null;
+  const { data } = useSWRPoll(path, { refreshInterval: 10000 });
+  const status = data && !data.error ? data : null;
 
   // Fallback compute locally if API fails
   const fallback = useMemo(() => {

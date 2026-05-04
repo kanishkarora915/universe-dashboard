@@ -11,9 +11,8 @@
  *   compact: bool (default false) — small inline mode
  */
 
-import { useEffect, useMemo, useState } from "react";
-
-const API = import.meta.env.VITE_API_URL || "";
+import { useMemo, useState } from "react";
+import useSWRPoll from "../hooks/useSWRPoll";
 
 const VERDICT_COLORS = {
   STRONG:   { bg: "rgba(48, 209, 88, 0.10)", fg: "#30D158", border: "#1F7A36" },
@@ -40,35 +39,19 @@ const TRIGGER_LABELS = {
 };
 
 export default function PositionHealthCard({ source = "MAIN", tradeId, action, compact = false }) {
-  const [health, setHealth] = useState(null);
   const [expanded, setExpanded] = useState(false);
-  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let alive = true;
-    const fetchOnce = async () => {
-      try {
-        const r = await fetch(`${API}/api/positions/health/${tradeId}?source=${source}`);
-        if (!r.ok) return;
-        const j = await r.json();
-        if (alive && j?.current) setHealth(j.current);
-      } catch (e) {
-        // silent
-      } finally {
-        if (alive) setLoading(false);
-      }
-    };
-    fetchOnce();
-    const t = setInterval(fetchOnce, 15000); // refresh every 15s
-    return () => { alive = false; clearInterval(t); };
-  }, [source, tradeId]);
+  // SWR auto-dedupes: if multiple cards exist for same tradeId, 1 fetch fires.
+  const path = tradeId ? `/api/positions/health/${tradeId}?source=${source}` : null;
+  const { data, isLoading } = useSWRPoll(path, { refreshInterval: 15000 });
+  const health = data?.current || null;
 
   const palette = useMemo(
     () => colorFor(health?.score ?? 7, health?.verdict),
     [health]
   );
 
-  if (loading && !health) {
+  if (isLoading && !health) {
     return (
       <div style={{
         fontSize: 11, color: "#666", padding: "4px 8px",
