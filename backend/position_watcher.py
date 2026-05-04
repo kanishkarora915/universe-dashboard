@@ -369,6 +369,15 @@ def _evaluate_triggers(trade: Dict, health: Dict, action: str,
         if hold_min <= fast_window and profit_pct <= fast_cap:
             return "FAST_LOSS_CAP"
 
+    # ──── PRIORITY 1: OI REVERSAL (per-strike writer/buyer activity) ────
+    # New: per-trade-strike OI delta from oi_minute_capture.
+    # Fires when writers HOSTILE to our position are stacking AND we're
+    # not already in solid profit. Profit ≥ +5% lets Profit-Trail manage.
+    oi_comp = comps.get("oi", {})
+    oi_penalty = oi_comp.get("penalty", 0)
+    if oi_penalty >= 1.0 and profit_pct < 5:
+        return "OI_REVERSAL"
+
     candle = comps.get("candle", {})
     if candle.get("penalty", 0) >= 1.5 and profit_pct < 5:
         # Strong reversal pattern post-entry, not in profit
@@ -754,6 +763,32 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
     # Today's similar losses
     similar_losses = _count_today_similar_losses(source, action, idx)
 
+    # ── NEW: Per-strike OI 10-min delta (writer/buyer activity at OUR strike) ──
+    # oi_minute_capture stores ce_oi/pe_oi at NTM ±10 every 60s. Read last 10m
+    # for THIS exact strike, compute % delta. Feed to health scorer + use for
+    # REVERSAL_EXIT trigger downstream.
+    ce_oi_chg_10m = None
+    pe_oi_chg_10m = None
+    ce_oi_now = None
+    pe_oi_now = None
+    try:
+        from oi_minute_capture import get_strike_history
+        oi_hist = get_strike_history(idx.upper(), int(strike), minutes=10)
+        if oi_hist and len(oi_hist) >= 2:
+            first = oi_hist[0]
+            last = oi_hist[-1]
+            ce_first = first.get("ce_oi") or 0
+            pe_first = first.get("pe_oi") or 0
+            ce_oi_now = last.get("ce_oi") or 0
+            pe_oi_now = last.get("pe_oi") or 0
+            if ce_first > 0:
+                ce_oi_chg_10m = round((ce_oi_now - ce_first) / ce_first * 100, 2)
+            if pe_first > 0:
+                pe_oi_chg_10m = round((pe_oi_now - pe_first) / pe_first * 100, 2)
+    except Exception as _e:
+        # Non-fatal — health scorer treats None as "no data"
+        pass
+
     # Compute health
     health = compute_health(
         trade_id=sid,
@@ -767,7 +802,12 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
         candles_5min=candles,
         entry_time=entry_dt,
         today_similar_losses=similar_losses,
+        ce_oi_chg_10m=ce_oi_chg_10m,
+        pe_oi_chg_10m=pe_oi_chg_10m,
     )
+    # Surface raw OI numbers in health for UI
+    health["ce_oi_now"] = ce_oi_now
+    health["pe_oi_now"] = pe_oi_now
     health["trade_id"] = trade_id
     health["source"] = source
     health["idx"] = idx
@@ -803,6 +843,38 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
     # Evaluate trigger
     trigger = _evaluate_triggers(trade, health, action, cfg)
     action_taken = "NONE"
+
+    # ──── OI_REVERSAL — bypass-gate exit when already in loss ────
+    # New: if OI is hostile AND we're losing (profit < -3%), force-exit
+    # regardless of auto_exit config. Matches user's "don't let hostile
+    # market context bleed me out" preference. Saves the #106-style
+    # ₹88k bleed from yesterday.
+    if trigger == "OI_REVERSAL":
+        profit_pct = health.get("profit_pct", 0)
+        oi_comp = health.get("components", {}).get("oi", {})
+        oi_signals = oi_comp.get("hostile_signals", [])
+        if profit_pct <= -3:
+            reason_str = (f"OI_REVERSAL: hostile writers + losing {profit_pct:.2f}% — "
+                          + " · ".join(oi_signals[:2]))
+            ok = (_force_close_main(trade_id, current_premium, reason_str)
+                  if source == "MAIN"
+                  else _force_close_scalper(trade_id, current_premium, reason_str))
+            if ok:
+                action_taken = "EXIT"
+                _log_exit(source, trade, current_premium, trigger,
+                          [reason_str] + (health.get("reasons") or []))
+                snapshot["actions"].append({
+                    "source": source, "trade_id": trade_id, "trigger": trigger,
+                    "action": "EXIT", "exit_price": current_premium,
+                    "profit_pct": profit_pct, "oi_signals": oi_signals,
+                    "bypass_gate": True,
+                })
+                print(f"[WATCHER] OI_REVERSAL bypass-exit · {source} #{trade_id} · "
+                      f"{profit_pct:.2f}% · {oi_signals}")
+                _log_health(source, trade_id, idx, action, health, trigger, action_taken)
+                return
+        # If profit_pct > -3%, fall through to normal score-based action
+        # (will trigger SL tighten if score < 5)
 
     # ──── HARD LOSS FLOOR — bypasses auto_exit gating ────
     # User rule: "agar position lete hi trade loss mein jara hai toh

@@ -187,6 +187,85 @@ def score_pattern_loser(today_similar_losses: int) -> Dict:
     return out
 
 
+def score_strike_oi_change(action: str, ce_oi_chg_10m: Optional[float],
+                           pe_oi_chg_10m: Optional[float],
+                           profit_pct: float = 0) -> Dict:
+    """
+    Per-trade-strike OI delta health score. Max penalty -1.5 (15% weight).
+
+    Logic for BUY CE (long CE):
+      • CE OI ↑ ≥+5% at YOUR strike  = writers stacking = ceiling forming = BAD
+      • CE OI ↓ ≥-5%                  = writers covering at OUR strike = GOOD (no penalty)
+      • PE OI ↓ ≥-5%                  = PE writers covering = bearish reversal = BAD
+      • PE OI ↑ ≥+5%                  = PE writers building floor = GOOD
+
+    Mirrored for BUY PE.
+
+    Penalty escalates with magnitude. Skipped when trade is in solid profit
+    (>+8%) — at that point user wants Profit-Trail / smart-SL to manage exit,
+    not OI panic.
+    """
+    out = {
+        "penalty": 0,
+        "reason": None,
+        "ce_oi_chg_10m": ce_oi_chg_10m,
+        "pe_oi_chg_10m": pe_oi_chg_10m,
+        "hostile_signals": [],
+    }
+
+    # Skip if profit ≥ 8% — let trail handle, don't second-guess
+    if profit_pct >= 8:
+        return out
+
+    # Skip if no data
+    if ce_oi_chg_10m is None or pe_oi_chg_10m is None:
+        return out
+
+    is_ce = "CE" in action.upper()
+    hostile = []
+    pen = 0
+
+    if is_ce:
+        # CE writers ADDING at our strike = ceiling
+        if ce_oi_chg_10m >= 8:
+            hostile.append(f"CE writers stacking +{ce_oi_chg_10m:.1f}% (ceiling)")
+            pen += 0.9
+        elif ce_oi_chg_10m >= 5:
+            hostile.append(f"CE writers building +{ce_oi_chg_10m:.1f}%")
+            pen += 0.5
+
+        # PE writers COVERING = bearish reversal
+        if pe_oi_chg_10m <= -8:
+            hostile.append(f"PE writers covering {pe_oi_chg_10m:.1f}% (bearish)")
+            pen += 0.9
+        elif pe_oi_chg_10m <= -5:
+            hostile.append(f"PE writers covering {pe_oi_chg_10m:.1f}%")
+            pen += 0.5
+    else:
+        # BUY PE
+        if pe_oi_chg_10m >= 8:
+            hostile.append(f"PE writers stacking +{pe_oi_chg_10m:.1f}% (floor)")
+            pen += 0.9
+        elif pe_oi_chg_10m >= 5:
+            hostile.append(f"PE writers building +{pe_oi_chg_10m:.1f}%")
+            pen += 0.5
+
+        if ce_oi_chg_10m <= -8:
+            hostile.append(f"CE writers covering {ce_oi_chg_10m:.1f}% (bullish)")
+            pen += 0.9
+        elif ce_oi_chg_10m <= -5:
+            hostile.append(f"CE writers covering {ce_oi_chg_10m:.1f}%")
+            pen += 0.5
+
+    # Cap at -1.5 (15% weight)
+    pen = min(pen, 1.5)
+    out["penalty"] = round(pen, 2)
+    out["hostile_signals"] = hostile
+    if hostile:
+        out["reason"] = "OI hostile: " + " · ".join(hostile)
+    return out
+
+
 # ──────────────────────────────────────────────────────────────
 # Master scorer
 # ──────────────────────────────────────────────────────────────
@@ -204,6 +283,8 @@ def compute_health(
     candles_5min: List[Dict],
     entry_time: Optional[datetime],
     today_similar_losses: int = 0,
+    ce_oi_chg_10m: Optional[float] = None,
+    pe_oi_chg_10m: Optional[float] = None,
 ) -> Dict:
     """
     Compute the full health score for a position.
@@ -230,7 +311,7 @@ def compute_health(
     entry_hour = entry_time.hour if entry_time else 12
 
     # Component scores
-    c_drawdown = score_drawdown(profit_pct)  # ← NEW: direct loss penalty
+    c_drawdown = score_drawdown(profit_pct)  # ← direct loss penalty
     c_candle = score_candle_patterns(candles_5min, action, entry_time)
     c_vix = score_vix(action)
     c_prem = score_premium(trade_id, action)
@@ -239,17 +320,20 @@ def compute_health(
     )
     c_time = score_time_decay(hold_min, profit_pct, entry_hour)
     c_pat = score_pattern_loser(today_similar_losses)
+    # NEW: per-trade-strike OI delta (writer/buyer activity at YOUR strike)
+    c_oi = score_strike_oi_change(action, ce_oi_chg_10m, pe_oi_chg_10m, profit_pct)
 
     total_penalty = (
         c_drawdown["penalty"]
         + c_candle["penalty"] + c_vix["penalty"] + c_prem["penalty"]
         + c_prox["penalty"] + c_time["penalty"] + c_pat["penalty"]
+        + c_oi["penalty"]
     )
     score = max(0.0, round(base - total_penalty, 1))
 
     # Reasons (drawdown FIRST so it's most visible)
     reasons = []
-    for c in (c_drawdown, c_prem, c_candle, c_vix, c_prox, c_time, c_pat):
+    for c in (c_drawdown, c_prem, c_oi, c_candle, c_vix, c_prox, c_time, c_pat):
         if c.get("reason"):
             reasons.append(c["reason"])
 
@@ -286,13 +370,14 @@ def compute_health(
         "profit_pct": round(profit_pct, 2),
         "hold_minutes": round(hold_min, 1),
         "components": {
-            "drawdown": c_drawdown,  # NEW
+            "drawdown": c_drawdown,
             "candle": c_candle,
             "vix": c_vix,
             "premium": c_prem,
             "proximity": c_prox,
             "time": c_time,
             "pattern": c_pat,
+            "oi": c_oi,  # NEW: per-strike OI delta
         },
         "ts": time.time(),
     }
