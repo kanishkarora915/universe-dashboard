@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
@@ -1064,7 +1064,7 @@ async def scalper_oi_context(idx: str = "NIFTY"):
     try:
         from oi_delta_tracker import assess as _oi_assess
         cache_key = f"scalper_oi_context:{idx.upper()}"
-        return _get_or_cache(cache_key, lambda: _oi_assess(idx.upper()), ttl=10)
+        return _get_or_cache(cache_key, lambda: _oi_assess(idx.upper()), ttl=5)  # C1
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -1174,8 +1174,10 @@ async def scalper_trade_ticks(trade_id: int, limit: int = 500):
 
 
 @app.post("/api/scalper/trades/{trade_id}/exit")
-async def scalper_manual_exit(trade_id: int, body: dict = None):
-    """Manually exit an open scalper trade at current/given LTP."""
+async def scalper_manual_exit(trade_id: int, bg: BackgroundTasks, body: dict = None):
+    """Manually exit an open scalper trade at current/given LTP.
+    N1: capital tracker write deferred to bg task — endpoint returns
+    PnL/exit data ~30ms faster."""
     if not engine:
         return JSONResponse({"error": "Engine not running"}, status_code=400)
     try:
@@ -1197,7 +1199,14 @@ async def scalper_manual_exit(trade_id: int, body: dict = None):
             strike_data = chain.get(row["strike"], {})
             side_key = "ce_ltp" if "CE" in row["action"] else "pe_ltp"
             ltp = strike_data.get(side_key) or row["current_ltp"] or 0
-        return scalper_mode.manual_exit(trade_id, current_ltp=float(ltp))
+        # Sync exit (critical UPDATE), capital tracker as bg task
+        result = scalper_mode.manual_exit(trade_id, current_ltp=float(ltp),
+                                          defer_capital_track=True)
+        if result.get("ok"):
+            bg.add_task(scalper_mode.record_capital_after_exit,
+                        "SCALPER", result["pnl_rupees"], trade_id,
+                        f"Manual exit @ ₹{result['exit_price']:.2f}")
+        return result
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -1332,7 +1341,7 @@ async def positions_health():
     try:
         from position_watcher import get_last_health
         return _get_or_cache("positions_health",
-                             lambda: {"positions": get_last_health()}, ttl=5)
+                             lambda: {"positions": get_last_health()}, ttl=2)  # C1: 5→2s
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -1536,7 +1545,7 @@ async def reversal_live():
     """Live capitulation state for both NIFTY and BANKNIFTY. Cached 10s."""
     try:
         from capitulation_engine import get_live_state
-        return _get_or_cache("reversal_live", get_live_state, ttl=10)
+        return _get_or_cache("reversal_live", get_live_state, ttl=5)  # C1: 10→5s
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -1573,7 +1582,7 @@ async def structure_levels(idx: str = "NIFTY"):
     try:
         from polarity_flip_detector import get_current_levels
         return _get_or_cache(f"structure_levels_{idx}",
-                             lambda: get_current_levels(idx.upper()), ttl=15)
+                             lambda: get_current_levels(idx.upper()), ttl=10)  # C1: 15→10s
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -1855,7 +1864,7 @@ async def smart_money_live():
     only runs every 120s anyway, no point recomputing per request."""
     try:
         from smart_money_detector import get_live_state
-        return _get_or_cache("smart_money_live", get_live_state, ttl=30)
+        return _get_or_cache("smart_money_live", get_live_state, ttl=10)  # C1: 30→10s
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -2013,7 +2022,7 @@ async def positions_watcher_status():
             "stub_count": len([h for h in cached if h.get("stub")]),
         }
     try:
-        return _get_or_cache("watcher_status", _compute, ttl=5)
+        return _get_or_cache("watcher_status", _compute, ttl=3)  # C1: 5→3s
     except Exception as e:
         return JSONResponse({"error": str(e), "live": False}, status_code=500)
 
@@ -2034,13 +2043,13 @@ async def position_ticks(trade_id: int, source: str = "MAIN", limit: int = 500):
 
 
 @app.post("/api/positions/exit/{trade_id}")
-async def position_force_exit(trade_id: int, source: str = "MAIN"):
-    """Manually exit a trade from any tab — uses watcher's force-close machinery."""
+async def position_force_exit(trade_id: int, bg: BackgroundTasks, source: str = "MAIN"):
+    """Manually exit a trade from any tab — uses watcher's force-close machinery.
+    N1: capital tracker writes deferred to background tasks."""
     try:
         src = source.upper()
         if src == "SCALPER":
             import scalper_mode
-            # use scalper's existing manual_exit
             import sqlite3
             conn = sqlite3.connect(str(scalper_mode.SCALPER_DB))
             row = conn.execute("SELECT current_ltp, entry_price FROM scalper_trades WHERE id=? AND status='OPEN'",
@@ -2049,7 +2058,12 @@ async def position_force_exit(trade_id: int, source: str = "MAIN"):
             if not row:
                 return {"status": "not_found"}
             ltp = row[0] or row[1]
-            res = scalper_mode.manual_exit(trade_id, ltp, reason="USER_MANUAL_EXIT")
+            res = scalper_mode.manual_exit(trade_id, ltp, reason="USER_MANUAL_EXIT",
+                                           defer_capital_track=True)
+            if res.get("ok"):
+                bg.add_task(scalper_mode.record_capital_after_exit,
+                            "SCALPER", res["pnl_rupees"], trade_id,
+                            f"User manual exit @ ₹{res['exit_price']:.2f}")
             return {"status": "closed", **(res or {})}
         else:
             from position_watcher import _force_close_main, _trades_db_path

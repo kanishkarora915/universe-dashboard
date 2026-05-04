@@ -10,12 +10,12 @@
  *   compact (bool) — small inline badge if true, full panel otherwise
  */
 
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import useSWRPoll from "../hooks/useSWRPoll";
 
-export default function ProfitTrailBadge({ tradeId, source = "MAIN",
-                                            entry, currentLtp, currentSl,
-                                            compact = false }) {
+function ProfitTrailBadgeImpl({ tradeId, source = "MAIN",
+                                  entry, currentLtp, currentSl,
+                                  compact = false }) {
   const path = tradeId ? `/api/profit-trail/status/${tradeId}?source=${source}` : null;
   const { data } = useSWRPoll(path, { refreshInterval: 10000 });
   const status = data && !data.error ? data : null;
@@ -146,6 +146,20 @@ export default function ProfitTrailBadge({ tradeId, source = "MAIN",
     </div>
   );
 }
+
+
+// N4: memoize on stable props — currentLtp changes every tick, so allow it
+// through (otherwise stale price). tradeId/source/compact rarely change.
+const ProfitTrailBadge = memo(ProfitTrailBadgeImpl, (prev, next) =>
+  prev.tradeId === next.tradeId &&
+  prev.source === next.source &&
+  prev.compact === next.compact &&
+  prev.entry === next.entry &&
+  // ltp must trigger re-render — but only when meaningfully different
+  Math.abs((prev.currentLtp || 0) - (next.currentLtp || 0)) < 0.05 &&
+  prev.currentSl === next.currentSl
+);
+export default ProfitTrailBadge;
 
 
 function Metric({ label, value, color }) {

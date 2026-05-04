@@ -443,24 +443,52 @@ export default function ScalperTab() {
   };
 
   const toggleScalper = async () => {
-    const endpoint = status?.enabled ? "/api/scalper/disable" : "/api/scalper/enable";
-    await postJSON(endpoint, {});
-    await fullLoad();
+    // N3: optimistic toggle — flip immediately, rollback on failure
+    const wasEnabled = !!status?.enabled;
+    setStatus(prev => prev ? { ...prev, enabled: !wasEnabled } : prev);
+    const endpoint = wasEnabled ? "/api/scalper/disable" : "/api/scalper/enable";
+    try {
+      await postJSON(endpoint, {});
+      await fullLoad();
+    } catch (e) {
+      console.error("[SCALPER] toggle failed", e);
+      setStatus(prev => prev ? { ...prev, enabled: wasEnabled } : prev);  // rollback
+    }
   };
 
+  // N3: OPTIMISTIC UI — instantly mark trade as EXITING so user sees
+  // immediate feedback. Rolls back on API failure.
   const manualExit = async (tradeId, skipConfirm = true) => {
-    // skipConfirm: button itself shows a rich confirm dialog with P&L
-    // already, so we don't double-prompt by default
     if (!skipConfirm && !window.confirm("Manually exit this trade at current LTP?")) return;
+
+    // Snapshot current state for rollback
+    const prevOpen = openTrades;
+
+    // OPTIMISTIC: immediately remove from open list (or mark as EXITING)
+    setOpenTrades(prev => prev.map(t =>
+      t.id === tradeId
+        ? { ...t, status: "EXITING", _optimistic: true, exit_reason: "Exiting…" }
+        : t
+    ));
+
     try {
       const res = await postJSON(`/api/scalper/trades/${tradeId}/exit`, {});
       console.log("[SCALPER] manual exit response:", res);
+      // Refresh from server (canonical state)
       await fullLoad();
     } catch (e) {
-      // Fallback: try the unified endpoint if mode-specific one fails
       console.warn("[SCALPER] /api/scalper/.../exit failed, trying /api/positions/exit", e);
-      await postJSON(`/api/positions/exit/${tradeId}?source=SCALPER`, {});
-      await fullLoad();
+      try {
+        await postJSON(`/api/positions/exit/${tradeId}?source=SCALPER`, {});
+        await fullLoad();
+      } catch (e2) {
+        // Both failed — rollback optimistic state
+        console.error("[SCALPER] BOTH exit endpoints failed — rolling back UI", e2);
+        setOpenTrades(prevOpen);
+        if (typeof window !== "undefined") {
+          alert("Exit failed — server unreachable. Trade still open. Please retry.");
+        }
+      }
     }
   };
 
@@ -477,8 +505,16 @@ export default function ScalperTab() {
   }, []);
 
   const toggleSmartSL = async () => {
-    const r = await postJSON("/api/scalper/smart-sl/toggle", {});
-    if (r && r.config) setSmartSL(prev => ({ ...prev, ...r.config }));
+    // N3: optimistic flip — instant UI update
+    const wasEnabled = !!smartSL?.enabled;
+    setSmartSL(prev => prev ? { ...prev, enabled: !wasEnabled } : prev);
+    try {
+      const r = await postJSON("/api/scalper/smart-sl/toggle", {});
+      if (r && r.config) setSmartSL(prev => ({ ...prev, ...r.config }));
+    } catch (e) {
+      console.error("[SCALPER] smart-sl toggle failed", e);
+      setSmartSL(prev => prev ? { ...prev, enabled: wasEnabled } : prev);  // rollback
+    }
   };
 
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });

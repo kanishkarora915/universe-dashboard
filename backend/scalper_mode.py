@@ -721,8 +721,14 @@ def get_trade_ticks(trade_id, limit=500):
         conn.close()
 
 
-def manual_exit(trade_id, current_ltp, reason="MANUAL_EXIT"):
-    """User-triggered manual exit of an open scalper trade."""
+def manual_exit(trade_id, current_ltp, reason="MANUAL_EXIT", defer_capital_track=False):
+    """User-triggered manual exit of an open scalper trade.
+
+    N1: When called from an endpoint with BackgroundTasks, pass
+    `defer_capital_track=True` and queue `record_capital_after_exit`
+    as the bg task. Saves ~15-30ms perceived latency by returning the
+    critical UPDATE result first, doing capital ledger write after.
+    """
     init_scalper_db()
     conn = _conn()
     try:
@@ -757,13 +763,14 @@ def manual_exit(trade_id, current_ltp, reason="MANUAL_EXIT"):
         conn.commit()
 
         print(f"[SCALPER] MANUAL EXIT #{trade_id}: ₹{exit_price} | PnL ₹{pnl_rupees:+,.0f}")
-        # Record P&L in capital tracker (auto-adjust)
-        try:
-            from capital_tracker import record_trade_pnl
-            record_trade_pnl("SCALPER", pnl_rupees, trade_id=trade_id,
-                             description=f"Manual exit @ ₹{exit_price:.2f}")
-        except Exception as e:
-            print(f"[CAPITAL] manual exit record error: {e}")
+        # Capital tracker — sync (default) or deferred (N1 BackgroundTasks)
+        if not defer_capital_track:
+            try:
+                from capital_tracker import record_trade_pnl
+                record_trade_pnl("SCALPER", pnl_rupees, trade_id=trade_id,
+                                 description=f"Manual exit @ ₹{exit_price:.2f}")
+            except Exception as e:
+                print(f"[CAPITAL] manual exit record error: {e}")
         return {
             "ok": True, "trade_id": trade_id, "exit_price": exit_price,
             "pnl_rupees": pnl_rupees, "pnl_pts": pnl_pts, "hold_seconds": hold_sec,
@@ -771,6 +778,18 @@ def manual_exit(trade_id, current_ltp, reason="MANUAL_EXIT"):
         }
     finally:
         conn.close()
+
+
+def record_capital_after_exit(source: str, pnl_rupees: float, trade_id: int,
+                              description: str = ""):
+    """N1 BackgroundTask helper — runs after `manual_exit` has returned.
+    Catches exceptions silently — the trade is already closed in DB, this
+    is just ledger maintenance."""
+    try:
+        from capital_tracker import record_trade_pnl
+        record_trade_pnl(source, pnl_rupees, trade_id=trade_id, description=description)
+    except Exception as e:
+        print(f"[CAPITAL] deferred record err (#{trade_id}): {e}")
 
 
 def get_capital_usage():

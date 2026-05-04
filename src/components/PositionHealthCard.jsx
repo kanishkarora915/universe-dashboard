@@ -11,7 +11,7 @@
  *   compact: bool (default false) — small inline mode
  */
 
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import useSWRPoll from "../hooks/useSWRPoll";
 
 const VERDICT_COLORS = {
@@ -38,7 +38,7 @@ const TRIGGER_LABELS = {
   PATTERN_LOSER: "Pattern loser",
 };
 
-export default function PositionHealthCard({ source = "MAIN", tradeId, action, compact = false }) {
+function PositionHealthCardImpl({ source = "MAIN", tradeId, action, compact = false }) {
   const [expanded, setExpanded] = useState(false);
 
   // SWR auto-dedupes: if multiple cards exist for same tradeId, 1 fetch fires.
@@ -220,6 +220,18 @@ function ActionBadge({ action, palette }) {
     </span>
   );
 }
+
+
+// N4: React.memo with stable prop equality — re-renders only when
+// tradeId/source/action/compact actually change. SWR data updates are
+// internal and trigger their own re-render.
+const PositionHealthCard = memo(PositionHealthCardImpl, (prev, next) =>
+  prev.source === next.source &&
+  prev.tradeId === next.tradeId &&
+  prev.action === next.action &&
+  prev.compact === next.compact
+);
+export default PositionHealthCard;
 
 
 function ComponentChip({ label, data, extra }) {

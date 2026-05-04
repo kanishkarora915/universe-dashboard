@@ -1,6 +1,28 @@
 import { useState } from "react";
 import { useTheme } from "../ThemeContext";
 import { FONT, TEXT_SIZE, TEXT_WEIGHT, SPACE, RADIUS, TRANSITION, Z } from "../theme";
+import { prefetchMany } from "../utils/prefetch";
+
+// N5: Hover-intent prefetch — tab id → endpoints to warm
+const TAB_PREFETCH = {
+  pnl:      ["/api/positions/health", "/api/trades/open"],
+  scalper:  ["/api/scalper/trades/open", "/api/scalper/stats",
+             "/api/scalper/oi-context?idx=NIFTY",
+             "/api/scalper/oi-context?idx=BANKNIFTY",
+             "/api/reversal/live"],
+  reversal: ["/api/reversal/live", "/api/reversal/history"],
+  oi:       ["/api/oi-summary", "/api/multi-tf"],
+  autopsy:  ["/api/autopsy/today"],
+  reports:  ["/api/scalper/trades/closed?days=7"],
+  health:   ["/api/system/health"],
+  ttimes:   ["/api/times/events?idx=NIFTY"],
+  intraday: ["/api/intraday/state"],
+  nextday:  ["/api/nextday/forecast"],
+  weekly:   ["/api/weekly/state"],
+  hidden:   ["/api/hidden-shift"],
+  priceact: ["/api/signals"],
+  backtest: ["/api/backtest/recent"],
+};
 
 // Tab IDs aligned with Universe.jsx (oichange, ttimes — not oi, times)
 const TABS = [
@@ -15,9 +37,17 @@ const TABS = [
 function SidebarButton({ tab, active, onClick, badge, flashing, theme }) {
   const [hover, setHover] = useState(false);
 
+  // N5: warm SWR cache for this tab's endpoints when user hovers.
+  // By the time they click, data is loaded.
+  const handleEnter = () => {
+    setHover(true);
+    const paths = TAB_PREFETCH[tab.id];
+    if (paths && !active) prefetchMany(paths);
+  };
+
   return (
     <div
-      onMouseEnter={() => setHover(true)}
+      onMouseEnter={handleEnter}
       onMouseLeave={() => setHover(false)}
       style={{ position: "relative" }}
     >
