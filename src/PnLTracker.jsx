@@ -804,14 +804,16 @@ function TradeCard({ t, onExit }) {
 
       {/* Active Position Watcher — health score for OPEN trades */}
       {t.status === "OPEN" && (
-        <PositionHealthCard source="MAIN" tradeId={t.id} action={t.action} />
-        <ProfitTrailBadge
-          source="MAIN"
-          tradeId={t.id}
-          entry={t.entry_price}
-          currentLtp={t.current_ltp}
-          currentSl={t.sl_price}
-        />
+        <>
+          <PositionHealthCard source="MAIN" tradeId={t.id} action={t.action} />
+          <ProfitTrailBadge
+            source="MAIN"
+            tradeId={t.id}
+            entry={t.entry_price}
+            currentLtp={t.current_ltp}
+            currentSl={t.sl_price}
+          />
+        </>
       )}
 
       {/* Expand/Collapse + Manual Exit row (OPEN trades only) */}
