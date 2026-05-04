@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import CapitalTracker from "./components/CapitalTracker";
 import PositionHealthCard from "./components/PositionHealthCard";
+import ProfitTrailBadge from "./components/ProfitTrailBadge";
 import WatcherControls from "./components/WatcherControls";
 import WatcherStatusBadge from "./components/WatcherStatusBadge";
 import LivePositionChart from "./components/LivePositionChart";
@@ -804,6 +805,13 @@ function TradeCard({ t, onExit }) {
       {/* Active Position Watcher — health score for OPEN trades */}
       {t.status === "OPEN" && (
         <PositionHealthCard source="MAIN" tradeId={t.id} action={t.action} />
+        <ProfitTrailBadge
+          source="MAIN"
+          tradeId={t.id}
+          entry={t.entry_price}
+          currentLtp={t.current_ltp}
+          currentSl={t.sl_price}
+        />
       )}
 
       {/* Expand/Collapse + Manual Exit row (OPEN trades only) */}

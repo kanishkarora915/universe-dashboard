@@ -18,6 +18,7 @@ import { createChart, LineSeries } from "lightweight-charts";
 import SmartSLLadder from "./components/SmartSLLadder";
 import CapitalTracker from "./components/CapitalTracker";
 import PositionHealthCard from "./components/PositionHealthCard";
+import ProfitTrailBadge from "./components/ProfitTrailBadge";
 import WatcherControls from "./components/WatcherControls";
 import WatcherStatusBadge from "./components/WatcherStatusBadge";
 import LivePositionChart from "./components/LivePositionChart";
@@ -850,6 +851,14 @@ function ScalperTradeCard({ t, livePrice, isExpanded, onToggleExpand, onManualEx
               source="SCALPER"
               tradeId={t.id}
               action={t.action}
+              compact={!isExpanded}
+            />
+            <ProfitTrailBadge
+              source="SCALPER"
+              tradeId={t.id}
+              entry={t.entry_price}
+              currentLtp={cur}
+              currentSl={t.sl_price}
               compact={!isExpanded}
             />
           </div>

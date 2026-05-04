@@ -1553,6 +1553,64 @@ async def structure_snapshot(tag: str = "MANUAL"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Profit-Lock Trailing SL endpoints ──
+@app.get("/api/profit-trail/status/{trade_id}")
+async def profit_trail_status(trade_id: int, source: str = "MAIN"):
+    """Live trail status for a trade — current stage, profit %, locked %,
+    next stage threshold + premium needed. Used by trade card UI."""
+    try:
+        from profit_trailing_sl import get_trail_status
+        import sqlite3
+        src = source.upper()
+        if src == "SCALPER":
+            import scalper_mode
+            conn = scalper_mode._conn()
+            row = conn.execute(
+                "SELECT id, entry_price, sl_price, current_ltp, idx, action, strike "
+                "FROM scalper_trades WHERE id=?", (trade_id,)
+            ).fetchone()
+            conn.close()
+        else:
+            from trade_logger import _conn as _tconn
+            conn = _tconn()
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT id, entry_price, sl_price, current_ltp, idx, action, strike "
+                "FROM trades WHERE id=?", (trade_id,)
+            ).fetchone()
+            conn.close()
+        if not row:
+            return JSONResponse({"error": "trade not found"}, status_code=404)
+        trade = dict(row) if hasattr(row, "keys") else {
+            "id": row[0], "entry_price": row[1], "sl_price": row[2],
+            "current_ltp": row[3], "idx": row[4], "action": row[5], "strike": row[6],
+        }
+        current_premium = trade.get("current_ltp") or trade.get("entry_price") or 0
+        return get_trail_status(trade, current_premium, src)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/profit-trail/log")
+async def profit_trail_log(source: str = "", limit: int = 100):
+    """Today's trail-raise events for audit panel."""
+    try:
+        from profit_trailing_sl import get_trail_log_today
+        return {"events": get_trail_log_today(source.upper() if source else None, limit)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/profit-trail/ladder")
+async def profit_trail_ladder(mode: str = "MAIN"):
+    """Active ladder configuration (for UI display)."""
+    try:
+        from profit_trailing_sl import get_ladder_config
+        return {"mode": mode.upper(), "ladder": get_ladder_config(mode.upper())}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Smart Money Detector endpoints (institutional flow tracking) ──
 @app.get("/api/smart-money/live")
 async def smart_money_live():

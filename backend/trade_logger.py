@@ -597,6 +597,31 @@ class TradeManager:
             trail_level = t.get("trail_level", "")
 
             # ══════════════════════════════════════════════
+            # PROFIT-LOCK TRAILING SL — runs FIRST so existing systems
+            # see the raised SL. Only RAISES, never lowers. Locks gains
+            # progressively as profit grows. New trade-in-profit reversals
+            # now hit a higher SL instead of the original -12-15% SL.
+            # No interference with entry logic. Read-only on entry data.
+            # ══════════════════════════════════════════════
+            try:
+                from profit_trailing_sl import update_main_trail
+                trail_result = update_main_trail(t, current_ltp)
+                if trail_result and trail_result.get("new_sl", 0) > new_sl:
+                    new_sl = trail_result["new_sl"]
+                    alerts_list.append(
+                        f"PROFIT_TRAIL: profit {trail_result['profit_pct']:+.1f}% "
+                        f"→ stage +{trail_result['stage_threshold']}% "
+                        f"→ SL ₹{new_sl} (locked {trail_result['locked_pct']:+.1f}%)"
+                    )
+                    # Activate breakeven flag once SL crosses entry
+                    if new_sl >= entry and not breakeven_active:
+                        breakeven_active = 1
+                        trail_level = "PROFIT_TRAIL_BE"
+            except Exception as _e:
+                # Silent fallback — never block existing logic on trail error
+                pass
+
+            # ══════════════════════════════════════════════
             # ADAPTIVE SL: tighten on reversal, widen on stop-hunt
             # Only adjusts BEFORE breakeven (once in profit, trailing takes over)
             # ══════════════════════════════════════════════

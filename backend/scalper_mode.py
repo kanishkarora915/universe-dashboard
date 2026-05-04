@@ -859,6 +859,24 @@ def check_scalper_exits(chains):
         exit_price = 0
         sl_reason_text = None
 
+        # ─── PROFIT-LOCK TRAILING SL (runs FIRST, raises sl_price in DB) ───
+        # 8-stage ladder auto-trails SL up as profit grows. Solves
+        # "winner becomes loser" reversal. ONLY raises, never lowers.
+        # Doesn't trigger any exits itself — existing exit logic handles
+        # actual exits when current_ltp <= sl_price.
+        try:
+            from profit_trailing_sl import update_scalper_trail
+            trail_result = update_scalper_trail(t, current_ltp)
+            if trail_result:
+                # Update local sl variable so Smart SL Ladder + exit logic
+                # use the raised value
+                new_sl_from_trail = trail_result["new_sl"]
+                if new_sl_from_trail > sl:
+                    sl = new_sl_from_trail
+                    t["sl_price"] = sl  # update local copy
+        except Exception as _e:
+            pass
+
         # ─── SMART SL LADDER (if enabled) ───
         smart_active_sl = sl  # fallback to static
         smart_stage = 0
@@ -871,6 +889,8 @@ def check_scalper_exits(chains):
                 current_stage_saved=saved_stage,
                 saved_sl=saved_sl,
             )
+            # Profit trail wins if it's higher
+            smart_active_sl = max(smart_active_sl, sl)
 
         # ─── SPOT ANCHOR check (if enabled) ───
         spot_exit = False
