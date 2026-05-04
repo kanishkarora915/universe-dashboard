@@ -1553,6 +1553,54 @@ async def structure_snapshot(tag: str = "MANUAL"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── IV Rank Engine endpoints ──
+@app.get("/api/iv-rank/strike/{strike}")
+async def iv_rank_strike(strike: int, idx: str = "NIFTY"):
+    """IV Rank for one strike (CE + PE) with 60-day stats."""
+    try:
+        if not engine:
+            return JSONResponse({"error": "engine not started"}, status_code=503)
+        from iv_rank_engine import get_strike_iv_rank
+        return get_strike_iv_rank(engine, idx.upper(), strike)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/iv-rank/chain")
+async def iv_rank_chain(idx: str = "NIFTY"):
+    """IV Rank for ATM ±10 strikes."""
+    try:
+        if not engine:
+            return JSONResponse({"error": "engine not started"}, status_code=503)
+        from iv_rank_engine import get_chain_iv_ranks
+        return get_chain_iv_ranks(engine, idx.upper())
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/iv-rank/stats")
+async def iv_rank_stats():
+    """Capture stats — days of history, last capture, provisional flag."""
+    try:
+        from iv_rank_engine import get_capture_stats
+        return get_capture_stats()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/iv-rank/capture-now")
+async def iv_rank_capture_now():
+    """Manual trigger for IV snapshot."""
+    try:
+        if not engine:
+            return JSONResponse({"error": "engine not started"}, status_code=503)
+        from iv_rank_engine import capture_iv_snapshot
+        capture_iv_snapshot(engine)
+        return {"status": "captured"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Buyer Filters endpoints (Pump + Max Pain + Vega/Theta) ──
 @app.get("/api/buyer-filters/check")
 async def buyer_filters_check(idx: str, strike: int, action: str = "BUY_CE"):

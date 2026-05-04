@@ -3944,6 +3944,72 @@ class MarketEngine:
                     print(f"[POLARITY] pulse error: {e}")
             threading.Thread(target=_polarity_run, daemon=True, name="polarity-flip").start()
 
+        # ── IV Rank Capture — 9:30, 12:00, 15:00 IST ──
+        # Captures per-strike IV for 60-day rolling rank computation.
+        if not hasattr(self, "_iv_capture_done_today"):
+            self._iv_capture_done_today = set()
+        try:
+            from datetime import datetime as _dt2, timezone as _tz2, timedelta as _td2
+            _IST2 = _tz2(_td2(hours=5, minutes=30))
+            now_ist2 = _dt2.now(_IST2)
+            today2 = now_ist2.strftime("%Y-%m-%d")
+            for hh, mm in ((9, 30), (12, 0), (15, 0)):
+                key = f"{today2}-{hh:02d}{mm:02d}"
+                if (key not in self._iv_capture_done_today
+                        and now_ist2.hour == hh and now_ist2.minute == mm):
+                    def _iv_run(_eng=self):
+                        try:
+                            import iv_rank_engine
+                            iv_rank_engine.capture_iv_snapshot(_eng)
+                        except Exception as e:
+                            print(f"[IV-RANK] capture err: {e}")
+                    threading.Thread(target=_iv_run, daemon=True, name="iv-capture").start()
+                    self._iv_capture_done_today.add(key)
+                    # Cleanup old keys
+                    self._iv_capture_done_today = {
+                        k for k in self._iv_capture_done_today if k.startswith(today2)
+                    }
+        except Exception:
+            pass
+
+        # ── Trinity DB nightly prune at 23:55 IST (keep 30 days only) ──
+        if not hasattr(self, "_trinity_pruned_date"):
+            self._trinity_pruned_date = ""
+        try:
+            from datetime import datetime as _dt3, timezone as _tz3, timedelta as _td3
+            _IST3 = _tz3(_td3(hours=5, minutes=30))
+            now_ist3 = _dt3.now(_IST3)
+            today3 = now_ist3.strftime("%Y-%m-%d")
+            if (self._trinity_pruned_date != today3
+                    and now_ist3.hour == 23 and now_ist3.minute >= 55):
+                def _prune_run():
+                    try:
+                        from pathlib import Path as _P
+                        import sqlite3 as _sql
+                        td = _P("/data") if _P("/data").is_dir() else _P(__file__).parent
+                        # Prune trinity.db
+                        trinity_db = str(td / "trinity.db")
+                        if _P(trinity_db).exists():
+                            conn = _sql.connect(trinity_db, timeout=30)
+                            cutoff = (now_ist3 - _td3(days=30)).strftime("%Y-%m-%d")
+                            for table in ("verdict_history", "stream_history",
+                                           "trinity_log", "regime_log"):
+                                try:
+                                    conn.execute(f"DELETE FROM {table} WHERE date(ts, 'unixepoch') < ?",
+                                                 (cutoff,))
+                                except Exception:
+                                    pass
+                            conn.execute("VACUUM")
+                            conn.commit()
+                            conn.close()
+                            print(f"[PRUNE] Trinity DB pruned (cutoff {cutoff})")
+                    except Exception as e:
+                        print(f"[PRUNE] err: {e}")
+                threading.Thread(target=_prune_run, daemon=True, name="trinity-prune").start()
+                self._trinity_pruned_date = today3
+        except Exception:
+            pass
+
         # ── Day-Open Premium Capture — fires once at 9:15:30 IST ──
         # Captures ATM ±15 strike premiums for premium-pump detection.
         if not hasattr(self, "_day_open_captured_date"):
@@ -4276,10 +4342,6 @@ class MarketEngine:
                                 pass
 
                             # ── A10: Buyer Filters (Pump + Max Pain + Vega/Theta) ──
-                            # Block obvious buyer traps:
-                            #  - Premium pumped >25% from open (chasing top)
-                            #  - Expiry day ATM near max pain (pin death)
-                            #  - VIX > 25 + ATM (vega bomb)
                             try:
                                 from buyer_filters import check_buyer_filters
                                 allowed_bf, bf_reason, bf_qty_mult, bf_details = check_buyer_filters(
@@ -4292,6 +4354,24 @@ class MarketEngine:
                                     continue
                                 elif bf_qty_mult < 1.0:
                                     print(f"[TRADE] Buyer-filter WARN: {bf_reason} (qty mult {bf_qty_mult})")
+                            except Exception as _e:
+                                pass
+
+                            # ── A11: IV Rank Gate ──
+                            # Block if IVR > 80% (premium expensive vs 60-day range)
+                            # Falls back to VIX percentile proxy until 60 days history
+                            try:
+                                from iv_rank_engine import check_iv_gate
+                                allowed_iv, iv_reason, iv_qty_mult = check_iv_gate(
+                                    self, idx, pending_strike, action
+                                )
+                                if not allowed_iv:
+                                    print(f"[TRADE] BLOCKED by IV rank: {iv_reason}")
+                                    self.trade_manager._pending_entry.pop(idx, None)
+                                    self.trade_manager._pending_entry_time.pop(idx, None)
+                                    continue
+                                elif iv_qty_mult < 1.0:
+                                    print(f"[TRADE] IV WARN: {iv_reason} (qty mult {iv_qty_mult})")
                             except Exception as _e:
                                 pass
 
