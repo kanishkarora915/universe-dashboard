@@ -389,7 +389,151 @@ class MarketEngine:
         self._start_trade_manager()
         self._start_backtest_tracker()
         self.running = True
+        # Start independent pulse scheduler so pulse loops fire even when
+        # WebSocket has dead periods (Kite reconnects, lunch chop, etc).
+        self._start_pulse_scheduler()
         print("[ENGINE] Market engine started with REAL data.")
+
+    def _start_pulse_scheduler(self):
+        """Independent thread that triggers all interval-based pulse checks
+        every 1 second, decoupled from WebSocket tick frequency. Without
+        this, pulses only fire when ticks arrive — and dead WS periods
+        (5+ min) leave watcher/capitulation/polarity stale."""
+        import threading, time as _time
+
+        def _scheduler_loop():
+            print("[ENGINE] Pulse scheduler thread started (1Hz)")
+            last_heartbeat = 0
+            while self.running:
+                try:
+                    # Run the same pulse-check logic that lives inside on_ticks,
+                    # but without needing actual tick data. Calling on_ticks with
+                    # an empty list is a clean way to reuse all existing pulse
+                    # checks without duplicating code.
+                    if hasattr(self, "ticker") and self.running:
+                        try:
+                            # Synthesize an empty-ticks call to drive the pulse
+                            # checks. on_ticks is local to _connect_ticker so we
+                            # call our pulse-only sibling instead.
+                            self._run_pulse_checks()
+                        except Exception as e:
+                            now_ts = _time.time()
+                            if now_ts - last_heartbeat > 30:
+                                print(f"[PULSE-SCHED] cycle err: {e}")
+                                last_heartbeat = now_ts
+                except Exception as e:
+                    print(f"[PULSE-SCHED] outer err: {e}")
+                _time.sleep(1.0)
+            print("[ENGINE] Pulse scheduler thread stopped")
+
+        t = threading.Thread(target=_scheduler_loop, daemon=True, name="pulse-scheduler")
+        t.start()
+        self._pulse_scheduler_thread = t
+
+    def _run_pulse_checks(self):
+        """Pulse-only logic — same time-gated checks that live in on_ticks,
+        extracted so the independent scheduler can call them every 1s.
+        Each check spawns its own daemon thread for the actual work, so this
+        method itself returns instantly."""
+        import time as _time, threading
+        now = _time.time()
+
+        # Position Watcher — every 30s
+        if not hasattr(self, "_watcher_last_pulse"):
+            self._watcher_last_pulse = 0
+        if now - self._watcher_last_pulse >= 30:
+            self._watcher_last_pulse = now
+            def _watcher_run():
+                try:
+                    import position_watcher
+                    position_watcher.watcher_pulse(self)
+                except Exception as e:
+                    print(f"[WATCHER] pulse err: {e}")
+            threading.Thread(target=_watcher_run, daemon=True, name="ps-watcher").start()
+
+        # Capitulation engine — every 60s
+        if not hasattr(self, "_capitulation_last"):
+            self._capitulation_last = 0
+        if now - self._capitulation_last >= 60:
+            self._capitulation_last = now
+            def _cap_run():
+                try:
+                    import capitulation_engine
+                    snap = capitulation_engine.pulse(self)
+                    capitulation_engine.set_live_state(snap)
+                except Exception as e:
+                    print(f"[CAPITULATION] pulse err: {e}")
+            threading.Thread(target=_cap_run, daemon=True, name="ps-cap").start()
+
+        # OI minute capture — every 60s
+        if not hasattr(self, "_oi_minute_last"):
+            self._oi_minute_last = 0
+        if now - self._oi_minute_last >= 60:
+            self._oi_minute_last = now
+            def _oi_run():
+                try:
+                    import oi_minute_capture
+                    oi_minute_capture.capture_pulse(self)
+                except Exception as e:
+                    print(f"[OI-MIN] pulse err: {e}")
+            threading.Thread(target=_oi_run, daemon=True, name="ps-oi").start()
+
+        # Polarity flip detector — every 60s
+        if not hasattr(self, "_polarity_last"):
+            self._polarity_last = 0
+        if now - self._polarity_last >= 60:
+            self._polarity_last = now
+            def _pol_run():
+                try:
+                    import polarity_flip_detector
+                    polarity_flip_detector.pulse(self)
+                except Exception as e:
+                    print(f"[POLARITY] pulse err: {e}")
+            threading.Thread(target=_pol_run, daemon=True, name="ps-polarity").start()
+
+        # Smart money analyzer — every 120s (heavier, with mutex guard)
+        if not hasattr(self, "_smart_money_last"):
+            self._smart_money_last = 0
+        if not hasattr(self, "_smart_money_running"):
+            self._smart_money_running = False
+        if now - self._smart_money_last >= 120 and not self._smart_money_running:
+            self._smart_money_last = now
+            self._smart_money_running = True
+            def _sm_run():
+                try:
+                    import smart_money_detector
+                    smart_money_detector.analyze_pulse()
+                except Exception as e:
+                    print(f"[SMART-MONEY] analyze err: {e}")
+                finally:
+                    self._smart_money_running = False
+            threading.Thread(target=_sm_run, daemon=True, name="ps-sm").start()
+
+        # Scalper tick check — every 2s (fast)
+        if not hasattr(self, "_scalper_tick_last"):
+            self._scalper_tick_last = 0
+        if now - self._scalper_tick_last >= 2.0:
+            self._scalper_tick_last = now
+            def _scalper_check():
+                try:
+                    import scalper_mode as _sm
+                    _sm.check_scalper_exits(self.chains)
+                except Exception as e:
+                    print(f"[SCALPER-TICK] err: {e}")
+            threading.Thread(target=_scalper_check, daemon=True, name="ps-scalper").start()
+
+        # Trade manager check (PnL trades) — every 5s
+        if hasattr(self, "trade_manager") and self.trade_manager:
+            if not hasattr(self.trade_manager, "_last_sl_check"):
+                self.trade_manager._last_sl_check = 0
+            if now - self.trade_manager._last_sl_check >= 5:
+                self.trade_manager._last_sl_check = now
+                try:
+                    self.trade_manager.check_and_update(
+                        self.chains, self.prices, self.spot_tokens, self.token_to_info
+                    )
+                except Exception as e:
+                    print(f"[TRADE] check_and_update err: {e}")
 
     def _start_trade_manager(self):
         """Initialize the auto trade logger."""
