@@ -28,8 +28,8 @@ SCALPER_DB = _data_dir / "scalper_trades.db"
 SCALPER_THRESHOLD = 55         # Raised 45→55 (avoid weak signals)
 SCALPER_DAILY_CAP = 15         # 15 trades/day
 SCALPER_SL_PCT = 0.08          # 8% SL (lowered 12→8 per user safety rule, B1.1)
-SCALPER_T1_PCT = 0.15          # 15% T1 (was 20% — too far given new -8% SL → R:R 1:1.875)
-SCALPER_T2_PCT = 0.30          # 30% T2 (was 40% — R:R 1:3.75)
+SCALPER_T1_PCT = 0.10          # 10% T1 (lowered 15→10 per profit-mgmt #1 — more reachable)
+SCALPER_T2_PCT = 0.20          # 20% T2 (lowered 30→20 — better R:R 1:2.5 with -8% SL)
 SCALPER_RISK_PCT = 1.0         # 1.0% risk (smaller size — 4 hard losses = -4% max)
 SCALPER_CONFIRM_SEC = 30       # 30s confirmation (was 15 — avoid noise)
 SCALPER_MAX_HOLD_MIN = 30      # 30 min max hold
@@ -141,8 +141,8 @@ def init_scalper_db():
             nifty_qty INTEGER DEFAULT 0,
             banknifty_qty INTEGER DEFAULT 0,
             sl_pct REAL DEFAULT 0.08,
-            t1_pct REAL DEFAULT 0.15,
-            t2_pct REAL DEFAULT 0.30,
+            t1_pct REAL DEFAULT 0.10,
+            t2_pct REAL DEFAULT 0.20,
             threshold INTEGER DEFAULT 55,
             daily_cap INTEGER DEFAULT 15,
             updated_at TEXT
@@ -150,25 +150,24 @@ def init_scalper_db():
     """)
     conn.execute(
         "INSERT OR IGNORE INTO scalper_config (id, capital, nifty_qty, banknifty_qty, sl_pct, t1_pct, t2_pct, updated_at) "
-        "VALUES (1, 1000000, 0, 0, 0.08, 0.15, 0.30, ?)",
+        "VALUES (1, 1000000, 0, 0, 0.08, 0.10, 0.20, ?)",
         (ist_now().isoformat(),)
     )
-    # B1.1 FORCE migration: existing rows with sl_pct ≥ 0.10 get bumped to
-    # 0.08. The original migration had `updated_at IS NULL` guard which
-    # SKIPPED any user who had ever saved config — leaving them on the
-    # old 12% SL. Today's 5 trades hit -12% Stage 0 instead of -8%
-    # (~₹57k extra loss). Forcing the migration on next boot.
-    # daily_cap also clamped to 15 max (was 30 in the wild — explains
-    # the cap violation today).
+    # FORCE migration to current targets:
+    #   sl_pct ≥ 0.10  → 0.08 (B1.1 safety floor)
+    #   t1_pct ≥ 0.13  → 0.10 (profit-mgmt #1 — T1 more reachable)
+    #   t2_pct ≥ 0.25  → 0.20 (R:R 1:2.5)
+    #   daily_cap > 15 → 15
     try:
         conn.execute("""
             UPDATE scalper_config
                SET sl_pct = 0.08,
-                   t1_pct = 0.15,
-                   t2_pct = 0.30,
+                   t1_pct = 0.10,
+                   t2_pct = 0.20,
                    daily_cap = MIN(daily_cap, 15),
                    updated_at = ?
-             WHERE id = 1 AND sl_pct >= 0.10
+             WHERE id = 1 AND (sl_pct >= 0.10 OR t1_pct >= 0.13 OR t2_pct >= 0.25
+                               OR daily_cap > 15)
         """, (ist_now().isoformat(),))
     except Exception:
         pass
@@ -474,19 +473,19 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
 # SMART SL SYSTEM — 7-stage Profit Ladder + Spot Anchor
 # ═══════════════════════════════════════════════════════════════
 
-# 7 stages: (profit_trigger_pct, sl_offset_pct, label)
-# B3.9 RETUNE (2026-05-04): Old ladder gave back winners — Stage 1 locked at -3%
-# even when premium was already +5%. New ladder anchors breakeven sooner.
-# Initial -8% matches user's new safety floor (was -15%).
+# Profit-management #2 RETUNE (2026-05-05): More aggressive locks — at +5%
+# trigger, lock +2% (not breakeven). Previous ladder gave back winners —
+# user complained about peaked +12% exiting at +2%. New ladder locks more
+# at every stage to capture more of the move.
 SMART_SL_LADDER = [
-    (0,   -8,  "Initial"),       # was -15 — matches new safety floor
-    (3,   -5,  "Trail-1"),       # NEW stage — early micro-trail
-    (5,   0,   "Breakeven"),     # was -3% lock — now FULL breakeven at +5%
-    (8,   +3,  "Lock +3%"),      # NEW intermediate
-    (12,  +6,  "Lock +6%"),
-    (18,  +10, "Lock +10%"),
-    (28,  +18, "Lock +18%"),
-    (40,  +28, "Lock +28%"),
+    (0,   -8,  "Initial"),       # safety floor
+    (3,   -5,  "Trail-1"),       # early micro-trail
+    (5,   +2,  "Lock +2%"),      # was breakeven — now lock +2% at +5% trigger
+    (8,   +5,  "Lock +5%"),      # was +3 — tighter
+    (12,  +8,  "Lock +8%"),      # was +6
+    (18,  +12, "Lock +12%"),     # was +10
+    (28,  +20, "Lock +20%"),     # was +18
+    (40,  +30, "Lock +30%"),     # was +28
 ]
 
 
@@ -1022,6 +1021,23 @@ def check_scalper_exits(chains):
                 if new_sl_from_trail > sl:
                     sl = new_sl_from_trail
                     t["sl_price"] = sl
+        except Exception as _e:
+            pass
+
+        # ─── PEAK-TRAIL SL (#3 + #4 — runs after Profit-Trail, before Time-Decay) ───
+        # Trails based on peak premium (not entry). Activates only when
+        # peak ≥ +10%. Also detects stuck profit and tightens further.
+        try:
+            from peak_trail_sl import compute_peak_trail_sl
+            sid_pt = f"SCALPER:{t['id']}"
+            peak_result = compute_peak_trail_sl(sid_pt, entry, current_ltp)
+            if peak_result:
+                new_sl_from_peak = peak_result["new_sl"]
+                if new_sl_from_peak > sl:
+                    sl = new_sl_from_peak
+                    t["sl_price"] = sl
+                    print(f"[SCALPER] PEAK-TRAIL #{t['id']} {peak_result['source']}: "
+                          f"{peak_result['reason']}")
         except Exception as _e:
             pass
 

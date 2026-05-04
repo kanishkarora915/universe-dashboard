@@ -666,7 +666,12 @@ def watcher_pulse(engine) -> Dict:
         stale = [k for k in list(_last_health_cache.keys()) if k not in live_keys]
         for k in stale:
             _last_health_cache.pop(k, None)
-            _peak_profit_cache.pop(k, None)  # clean peak cache too
+            _peak_profit_cache.pop(k, None)  # clean peak-profit cache
+            try:
+                from peak_trail_sl import cleanup as _peak_trail_cleanup
+                _peak_trail_cleanup(k)  # clean peak-trail tracker
+            except Exception:
+                pass
         if stale:
             print(f"[WATCHER] cleaned {len(stale)} stale cache entries")
     except Exception as e:
@@ -856,6 +861,30 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
     cur_profit_pct = health.get("profit_pct") or 0
     peak_now = update_peak_profit(source, trade_id, cur_profit_pct)
     health["peak_profit_pct"] = peak_now
+
+    # ── Peak-Trail SL (#3 + #4) — tighten SL when peak ≥ +10% or stuck ──
+    # For PnL trades: writes to trades.db sl_price field via _tighten_main_sl.
+    # Activates only on solid winners (peak ≥ +10% premium move). Below
+    # that, existing entry-based ladders manage.
+    try:
+        from peak_trail_sl import compute_peak_trail_sl
+        peak_trail_result = compute_peak_trail_sl(sid, entry_price, current_premium)
+        if peak_trail_result:
+            new_sl = peak_trail_result["new_sl"]
+            existing_sl = trade.get("sl_price", 0) or 0
+            # Only tighten upward AND keep below current price (avoid instant SL hit)
+            max_safe_sl = round(current_premium * 0.99, 2)
+            if new_sl > existing_sl and new_sl < current_premium and new_sl <= max_safe_sl:
+                if source == "MAIN":
+                    _tighten_main_sl(trade_id, new_sl, peak_trail_result["reason"])
+                else:
+                    _tighten_scalper_sl(trade_id, new_sl, peak_trail_result["reason"])
+                health["peak_trail_sl"] = new_sl
+                health["peak_trail_source"] = peak_trail_result["source"]
+                print(f"[WATCHER] PEAK-TRAIL · {source} #{trade_id} · "
+                      f"{peak_trail_result['reason']}")
+    except Exception as _e:
+        pass
     health["trade_id"] = trade_id
     health["source"] = source
     health["idx"] = idx
