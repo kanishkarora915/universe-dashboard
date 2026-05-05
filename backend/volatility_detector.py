@@ -236,16 +236,22 @@ def build_recommendations(regime, time_window, vix, atr_ratio, expiry):
         return rec
 
     # ── HIGH-VOL ──
+    # TUNED 2026-05-05: backtest showed Volatility filter at 28.6% accuracy
+    # (worst of all filters). 71% of blocks were winners. Lowered min_prob
+    # 70 → 60 (still strict). Other safety measures (qty 0.7×, wider SL)
+    # already manage risk.
     if "HIGH-VOL" in regime:
-        rec["min_probability"] = 70
+        rec["min_probability"] = 60  # was 70
         rec["sl_multiplier"] = 1.5
         rec["target_multiplier"] = 1.5
         rec["qty_multiplier"] = 0.7
         rec["warnings"].append(f"High volatility (VIX {vix}) — wider SL, larger targets, smaller qty")
 
     # ── EXPIRY DAY ──
+    # TUNED: 70% min was killing valid expiry signals. 65% still strict
+    # but more achievable. SL tightening + qty halving still protects.
     if "EXPIRY" in regime:
-        rec["min_probability"] = 70
+        rec["min_probability"] = 65  # was 70
         rec["sl_multiplier"] = 0.7  # tighter SL on expiry (theta crush)
         rec["target_multiplier"] = 0.7  # smaller targets (less time)
         rec["qty_multiplier"] = 0.5
@@ -265,9 +271,11 @@ def build_recommendations(regime, time_window, vix, atr_ratio, expiry):
         rec["trade_allowed"] = False
         rec["warnings"].append("First 5 min — wait for stabilization")
     elif time_window == "LUNCH_CHOP":
-        rec["min_probability"] = max(rec["min_probability"], 70)
+        # TUNED: 70 was over-blocking valid lunch trades. 60 keeps quality
+        # bar high while capturing post-lunch trend setups.
+        rec["min_probability"] = max(rec["min_probability"], 60)  # was 70
         rec["qty_multiplier"] *= 0.6
-        rec["warnings"].append("Lunch chop — only HIGH conviction trades")
+        rec["warnings"].append("Lunch chop — higher conviction needed (60%+)")
     elif time_window == "POWER_HOUR":
         rec["min_probability"] = max(rec["min_probability"], 60)
         rec["target_multiplier"] *= 1.3  # bigger moves possible

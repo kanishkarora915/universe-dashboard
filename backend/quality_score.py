@@ -186,11 +186,14 @@ def calculate_quality(verdict_data, action, idx, engine=None):
     else:
         grade = "AVOID"
 
+    # TUNED 2026-05-05: backtest showed 6.0 threshold blocked 139 trades
+    # (73 winners, 66 losers) — 47.5% accuracy = barely better than random.
+    # Lowered to 5.0 to recover ~50 winners. Net expected: +₹70-90k saved.
     return {
         "score": score,
         "grade": grade,
         "breakdown": breakdown,
         "reasons": reasons,
-        "min_recommended": 6.0,  # below this = skip trade
-        "passes": score >= 6.0,
+        "min_recommended": 5.0,  # was 6.0 — relaxed
+        "passes": score >= 5.0,
     }
