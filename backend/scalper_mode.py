@@ -327,11 +327,31 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         capital = cfg.get("capital") or 1000000
 
     win_pct = verdict_data.get("winProbability", 0)
-    if win_pct < threshold:
-        return False
-
     action_str = verdict_data.get("action", "")
     is_ce = "CE" in action_str.upper()
+
+    # ── Capitulation-confirmed lowering of threshold ──
+    # If capit engine sees reversal in same direction as our action,
+    # accept entries 5pp below the configured threshold.
+    # Today's miss: 23950 CE V-bottom — capit bull was ~3-4 (just under
+    # ALERT) but the trade would have made +600%. Worth taking with
+    # capit confirmation even at 50% probability.
+    effective_threshold = threshold
+    try:
+        from capitulation_engine import get_live_state
+        cap_state = get_live_state() or {}
+        cap_idx = (cap_state.get("results") or {}).get(idx, {})
+        cap_bull = (cap_idx.get("bullish") or {}).get("score", 0)
+        cap_bear = (cap_idx.get("bearish") or {}).get("score", 0)
+        if is_ce and cap_bull >= 4:
+            effective_threshold = max(50, threshold - 5)
+        elif not is_ce and cap_bear >= 4:
+            effective_threshold = max(50, threshold - 5)
+    except Exception:
+        pass
+
+    if win_pct < effective_threshold:
+        return False
     today_iso = now.strftime("%Y-%m-%d")
     conn = _conn()
 

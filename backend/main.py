@@ -1558,6 +1558,11 @@ async def why_no_trade():
                 "blocking_gates": [g for g in gates if not g["pass"]],
                 "all_gates": gates,
                 "pending_entry": pe,
+                # FIX: surface smartBias in per_index so frontend can render
+                # range position, exhaustion warnings, capitulation boosts.
+                "smartBias": v.get("smartBias", {}) if isinstance(v, dict) else {},
+                "bullPct": v.get("bullPct") if isinstance(v, dict) else None,
+                "bearPct": v.get("bearPct") if isinstance(v, dict) else None,
             }
 
         # Recent block log (best-effort)
@@ -1582,7 +1587,10 @@ async def why_no_trade():
             "verdict_snapshot": {
                 k: {"action": (v.get("action") if isinstance(v, dict) else None),
                     "winProbability": (v.get("winProbability") if isinstance(v, dict) else None),
-                    "topReasons": (v.get("topReasons", [])[:3] if isinstance(v, dict) else [])}
+                    "topReasons": (v.get("topReasons", [])[:3] if isinstance(v, dict) else []),
+                    "smartBias": (v.get("smartBias", {}) if isinstance(v, dict) else {}),
+                    "bullPct": (v.get("bullPct") if isinstance(v, dict) else None),
+                    "bearPct": (v.get("bearPct") if isinstance(v, dict) else None)}
                 for k, v in (verdict.items() if isinstance(verdict, dict) else [])
                 if k in ("nifty", "banknifty")
             },

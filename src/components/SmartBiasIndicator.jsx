@@ -32,16 +32,32 @@ const C = {
 
 
 function SmartBiasIndicatorImpl() {
-  // /api/trades/why-no-trade has the verdict_snapshot + per_index data
-  // OR pull from /api/live (lightweight) — but we need bias adjustments.
-  // The verdict includes smartBias now.
+  // /api/trades/why-no-trade exposes both:
+  //   - verdict_snapshot (raw verdict)
+  //   - per_index (verdict + smartBias + gates)
+  // We use per_index (canonical, fully-fielded path).
   const { data } = useSWRPoll("/api/trades/why-no-trade", {
     refreshInterval: 5000,
   });
 
+  // Prefer per_index — has smartBias guaranteed; fallback to verdict_snapshot
+  const perIdx = data?.per_index || {};
   const verdict = data?.verdict_snapshot || {};
-  const niftyData = verdict.nifty || {};
-  const bnData = verdict.banknifty || {};
+
+  const niftyData = {
+    action: perIdx.NIFTY?.verdict_action || verdict.nifty?.action,
+    winProbability: perIdx.NIFTY?.win_probability ?? verdict.nifty?.winProbability,
+    smartBias: perIdx.NIFTY?.smartBias || verdict.nifty?.smartBias || {},
+    bullPct: perIdx.NIFTY?.bullPct ?? verdict.nifty?.bullPct,
+    bearPct: perIdx.NIFTY?.bearPct ?? verdict.nifty?.bearPct,
+  };
+  const bnData = {
+    action: perIdx.BANKNIFTY?.verdict_action || verdict.banknifty?.action,
+    winProbability: perIdx.BANKNIFTY?.win_probability ?? verdict.banknifty?.winProbability,
+    smartBias: perIdx.BANKNIFTY?.smartBias || verdict.banknifty?.smartBias || {},
+    bullPct: perIdx.BANKNIFTY?.bullPct ?? verdict.banknifty?.bullPct,
+    bearPct: perIdx.BANKNIFTY?.bearPct ?? verdict.banknifty?.bearPct,
+  };
 
   return (
     <div style={{

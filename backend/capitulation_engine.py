@@ -278,11 +278,14 @@ def score_bullish(idx: str, oi_data: Dict, state: IndexState) -> Dict:
     score = round(raw / max_raw * 10, 1)
     fired_count = sum(1 for _, s, _ in signals if s.get("fired"))
 
+    # TUNED 2026-05-05: V-bottom on NIFTY today wasn't caught — bull score
+    # never crossed 5 (only ~3-4). Lowered ALERT threshold 5→4 and made
+    # recommended_action fire at 4+ so smart-bias gets the boost earlier.
     if score >= 7:
         verdict = "STRONG_CAPITULATION"
-    elif score >= 5:
+    elif score >= 4:           # was 5
         verdict = "ALERT"
-    elif score >= 3:
+    elif score >= 2.5:          # was 3
         verdict = "WATCH"
     else:
         verdict = "QUIET"
@@ -296,7 +299,7 @@ def score_bullish(idx: str, oi_data: Dict, state: IndexState) -> Dict:
         "signals": {name: sig for name, sig, _ in signals},
         "reasons": [sig["detail"] for _, sig, _ in signals if sig.get("fired") and sig.get("detail")],
         "atm_strike": oi_data.get("atm_strike"),
-        "recommended_action": "BUY ATM CE" if score >= 5 else None,
+        "recommended_action": "BUY ATM CE" if score >= 4 else None,  # was 5
     }
 
 
@@ -318,9 +321,9 @@ def score_bearish(idx: str, oi_data: Dict, state: IndexState) -> Dict:
 
     if score >= 7:
         verdict = "STRONG_CAPITULATION"
-    elif score >= 5:
+    elif score >= 4:           # was 5
         verdict = "ALERT"
-    elif score >= 3:
+    elif score >= 2.5:          # was 3
         verdict = "WATCH"
     else:
         verdict = "QUIET"
@@ -334,7 +337,7 @@ def score_bearish(idx: str, oi_data: Dict, state: IndexState) -> Dict:
         "signals": {name: sig for name, sig, _ in signals},
         "reasons": [sig["detail"] for _, sig, _ in signals if sig.get("fired") and sig.get("detail")],
         "atm_strike": oi_data.get("atm_strike"),
-        "recommended_action": "BUY ATM PE" if score >= 5 else None,
+        "recommended_action": "BUY ATM PE" if score >= 4 else None,  # was 5
     }
 
 

@@ -2692,16 +2692,18 @@ class MarketEngine:
                     cap_bear = (cap_idx.get("bearish") or {}).get("score", 0)
 
                     # Capitulation bull = CE entry opportunity at bottom
-                    if cap_bull >= 5 and bear_score > bull_score:
-                        boost = int(cap_bull * 2)  # 5→10pts, 7→14pts
+                    # TUNED 2026-05-05: threshold 5 → 4 (matches new ALERT
+                    # threshold). Today NIFTY bull was 3-4 and missed entry.
+                    if cap_bull >= 4 and bear_score > bull_score:
+                        boost = int(cap_bull * 2.5)  # 4→10pts, 5→12pts, 7→17pts
                         bull_score += boost
                         bias_adjustments.append({
                             "name": "CAPITULATION_BULL",
                             "reason": f"Capitulation engine sees BULLISH reversal forming (score {cap_bull}/10) — boost CE bias by +{boost}",
                             "cap_score": cap_bull, "bull_boost": boost,
                         })
-                    if cap_bear >= 5 and bull_score > bear_score:
-                        boost = int(cap_bear * 2)
+                    if cap_bear >= 4 and bull_score > bear_score:
+                        boost = int(cap_bear * 2.5)
                         bear_score += boost
                         bias_adjustments.append({
                             "name": "CAPITULATION_BEAR",

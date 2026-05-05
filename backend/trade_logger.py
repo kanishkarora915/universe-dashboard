@@ -1126,9 +1126,28 @@ class TradeManager:
         if not market_open:
             return False
 
-        # Rule 2: Probability threshold (50% — engines already filter quality)
+        # Rule 2: Probability threshold — adaptive based on capitulation signal
+        # Default: 50% (engines already filter quality)
+        # If capitulation engine confirms reversal in our direction, lower
+        # threshold to 45% — V-bottom CE entries / inverted-V PE entries
+        # have higher win rates than raw probability suggests.
         win_pct = verdict_data.get("winProbability", 0)
-        if win_pct < 50:
+        action = verdict_data.get("action", "")
+        min_prob = 50
+        try:
+            from capitulation_engine import get_live_state
+            cap_state = get_live_state() or {}
+            cap_idx = (cap_state.get("results") or {}).get(idx, {})
+            cap_bull = (cap_idx.get("bullish") or {}).get("score", 0)
+            cap_bear = (cap_idx.get("bearish") or {}).get("score", 0)
+            # If capit confirms our direction, allow 45%
+            if "CE" in action and cap_bull >= 4:
+                min_prob = 45
+            elif "PE" in action and cap_bear >= 4:
+                min_prob = 45
+        except Exception:
+            pass
+        if win_pct < min_prob:
             return False
 
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
