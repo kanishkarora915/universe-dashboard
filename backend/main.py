@@ -1431,18 +1431,27 @@ async def why_no_trade():
         now = datetime.now(IST)
 
         # Volatility regime
+        # FIX: function is `build_recommendations` (not `get_recommendations`)
+        # AND classify_regime returns dict with 'recommend' nested already.
         try:
-            from volatility_detector import classify_regime, get_recommendations
+            from volatility_detector import classify_regime
             regime_data = classify_regime(engine)
-            vol_rec = get_recommendations(regime_data)
+            # classify_regime() already builds recommendations as `recommend`
+            vol_rec = regime_data.get("recommend", {
+                "main_pnl_allowed": True, "min_probability": 50, "warnings": [],
+            })
         except Exception as e:
             regime_data = {"regime": "UNKNOWN", "error": str(e)}
             vol_rec = {"main_pnl_allowed": True, "min_probability": 50, "warnings": []}
 
         # Get latest verdict for both indices
+        # FIX: method is `get_trap_verdict` (not `get_full_verdict`)
         verdict = {}
         try:
-            verdict = engine.get_full_verdict() if hasattr(engine, "get_full_verdict") else {}
+            if hasattr(engine, "get_trap_verdict"):
+                verdict = engine.get_trap_verdict() or {}
+            elif hasattr(engine, "get_full_verdict"):
+                verdict = engine.get_full_verdict() or {}
         except Exception as e:
             verdict = {"error": str(e)}
 
