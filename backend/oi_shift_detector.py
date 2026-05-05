@@ -176,8 +176,13 @@ def get_recent_shifts(idx=None, hours=2):
     return [dict(r) for r in rows]
 
 
-def is_trade_against_shift(idx, action, current_spot, recent_minutes=30):
+def is_trade_against_shift(idx, action, current_spot, recent_minutes=5):
     """Check if proposed trade is AGAINST a recent wall shift.
+
+    TIER 3 retuned (2026-05-05):
+    - Window: 30 → 5 min (only block on FRESH shifts, not stale ones)
+    - Significance: now requires shift of >= 3 strikes (not 1)
+    - Backtest showed 6 winners blocked (₹1.9L) by stale 30-min shifts.
 
     Returns (block_trade, reason).
     """
@@ -195,24 +200,31 @@ def is_trade_against_shift(idx, action, current_spot, recent_minutes=30):
         return False, None
 
     is_ce = "CE" in (action or "")
+    # Significance filter — strike gap awareness
+    strike_gap = 50 if "NIFTY" in idx.upper() and "BANK" not in idx.upper() else 100
+    MIN_STRIKES_SHIFTED = 3
 
-    # CE wall shifted UP = sellers expect higher levels = BUY CE alignment ✓
-    # CE wall shifted DOWN = sellers cap at lower = BUY PE alignment ✓
-    # PE wall shifted UP = sellers expect higher floor = BUY CE alignment ✓
-    # PE wall shifted DOWN = floor breaking = BUY PE alignment ✓
     for s in shifts:
         s = dict(s)
+        from_strike = s.get("from_strike", 0) or 0
+        to_strike = s.get("to_strike", 0) or 0
+        if from_strike == 0 or to_strike == 0:
+            continue
+        # NEW significance check
+        strikes_shifted = abs(to_strike - from_strike) / strike_gap
+        if strikes_shifted < MIN_STRIKES_SHIFTED:
+            continue  # micro-shift, skip
         if s["side"] == "CE":
-            ce_shifted_up = s["to_strike"] > s["from_strike"]
+            ce_shifted_up = to_strike > from_strike
             if is_ce and not ce_shifted_up:
-                return True, f"CE wall shifted DOWN ({s['from_strike']} → {s['to_strike']}) — sellers capping resistance, AVOID BUY CE"
+                return True, f"CE wall shifted DOWN {strikes_shifted:.0f} strikes ({from_strike} → {to_strike}) — sellers capping resistance, AVOID BUY CE"
             if not is_ce and ce_shifted_up:
-                return True, f"CE wall shifted UP ({s['from_strike']} → {s['to_strike']}) — bullish bias, AVOID BUY PE"
+                return True, f"CE wall shifted UP {strikes_shifted:.0f} strikes ({from_strike} → {to_strike}) — bullish bias, AVOID BUY PE"
         elif s["side"] == "PE":
-            pe_shifted_up = s["to_strike"] > s["from_strike"]
+            pe_shifted_up = to_strike > from_strike
             if not is_ce and pe_shifted_up:
-                return True, f"PE wall shifted UP ({s['from_strike']} → {s['to_strike']}) — support raised, AVOID BUY PE"
+                return True, f"PE wall shifted UP {strikes_shifted:.0f} strikes ({from_strike} → {to_strike}) — support raised, AVOID BUY PE"
             if is_ce and not pe_shifted_up:
-                return True, f"PE wall shifted DOWN ({s['from_strike']} → {s['to_strike']}) — support breaking, AVOID BUY CE"
+                return True, f"PE wall shifted DOWN {strikes_shifted:.0f} strikes ({from_strike} → {to_strike}) — support breaking, AVOID BUY CE"
 
     return False, None

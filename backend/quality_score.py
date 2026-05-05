@@ -186,14 +186,48 @@ def calculate_quality(verdict_data, action, idx, engine=None):
     else:
         grade = "AVOID"
 
-    # TUNED 2026-05-05: backtest showed 6.0 threshold blocked 139 trades
-    # (73 winners, 66 losers) — 47.5% accuracy = barely better than random.
-    # Lowered to 5.0 to recover ~50 winners. Net expected: +₹70-90k saved.
+    # TIER 1 ADAPTIVE THRESHOLD (2026-05-05 backtest analysis):
+    # Quality Score blocked 144 trades (74 winners, 70 losers — 48.6% acc).
+    # Single static threshold doesn't fit all market regimes.
+    # Adaptive logic:
+    #   Trending market   → 4.5 (permissive — trends break out below threshold)
+    #   Choppy / Normal   → 5.0 (default)
+    #   High-VOL / Expiry → 5.5 (stricter — chop traps)
+    #   Capit-confirmed   → -0.5 from above (V-bottom CE / inverted-V PE boost)
+    min_threshold = 5.0  # default
+    threshold_reason = "default"
+    if engine:
+        try:
+            from volatility_detector import classify_regime
+            regime = classify_regime(engine)
+            r = regime.get("regime", "NORMAL")
+            if "TRENDING" in r:
+                min_threshold = 4.5
+                threshold_reason = "trending market — permissive"
+            elif "EXPIRY" in r or "HIGH-VOL" in r:
+                min_threshold = 5.5
+                threshold_reason = "expiry/high-vol — stricter"
+        except Exception:
+            pass
+        # Capit-confirmed boost
+        try:
+            from capitulation_engine import get_live_state
+            cap_state = get_live_state() or {}
+            cap_idx = (cap_state.get("results") or {}).get(idx, {})
+            cap_bull = (cap_idx.get("bullish") or {}).get("score", 0)
+            cap_bear = (cap_idx.get("bearish") or {}).get("score", 0)
+            if (is_ce and cap_bull >= 4) or (not is_ce and cap_bear >= 4):
+                min_threshold = max(4.0, min_threshold - 0.5)
+                threshold_reason += " + capit-confirmed"
+        except Exception:
+            pass
+
     return {
         "score": score,
         "grade": grade,
         "breakdown": breakdown,
         "reasons": reasons,
-        "min_recommended": 5.0,  # was 6.0 — relaxed
-        "passes": score >= 5.0,
+        "min_recommended": min_threshold,
+        "threshold_reason": threshold_reason,
+        "passes": score >= min_threshold,
     }

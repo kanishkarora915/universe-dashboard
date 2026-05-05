@@ -170,18 +170,21 @@ def check_pattern(action, probability, top_engine, vix=18, lookback_days=14):
     conn.close()
 
     total = len(rows)
-    if total < 3:
-        return False, 0, 0, total, "Not enough history for pattern match"
+    # TIER 5 retuned (2026-05-05): backtest showed 18 blocks (10 winners,
+    # 8 losers) = 44% accuracy. Old min_samples=5 too low → overfitting.
+    # New: require 20+ samples for confident LIE block.
+    if total < 10:
+        return False, 0, 0, total, f"Not enough history ({total} samples, need 20+)"
 
     truths = sum(1 for r in rows if r["outcome"] == "TRUTH")
     lies = sum(1 for r in rows if r["outcome"] == "LIE")
     win_rate = truths / max(total, 1) * 100
 
-    # Decision
-    if win_rate < 40 and total >= 5:
+    # Decision — raised min_samples
+    if win_rate < 40 and total >= 20:           # was 5
         return (True, 100 - win_rate, win_rate, total,
                 f"LIE pattern: {win_rate:.0f}% win rate over {total} similar trades ({day_name} {time_win} {action} top engine={top_engine})")
-    if win_rate < 50 and total >= 8:
+    if win_rate < 50 and total >= 25:           # was 8
         return (True, 100 - win_rate, win_rate, total,
                 f"WEAK pattern: {win_rate:.0f}% win rate over {total} samples — borderline, recommend skip")
     return False, win_rate, win_rate, total, f"Pattern OK: {win_rate:.0f}% win rate ({total} samples)"

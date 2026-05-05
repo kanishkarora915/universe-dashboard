@@ -118,21 +118,29 @@ def _check_volatility_filter(trade, state):
 
 
 def _check_time_window_filter(trade, state):
-    """B4: Time window historically poor?"""
+    """B4: Time window — TIER 2 retuned (2026-05-05).
+    Backtest showed Time Window blocked 23 winners worth ₹4.7L.
+    Old: LUNCH_CHOP → hard block.
+    New: LUNCH_CHOP only blocks if probability < 60 (matches production
+         where vol_rec raises min_prob, and capit-confirmed lowers it).
+    """
     tw = state.get("time_window", "")
-    poor_windows = {
-        "LUNCH_CHOP": ("Historical 35% win rate in lunch chop", True),
-        "OPENING_FIRST_5MIN": ("First 5 min unstable", True),
-        "CLOSING": ("Closing volatility", True),
-    }
-    if tw in poor_windows:
-        msg, blocks = poor_windows[tw]
-        return {
-            "filter": "Time Window",
-            "blocks": blocks,
-            "reason": msg,
-            "icon": "⏰",
-        }
+    prob = state.get("probability", 0) or 0
+    # Hard blocks (still apply)
+    if tw == "OPENING_FIRST_5MIN":
+        return {"filter": "Time Window", "blocks": True,
+                "reason": "First 5 min unstable", "icon": "⏰"}
+    if tw == "CLOSING":
+        return {"filter": "Time Window", "blocks": True,
+                "reason": "Closing volatility", "icon": "⏰"}
+    # Soft block — LUNCH_CHOP only if probability is also low
+    if tw == "LUNCH_CHOP":
+        if prob < 60:
+            return {"filter": "Time Window", "blocks": True,
+                    "reason": f"Lunch chop + low prob ({prob}% < 60%)", "icon": "⏰"}
+        else:
+            return {"filter": "Time Window", "blocks": False,
+                    "reason": f"Lunch chop OK (prob {prob}% ≥ 60%)", "icon": "✓"}
     good_windows = {
         "MORNING_TREND": "Historical 72% win rate",
         "POWER_HOUR": "Historical 65% win rate",
@@ -245,7 +253,12 @@ def _check_truth_lie_filter(trade, state):
 
 
 def _check_oi_shift_filter(trade, state):
-    """A2: OI Shift would have aligned/blocked?"""
+    """A2: OI Shift — TIER 3 retuned (2026-05-05).
+    Backtest showed OI Shift blocked 6 winners (₹1.9L), accuracy 40%.
+    Fix: only block if shift is FRESH (< 5 min) and SIGNIFICANT (>=3 strikes).
+    Old window: 30 min — too stale, picks up shifts that already played out.
+    Old significance: any shift — too sensitive to 1-strike micro-shifts.
+    """
     db = _data_dir / "oi_shifts.db"
     if not db.exists():
         return {"filter": "OI Shift", "blocks": False, "reason": "No OI shift history yet", "icon": "⚪"}
@@ -253,11 +266,11 @@ def _check_oi_shift_filter(trade, state):
     try:
         conn = sqlite3.connect(str(db))
         conn.row_factory = sqlite3.Row
-        # Find shift events within 30 min before this trade
+        # NEW: 5-min freshness window (was 30)
         et = trade.get("entry_time", "")
         try:
             et_dt = datetime.fromisoformat(et)
-            cutoff = (et_dt - timedelta(minutes=30)).isoformat()
+            cutoff = (et_dt - timedelta(minutes=5)).isoformat()  # was 30
         except Exception:
             return {"filter": "OI Shift", "blocks": False, "reason": "Cannot parse time", "icon": "⚪"}
 
@@ -271,55 +284,71 @@ def _check_oi_shift_filter(trade, state):
         rows = []
 
     if not rows:
-        return {"filter": "OI Shift", "blocks": False, "reason": "No recent wall shifts", "icon": "✓"}
+        return {"filter": "OI Shift", "blocks": False, "reason": "No fresh wall shifts (last 5m)", "icon": "✓"}
+
+    # Determine strike gap for significance check
+    idx = (state.get("idx") or "").upper()
+    strike_gap = 50 if "NIFTY" in idx and "BANK" not in idx else 100
+    MIN_STRIKES_SHIFTED = 3  # was: any shift counts
 
     is_ce = "CE" in (state.get("action") or "")
     for r in rows:
         r = dict(r)
         side = r.get("side")
-        from_strike = r.get("from_strike", 0)
-        to_strike = r.get("to_strike", 0)
+        from_strike = r.get("from_strike", 0) or 0
+        to_strike = r.get("to_strike", 0) or 0
+        if from_strike == 0 or to_strike == 0:
+            continue
+        # NEW: significance check — must be >=3 strikes shifted
+        strikes_shifted = abs(to_strike - from_strike) / strike_gap
+        if strikes_shifted < MIN_STRIKES_SHIFTED:
+            continue
         moved_up = to_strike > from_strike
         if side == "CE":
             if is_ce and not moved_up:
                 return {"filter": "OI Shift", "blocks": True,
-                        "reason": f"CE wall shifted DOWN ({from_strike}→{to_strike}) — block BUY CE",
+                        "reason": f"CE wall shifted DOWN {strikes_shifted:.0f} strikes ({from_strike}→{to_strike}) — block BUY CE",
                         "icon": "🚨"}
             if not is_ce and moved_up:
                 return {"filter": "OI Shift", "blocks": True,
-                        "reason": f"CE wall shifted UP ({from_strike}→{to_strike}) — block BUY PE",
+                        "reason": f"CE wall shifted UP {strikes_shifted:.0f} strikes ({from_strike}→{to_strike}) — block BUY PE",
                         "icon": "🚨"}
         elif side == "PE":
             if not is_ce and moved_up:
                 return {"filter": "OI Shift", "blocks": True,
-                        "reason": f"PE wall shifted UP ({from_strike}→{to_strike}) — block BUY PE",
+                        "reason": f"PE wall shifted UP {strikes_shifted:.0f} strikes ({from_strike}→{to_strike}) — block BUY PE",
                         "icon": "🚨"}
             if is_ce and not moved_up:
                 return {"filter": "OI Shift", "blocks": True,
-                        "reason": f"PE wall shifted DOWN ({from_strike}→{to_strike}) — block BUY CE",
+                        "reason": f"PE wall shifted DOWN {strikes_shifted:.0f} strikes ({from_strike}→{to_strike}) — block BUY CE",
                         "icon": "🚨"}
 
-    return {"filter": "OI Shift", "blocks": False, "reason": f"{len(rows)} shifts, alignment OK", "icon": "✓"}
+    return {"filter": "OI Shift", "blocks": False, "reason": f"{len(rows)} shifts but none significant (<3 strikes)", "icon": "✓"}
 
 
 def _check_risk_tier_filter(trade, state, prior_losses):
-    """A5: Risk tier — were there too many losses before this trade?"""
+    """A5: Risk tier — TIER 6 retuned (2026-05-05).
+    Backtest showed 14 blocks (9 winners, 5 losers) = 35.7% accuracy.
+    Old: tier 2 BLOCKED entries below 65% probability after 3 losses.
+    New: tier 2 only WARNS — production code already sizes-down via
+         qty_multiplier. Don't double-punish with hard block.
+    Hard block reserved for absolute safety (tier 4 = 8+ losses).
+    """
+    if prior_losses >= 8:
+        return {"filter": "Risk Tier", "blocks": True,
+                "reason": f"Tier 4 STOP — {prior_losses} losses today (capital protection)",
+                "icon": "🛑"}
     if prior_losses >= 5:
-        return {
-            "filter": "Risk Tier",
-            "blocks": False,
-            "reason": f"Tier 3 DEFENSIVE active ({prior_losses} losses today) — qty 50%, threshold 75%",
-            "icon": "⚠️",
-        }
+        return {"filter": "Risk Tier", "blocks": False,
+                "reason": f"Tier 3 DEFENSIVE ({prior_losses} losses) — qty 50%, no block",
+                "icon": "⚠️"}
     if prior_losses >= 3:
-        if state.get("probability", 0) < 65:
-            return {
-                "filter": "Risk Tier",
-                "blocks": True,
-                "reason": f"Tier 2 CAUTIOUS — {prior_losses} losses today, prob {state.get('probability')}% < 65%",
-                "icon": "⚠️",
-            }
-    return {"filter": "Risk Tier", "blocks": False, "reason": f"Tier 1 NORMAL ({prior_losses} losses today)", "icon": "✓"}
+        return {"filter": "Risk Tier", "blocks": False,
+                "reason": f"Tier 2 CAUTIOUS ({prior_losses} losses) — qty 70%, no block",
+                "icon": "⚠️"}
+    return {"filter": "Risk Tier", "blocks": False,
+            "reason": f"Tier 1 NORMAL ({prior_losses} losses today)",
+            "icon": "✓"}
 
 
 def _check_probability_filter(trade, state):
