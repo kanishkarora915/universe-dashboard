@@ -190,6 +190,50 @@ def get_scalper_config():
     return dict(row)
 
 
+# Expiry-day fast-scalp multipliers (applied ONLY when is_expiry_day() == True).
+# Tighter SL + smaller targets + half size + shorter hold to combat 5x theta crush.
+EXPIRY_SL_MULT      = 0.7    # 8% × 0.7 = 5.6% SL
+EXPIRY_TARGET_MULT  = 0.7    # T1 10% × 0.7 = 7%  ·  T2 20% × 0.7 = 14%
+EXPIRY_QTY_MULT     = 0.5    # half size on expiry
+EXPIRY_MAX_HOLD_MIN = 15     # half hold time (was 30)
+
+
+def get_active_scalp_config():
+    """Returns scalper config WITH expiry-day multipliers baked in.
+
+    On non-expiry days: returns raw user config.
+    On expiry days: applies tighter SL/T1/T2/qty/hold multipliers
+                    while preserving all safety floors.
+
+    Returns dict: {sl_pct, t1_pct, t2_pct, qty_mult, max_hold_min,
+                   threshold, daily_cap, capital, ..., is_expiry}
+    """
+    cfg = get_scalper_config()
+    is_expiry = False
+    try:
+        from volatility_detector import is_expiry_day
+        is_expiry = is_expiry_day()
+    except Exception:
+        pass
+
+    if is_expiry:
+        return {
+            **cfg,
+            "sl_pct":  round(cfg.get("sl_pct",  SCALPER_SL_PCT) * EXPIRY_SL_MULT, 4),
+            "t1_pct":  round(cfg.get("t1_pct",  SCALPER_T1_PCT) * EXPIRY_TARGET_MULT, 4),
+            "t2_pct":  round(cfg.get("t2_pct",  SCALPER_T2_PCT) * EXPIRY_TARGET_MULT, 4),
+            "qty_mult": EXPIRY_QTY_MULT,
+            "max_hold_min": EXPIRY_MAX_HOLD_MIN,
+            "is_expiry": True,
+        }
+    return {
+        **cfg,
+        "qty_mult": 1.0,
+        "max_hold_min": SCALPER_MAX_HOLD_MIN,
+        "is_expiry": False,
+    }
+
+
 def set_scalper_config(capital=None, nifty_qty=None, banknifty_qty=None,
                       sl_pct=None, t1_pct=None, t2_pct=None,
                       threshold=None, daily_cap=None):
@@ -609,10 +653,16 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
     if entry_price <= 0:
         return None
 
-    cfg = get_scalper_config()
+    # NEW: use active config with expiry multipliers applied
+    cfg = get_active_scalp_config()
     sl_pct = cfg.get("sl_pct") or SCALPER_SL_PCT
     t1_pct = cfg.get("t1_pct") or SCALPER_T1_PCT
     t2_pct = cfg.get("t2_pct") or SCALPER_T2_PCT
+    qty_mult = cfg.get("qty_mult", 1.0)
+    is_expiry = cfg.get("is_expiry", False)
+    if is_expiry:
+        print(f"[SCALPER] EXPIRY config: SL={sl_pct*100:.1f}% T1={t1_pct*100:.1f}% "
+              f"T2={t2_pct*100:.1f}% qty×{qty_mult} hold≤{cfg.get('max_hold_min')}m")
     # Use RUNNING capital (capital tracker) — base falls back to user config
     try:
         from capital_tracker import get_running_capital
@@ -636,6 +686,13 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
         max_qty = calc_scalper_size(entry_price, sl_price, running_capital=capital)
         lots = max(1, max_qty // lot_size)
         qty = lots * lot_size
+
+    # Apply expiry qty multiplier (round to lot multiple, min 1 lot)
+    if qty_mult != 1.0:
+        scaled_qty = int(qty * qty_mult)
+        scaled_lots = max(1, scaled_qty // lot_size)
+        qty = scaled_lots * lot_size
+        lots = scaled_lots
 
     # ── HARD CAPITAL ENFORCEMENT ──
     # Total committed (open trades) + this trade MUST NOT exceed user's capital.
@@ -956,6 +1013,10 @@ def check_scalper_exits(chains):
     smart_enabled = smart_cfg.get("enabled", False)
     spot_anchor_pct = smart_cfg.get("spot_anchor_pct", 0.4)
 
+    # NEW: max-hold from active config (drops to 15min on expiry day)
+    _active_cfg = get_active_scalp_config()
+    active_max_hold_min = _active_cfg.get("max_hold_min", SCALPER_MAX_HOLD_MIN)
+
     now = ist_now()
 
     # ── EOD AUTO-CLOSE: close all scalper trades at 3:25 PM IST ──
@@ -1189,10 +1250,10 @@ def check_scalper_exits(chains):
             new_status = "T1_HIT"
             exit_price = t1
             exit_reason = f"T1 hit at ₹{t1}"
-        elif hold_sec >= SCALPER_MAX_HOLD_MIN * 60:
+        elif hold_sec >= active_max_hold_min * 60:
             new_status = "TIMEOUT_EXIT"
             exit_price = current_ltp
-            exit_reason = f"Max hold {SCALPER_MAX_HOLD_MIN}min reached, exit @ ₹{current_ltp}"
+            exit_reason = f"Max hold {active_max_hold_min}min reached, exit @ ₹{current_ltp}"
 
         # Update or close
         pnl_pts = round(current_ltp - entry, 2)
