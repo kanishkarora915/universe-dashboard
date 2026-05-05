@@ -179,10 +179,17 @@ def get_recent_shifts(idx=None, hours=2):
 def is_trade_against_shift(idx, action, current_spot, recent_minutes=5):
     """Check if proposed trade is AGAINST a recent wall shift.
 
-    TIER 3 retuned (2026-05-05):
-    - Window: 30 → 5 min (only block on FRESH shifts, not stale ones)
-    - Significance: now requires shift of >= 3 strikes (not 1)
-    - Backtest showed 6 winners blocked (₹1.9L) by stale 30-min shifts.
+    TIER 3 v2 (2026-05-05 ₹-impact analysis):
+    First fix saved ₹47k but missed ₹103k → -₹56k net LOSS.
+    Apr 30 case: CE wall UP 10 strikes but market FELL (head-fake).
+    Single-wall shifts proven too noisy.
+
+    NEW: only block if BOTH walls aligned (confluence required).
+    - Both walls UP = bullish bias → block PE buys
+    - Both walls DOWN = bearish → block CE buys
+    - Single-wall shift = noisy, ALLOW the trade
+
+    Plus 5-min freshness + 3-strike significance still apply.
 
     Returns (block_trade, reason).
     """
@@ -200,31 +207,35 @@ def is_trade_against_shift(idx, action, current_spot, recent_minutes=5):
         return False, None
 
     is_ce = "CE" in (action or "")
-    # Significance filter — strike gap awareness
     strike_gap = 50 if "NIFTY" in idx.upper() and "BANK" not in idx.upper() else 100
     MIN_STRIKES_SHIFTED = 3
 
+    # Aggregate by side: only consider first significant shift per side
+    ce_dir = None
+    pe_dir = None
+    ce_msg = ""
+    pe_msg = ""
     for s in shifts:
         s = dict(s)
         from_strike = s.get("from_strike", 0) or 0
         to_strike = s.get("to_strike", 0) or 0
         if from_strike == 0 or to_strike == 0:
             continue
-        # NEW significance check
         strikes_shifted = abs(to_strike - from_strike) / strike_gap
         if strikes_shifted < MIN_STRIKES_SHIFTED:
-            continue  # micro-shift, skip
-        if s["side"] == "CE":
-            ce_shifted_up = to_strike > from_strike
-            if is_ce and not ce_shifted_up:
-                return True, f"CE wall shifted DOWN {strikes_shifted:.0f} strikes ({from_strike} → {to_strike}) — sellers capping resistance, AVOID BUY CE"
-            if not is_ce and ce_shifted_up:
-                return True, f"CE wall shifted UP {strikes_shifted:.0f} strikes ({from_strike} → {to_strike}) — bullish bias, AVOID BUY PE"
-        elif s["side"] == "PE":
-            pe_shifted_up = to_strike > from_strike
-            if not is_ce and pe_shifted_up:
-                return True, f"PE wall shifted UP {strikes_shifted:.0f} strikes ({from_strike} → {to_strike}) — support raised, AVOID BUY PE"
-            if is_ce and not pe_shifted_up:
-                return True, f"PE wall shifted DOWN {strikes_shifted:.0f} strikes ({from_strike} → {to_strike}) — support breaking, AVOID BUY CE"
+            continue
+        moved_up = to_strike > from_strike
+        if s["side"] == "CE" and ce_dir is None:
+            ce_dir = "UP" if moved_up else "DOWN"
+            ce_msg = f"CE {ce_dir} {strikes_shifted:.0f}str ({from_strike}→{to_strike})"
+        elif s["side"] == "PE" and pe_dir is None:
+            pe_dir = "UP" if moved_up else "DOWN"
+            pe_msg = f"PE {pe_dir} {strikes_shifted:.0f}str ({from_strike}→{to_strike})"
 
-    return False, None
+    # CONFLUENCE block: only when BOTH walls aligned
+    if ce_dir == "UP" and pe_dir == "UP" and not is_ce:
+        return True, f"BOTH walls UP — bullish bias, AVOID BUY PE · {ce_msg}; {pe_msg}"
+    if ce_dir == "DOWN" and pe_dir == "DOWN" and is_ce:
+        return True, f"BOTH walls DOWN — bearish bias, AVOID BUY CE · {ce_msg}; {pe_msg}"
+
+    return False, None  # single-wall = noisy, allow

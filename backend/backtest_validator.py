@@ -262,11 +262,15 @@ def _check_truth_lie_filter(trade, state):
 
 
 def _check_oi_shift_filter(trade, state):
-    """A2: OI Shift — TIER 3 retuned (2026-05-05).
-    Backtest showed OI Shift blocked 6 winners (₹1.9L), accuracy 40%.
-    Fix: only block if shift is FRESH (< 5 min) and SIGNIFICANT (>=3 strikes).
-    Old window: 30 min — too stale, picks up shifts that already played out.
-    Old significance: any shift — too sensitive to 1-strike micro-shifts.
+    """A2: OI Shift — TIER 3 v2 (2026-05-05 ₹-impact analysis).
+    First fix only saved ₹47k but missed ₹103k → -₹56k net LOSS.
+    Apr 30 head-fake: CE wall shifted UP 10 strikes but market FELL.
+    Single-wall shifts are too noisy.
+
+    NEW LOGIC: only block if BOTH walls aligned (CE up AND PE up = bullish)
+    Single-wall shifts treated as info-only, no block.
+
+    Plus: 5-min freshness, 3-strike significance still apply.
     """
     db = _data_dir / "oi_shifts.db"
     if not db.exists():
@@ -275,18 +279,17 @@ def _check_oi_shift_filter(trade, state):
     try:
         conn = sqlite3.connect(str(db))
         conn.row_factory = sqlite3.Row
-        # NEW: 5-min freshness window (was 30)
         et = trade.get("entry_time", "")
         try:
             et_dt = datetime.fromisoformat(et)
-            cutoff = (et_dt - timedelta(minutes=5)).isoformat()  # was 30
+            cutoff = (et_dt - timedelta(minutes=5)).isoformat()
         except Exception:
             return {"filter": "OI Shift", "blocks": False, "reason": "Cannot parse time", "icon": "⚪"}
 
         rows = conn.execute("""
             SELECT * FROM shift_events
             WHERE idx=? AND ts > ? AND ts < ?
-            ORDER BY ts DESC LIMIT 5
+            ORDER BY ts DESC LIMIT 10
         """, (state.get("idx"), cutoff, et)).fetchall()
         conn.close()
     except Exception:
@@ -295,12 +298,15 @@ def _check_oi_shift_filter(trade, state):
     if not rows:
         return {"filter": "OI Shift", "blocks": False, "reason": "No fresh wall shifts (last 5m)", "icon": "✓"}
 
-    # Determine strike gap for significance check
     idx = (state.get("idx") or "").upper()
     strike_gap = 50 if "NIFTY" in idx and "BANK" not in idx else 100
-    MIN_STRIKES_SHIFTED = 3  # was: any shift counts
+    MIN_STRIKES_SHIFTED = 3
 
-    is_ce = "CE" in (state.get("action") or "")
+    # Aggregate: CE direction and PE direction in window
+    ce_direction = None  # 'UP' or 'DOWN' or None
+    pe_direction = None
+    ce_msg = ""
+    pe_msg = ""
     for r in rows:
         r = dict(r)
         side = r.get("side")
@@ -308,31 +314,37 @@ def _check_oi_shift_filter(trade, state):
         to_strike = r.get("to_strike", 0) or 0
         if from_strike == 0 or to_strike == 0:
             continue
-        # NEW: significance check — must be >=3 strikes shifted
         strikes_shifted = abs(to_strike - from_strike) / strike_gap
         if strikes_shifted < MIN_STRIKES_SHIFTED:
             continue
         moved_up = to_strike > from_strike
-        if side == "CE":
-            if is_ce and not moved_up:
-                return {"filter": "OI Shift", "blocks": True,
-                        "reason": f"CE wall shifted DOWN {strikes_shifted:.0f} strikes ({from_strike}→{to_strike}) — block BUY CE",
-                        "icon": "🚨"}
-            if not is_ce and moved_up:
-                return {"filter": "OI Shift", "blocks": True,
-                        "reason": f"CE wall shifted UP {strikes_shifted:.0f} strikes ({from_strike}→{to_strike}) — block BUY PE",
-                        "icon": "🚨"}
-        elif side == "PE":
-            if not is_ce and moved_up:
-                return {"filter": "OI Shift", "blocks": True,
-                        "reason": f"PE wall shifted UP {strikes_shifted:.0f} strikes ({from_strike}→{to_strike}) — block BUY PE",
-                        "icon": "🚨"}
-            if is_ce and not moved_up:
-                return {"filter": "OI Shift", "blocks": True,
-                        "reason": f"PE wall shifted DOWN {strikes_shifted:.0f} strikes ({from_strike}→{to_strike}) — block BUY CE",
-                        "icon": "🚨"}
+        if side == "CE" and ce_direction is None:
+            ce_direction = "UP" if moved_up else "DOWN"
+            ce_msg = f"CE wall {ce_direction} {strikes_shifted:.0f} strikes ({from_strike}→{to_strike})"
+        elif side == "PE" and pe_direction is None:
+            pe_direction = "UP" if moved_up else "DOWN"
+            pe_msg = f"PE wall {pe_direction} {strikes_shifted:.0f} strikes ({from_strike}→{to_strike})"
 
-    return {"filter": "OI Shift", "blocks": False, "reason": f"{len(rows)} shifts but none significant (<3 strikes)", "icon": "✓"}
+    # CONFLUENCE rule: only block if BOTH walls aligned
+    # Both UP = bullish bias → block PE buys
+    # Both DOWN = bearish bias → block CE buys
+    is_ce = "CE" in (state.get("action") or "")
+    if ce_direction == "UP" and pe_direction == "UP" and not is_ce:
+        return {"filter": "OI Shift", "blocks": True,
+                "reason": f"BOTH walls UP — bullish, block BUY PE · {ce_msg}; {pe_msg}",
+                "icon": "🚨"}
+    if ce_direction == "DOWN" and pe_direction == "DOWN" and is_ce:
+        return {"filter": "OI Shift", "blocks": True,
+                "reason": f"BOTH walls DOWN — bearish, block BUY CE · {ce_msg}; {pe_msg}",
+                "icon": "🚨"}
+    # Otherwise: single-wall shift only = noisy, allow trade
+    if ce_direction or pe_direction:
+        return {"filter": "OI Shift", "blocks": False,
+                "reason": f"Single-wall shift only ({ce_msg or pe_msg}) — noisy, allowed",
+                "icon": "⚠️"}
+    return {"filter": "OI Shift", "blocks": False,
+            "reason": f"{len(rows)} shifts, none significant",
+            "icon": "✓"}
 
 
 def _check_risk_tier_filter(trade, state, prior_losses):
