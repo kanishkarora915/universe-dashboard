@@ -493,6 +493,19 @@ class MarketEngine:
                     print(f"[CAPITULATION] pulse err: {e}")
             threading.Thread(target=_cap_run, daemon=True, name="ps-cap").start()
 
+        # Forecast engine — every 60s (runs AFTER cap so cap state is fresh)
+        if not hasattr(self, "_forecast_last"):
+            self._forecast_last = 0
+        if now - self._forecast_last >= 60:
+            self._forecast_last = now
+            def _forecast_run():
+                try:
+                    import forecast_engine
+                    forecast_engine.pulse(self)
+                except Exception as e:
+                    print(f"[FORECAST] pulse err: {e}")
+            threading.Thread(target=_forecast_run, daemon=True, name="ps-forecast").start()
+
         # OI minute capture — every 60s
         if not hasattr(self, "_oi_minute_last"):
             self._oi_minute_last = 0

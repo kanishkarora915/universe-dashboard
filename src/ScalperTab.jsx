@@ -24,6 +24,7 @@ import WatcherStatusBadge from "./components/WatcherStatusBadge";
 import LivePositionChart from "./components/LivePositionChart";
 import ReversalCockpit from "./components/ReversalCockpit";
 import SmartBiasIndicator from "./components/SmartBiasIndicator";
+import ForecastCard from "./components/ForecastCard";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -608,6 +609,9 @@ export default function ScalperTab() {
       <CapitalTracker system="SCALPER" />
 
       <CapitalUsagePanel usage={capitalUsage} config={config} todayPnl={todayPnl} openLivePnl={openLivePnl} />
+
+      {/* FORECAST CARD — predictive narrative (what's expected next) */}
+      <ForecastCard />
 
       {/* SMART BIAS INDICATOR — what verdict engine is thinking right now */}
       <SmartBiasIndicator />

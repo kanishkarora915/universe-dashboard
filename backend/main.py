@@ -1617,6 +1617,49 @@ async def system_health_check():
         return JSONResponse({"error": str(e), "trace": traceback.format_exc()}, status_code=500)
 
 
+# ── Forecast Engine endpoints (predictive narrative builder) ──
+@app.get("/api/forecast/live")
+async def forecast_live():
+    """Live forecast: bias + key levels + expected path + buyer action plan.
+    Cached 30s — pulse runs every 60s anyway."""
+    try:
+        from forecast_engine import get_live_state
+        return _get_or_cache("forecast_live", get_live_state, ttl=30)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/forecast/pulse-now")
+async def forecast_pulse_now():
+    """Force an immediate forecast pulse."""
+    try:
+        if not engine:
+            return JSONResponse({"error": "Engine not started"}, status_code=503)
+        from forecast_engine import pulse
+        snap = pulse(engine)
+        return snap
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": str(e), "trace": traceback.format_exc()}, status_code=500)
+
+
+@app.get("/api/forecast/{index}")
+async def forecast_index(index: str):
+    """Forecast for a single index (NIFTY or BANKNIFTY)."""
+    try:
+        from forecast_engine import get_forecast
+        idx = index.upper()
+        if idx not in ("NIFTY", "BANKNIFTY"):
+            return JSONResponse({"error": "Invalid index"}, status_code=400)
+        f = get_forecast(idx)
+        if not f:
+            return JSONResponse({"error": "No forecast yet — wait for first pulse"},
+                                status_code=503)
+        return f
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/reversal/live")
 async def reversal_live():
     """Live capitulation state for both NIFTY and BANKNIFTY. Cached 10s."""
