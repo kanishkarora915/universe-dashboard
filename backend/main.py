@@ -885,10 +885,69 @@ async def buyer_full_suite(index: str):
 
 
 # ── Smart Money endpoints ──
+# IMPORTANT: STATIC paths MUST be declared BEFORE the dynamic
+# `/{index}` catch-all. FastAPI matches in declaration order; if
+# `/{index}` came first, requests for `/live` would be captured as
+# index="live" and return 400. Today's bug: Smart Money panel was
+# broken because /api/smart-money/live & /history were shadowed.
+
+
+@app.get("/api/smart-money/live")
+async def smart_money_live_v2():
+    """Latest smart money classification per index. Cached 10s."""
+    try:
+        from smart_money_detector import get_live_state
+        return _get_or_cache("smart_money_live", get_live_state, ttl=10)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/smart-money/history")
+async def smart_money_history_v2(idx: str = "", limit: int = 50):
+    """Today's logged strong findings (score ≥ 6)."""
+    try:
+        from smart_money_detector import get_strike_history_log
+        return {"events": get_strike_history_log(idx.upper() if idx else None, limit)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/smart-money/pulse-now")
+async def smart_money_pulse_now_v2():
+    """Force an immediate smart money analysis (bypass 2-min cycle).
+    Captures OI minute snapshot first, then analyzes. Matches frontend
+    SmartMoneyPanel's pulse button."""
+    try:
+        if not engine:
+            return JSONResponse({"error": "engine not started"}, status_code=503)
+        from oi_minute_capture import capture_pulse
+        capture_pulse(engine)
+        from smart_money_detector import analyze_pulse
+        return analyze_pulse()
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": str(e), "trace": traceback.format_exc()}, status_code=500)
+
+
+@app.get("/api/smart-money/strike/{strike}")
+async def smart_money_strike_v2(strike: int, idx: str = "NIFTY", minutes: int = 60):
+    """Per-strike per-minute OI history (drill-down chart). Frontend
+    SmartMoneyPanel calls this with idx + minutes."""
+    try:
+        from oi_minute_capture import get_strike_history
+        return {
+            "idx": idx.upper(), "strike": strike, "minutes": minutes,
+            "history": get_strike_history(idx.upper(), strike, minutes),
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
 
 @app.get("/api/smart-money/{index}")
 async def smart_money_data(index: str):
-    """Get smart money signals (slow cooking OI, block trades, iceberg) for an index."""
+    """Get smart money signals for a specific index (NIFTY/BANKNIFTY).
+    Subpaths /live, /history, /strike, /pulse-now are matched first by
+    declarations above; this catches only true index queries."""
     global engine
     if not engine or not hasattr(engine, 'smart_money_state') or not engine.smart_money_state:
         return {"error": "Engine not running or smart_money state unavailable"}
@@ -1857,56 +1916,8 @@ async def profit_trail_ladder(mode: str = "MAIN"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-# ── Smart Money Detector endpoints (institutional flow tracking) ──
-@app.get("/api/smart-money/live")
-async def smart_money_live():
-    """Latest smart money classification per index. Cached 30s — analyzer
-    only runs every 120s anyway, no point recomputing per request."""
-    try:
-        from smart_money_detector import get_live_state
-        return _get_or_cache("smart_money_live", get_live_state, ttl=10)  # C1: 30→10s
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.get("/api/smart-money/history")
-async def smart_money_history(idx: str = "", limit: int = 50):
-    """Today's logged strong findings (score ≥ 6)."""
-    try:
-        from smart_money_detector import get_strike_history_log
-        return {"events": get_strike_history_log(idx.upper() if idx else None, limit)}
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.get("/api/smart-money/strike/{strike}")
-async def smart_money_strike_history(strike: int, idx: str = "NIFTY", minutes: int = 60):
-    """Per-strike per-minute history (for drill-down chart)."""
-    try:
-        from oi_minute_capture import get_strike_history
-        return {
-            "idx": idx.upper(), "strike": strike,
-            "minutes": minutes,
-            "history": get_strike_history(idx.upper(), strike, minutes),
-        }
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.post("/api/smart-money/pulse-now")
-async def smart_money_pulse_now():
-    """Force an immediate smart money analysis (bypass 2-min cycle)."""
-    try:
-        if not engine:
-            return JSONResponse({"error": "engine not started"}, status_code=503)
-        # Trigger an OI minute capture first to ensure latest data
-        from oi_minute_capture import capture_pulse
-        capture_pulse(engine)
-        from smart_money_detector import analyze_pulse
-        return analyze_pulse()
-    except Exception as e:
-        import traceback
-        return JSONResponse({"error": str(e), "trace": traceback.format_exc()}, status_code=500)
+# Smart Money endpoints moved earlier in the file (before /{index}
+# catch-all) to fix routing shadow — see lines ~890-960.
 
 
 @app.post("/api/structure/pulse-now")
