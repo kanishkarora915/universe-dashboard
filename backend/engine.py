@@ -61,14 +61,26 @@ INDEX_CONFIG = {
 
 # ── Dynamic Weight Loading + Engine Toggles ──────────────────────────────
 
+# RE-TUNED 2026-05-05 based on 244-trade backtest:
+#   trap_fingerprints  61.9% win, +₹6.4k avg     → BOOST 20→25
+#   seller_positioning 50%+ win, dominant +ve ₹  → KEEP 30
+#   price_action       49% win, biggest ₹ flow   → KEEP 20
+#   market_context     54% win (gap+max_pain)    → KEEP 15
+#   oi_flow            50% win (PCR-based)        → KEEP 15
+#   vwap               minor signal               → KEEP 5
+#   fii_dii            50% win small samples      → KEEP 10
+#   global_cues        unmeasured                  → KEEP 10
+#   multi_timeframe    34.6% win, -₹2L damage    → CUT 15→5  ⚠️
+# (premium_ratio is part of price_action — accuracy 27% will be
+#  addressed in price_action sub-weights instead)
 _WEIGHT_DEFAULTS = {
     "seller_positioning": 30,
-    "trap_fingerprints": 20,
+    "trap_fingerprints": 25,        # was 20 — best engine, boost
     "price_action": 20,
     "oi_flow": 15,
     "market_context": 15,
     "vwap": 5,
-    "multi_timeframe": 15,
+    "multi_timeframe": 5,           # was 15 — backtest -₹2L damage
     "fii_dii": 10,
     "global_cues": 10,
 }
@@ -2326,14 +2338,16 @@ class MarketEngine:
                     pe_shift = pe_trend[-1] - pe_trend[0]  # How much ratio shifted
                     ce_shift = ce_trend[-1] - ce_trend[0]
 
-                    # EARLY signal: cooking detected (ratio 50-55% but TRENDING UP)
+                    # RE-TUNED 2026-05-05: seller_cooking is BEST ₹/trade signal
+                    # (+₹15k avg, 50% win — only fires 12 times but BIG when it does).
+                    # Boosted multiplier 150 → 200 (0.05 shift = 10pts vs 7.5pts).
                     if pe_cooking and pe_shift > 0.03 and pe_ratio > 0.50:
-                        pts = min(W["seller_positioning"], int(pe_shift * 150))  # 0.05 shift = 7.5 pts
+                        pts = min(W["seller_positioning"], int(pe_shift * 200))  # boosted
                         bull_score += pts
                         bull_reasons.append(f"PE COOKING: ratio {pe_trend[0]*100:.0f}%→{pe_ratio*100:.0f}% in {len(pe_trend)} checks, trending UP [{pts}pts]")
 
                     if ce_cooking and ce_shift > 0.03 and ce_ratio > 0.50:
-                        pts = min(W["seller_positioning"], int(ce_shift * 150))
+                        pts = min(W["seller_positioning"], int(ce_shift * 200))  # boosted
                         bear_score += pts
                         bear_reasons.append(f"CE COOKING: ratio {ce_trend[0]*100:.0f}%→{ce_ratio*100:.0f}% in {len(ce_trend)} checks, trending UP [{pts}pts]")
 
@@ -2347,12 +2361,14 @@ class MarketEngine:
                     bear_score += pts
                     bear_reasons.append(f"CE dominant {ce_ratio*100:.0f}% ({ce_writing/100000:.1f}L vs PE {pe_writing/100000:.1f}L) [{pts}pts]")
 
-            # Short covering (unchanged — these are clear signals)
-            if ce_sc > oi_thr:
-                bull_score += min(10, int(ce_sc / oi_thr))
+            # RE-TUNED 2026-05-05: short_covering signal had 37.7% win
+            # rate in backtest. Reduced max points 10→4, raised threshold.
+            # It's still useful as confirmation but not as primary driver.
+            if ce_sc > oi_thr * 2:              # was oi_thr — stricter
+                bull_score += min(4, int(ce_sc / oi_thr / 2))   # was max 10
                 bull_reasons.append(f"CE short covering {ce_sc/100000:.1f}L = resistance weakening")
-            if pe_sc > oi_thr:
-                bear_score += min(10, int(pe_sc / oi_thr))
+            if pe_sc > oi_thr * 2:
+                bear_score += min(4, int(pe_sc / oi_thr / 2))
                 bear_reasons.append(f"PE short covering {pe_sc/100000:.1f}L = support weakening")
 
             _eng["seller_positioning"] = (bull_score - _bs0) + (bear_score - _be0)
@@ -2394,12 +2410,16 @@ class MarketEngine:
             ce_mom = pad.get("ceMomentum", 0)
             pe_mom = pad.get("peMomentum", 0)
 
-            if prem_ratio > 1.15:
-                pts = min(10, int((prem_ratio - 1) * 50))
+            # RE-TUNED 2026-05-05: premium_ratio signal had 26.8% win rate
+            # in backtest (-₹2.7L total). It's a LATE indicator — by the
+            # time prem ratio shows imbalance, big move already done.
+            # Reduced max points 10→3, raised threshold for firing.
+            if prem_ratio > 1.25:               # was 1.15 — stricter
+                pts = min(3, int((prem_ratio - 1) * 12))   # was max 10
                 bull_score += pts
                 bull_reasons.append(f"CE premium {prem_ratio}x PE = market pricing upside [{pts}pts]")
-            elif prem_ratio < 0.85:
-                pts = min(10, int((1 - prem_ratio) * 50))
+            elif prem_ratio < 0.80:             # was 0.85 — stricter
+                pts = min(3, int((1 - prem_ratio) * 12))
                 bear_score += pts
                 bear_reasons.append(f"PE premium {round(1/prem_ratio,2)}x CE = market pricing downside [{pts}pts]")
 
