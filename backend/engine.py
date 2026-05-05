@@ -2620,8 +2620,103 @@ class MarketEngine:
                 _eng[name] = (bull_score - _bs_before) + (bear_score - _be_before)
 
             # ════════════════════════════════════════════════
+            # SMART MOVE AWARENESS — adjust scores based on:
+            #   1. Range Position  — already near day extreme? bias is late
+            #   2. Move Exhaustion — already moved >0.5%? mean reversion zone
+            #   3. Capitulation    — opposite direction reversal forming?
+            # User insight: trend-following blindly = chops at exhausted moves.
+            # ════════════════════════════════════════════════
+            bias_adjustments = []
+            range_pos = 50  # default
+            from_open_pct = 0  # default
+            try:
+                # Compute range position (0=at day low, 100=at day high)
+                day_hi_local = self.day_high.get(index, ltp)
+                day_lo_local = self.day_low.get(index, ltp)
+                day_range = max(day_hi_local - day_lo_local, 0.001)
+                range_pos = round((ltp - day_lo_local) / day_range * 100, 1) if day_range > 0 else 50
+
+                # Move from open
+                from_open_pct = ((ltp - open_price) / open_price * 100) if open_price > 0 else 0
+
+                # ── 1. RANGE POSITION PENALTY ──
+                # Bearish bias near day low = move exhausted, halve conviction
+                if range_pos < 25 and bear_score > bull_score and from_open_pct < -0.4:
+                    old_bear = bear_score
+                    bear_score = int(bear_score * 0.5)
+                    bull_score += 8
+                    bias_adjustments.append({
+                        "name": "RANGE_PENALTY_BEAR",
+                        "reason": f"Spot near day-low (range {range_pos}%) after {from_open_pct:.2f}% drop — bearish bias EXHAUSTED, halved {old_bear}→{bear_score}, +8 to bull (bounce expected)",
+                        "old_bear": old_bear, "new_bear": bear_score, "bull_boost": 8,
+                    })
+                # Mirror: Bullish bias near day high = halve
+                elif range_pos > 75 and bull_score > bear_score and from_open_pct > 0.4:
+                    old_bull = bull_score
+                    bull_score = int(bull_score * 0.5)
+                    bear_score += 8
+                    bias_adjustments.append({
+                        "name": "RANGE_PENALTY_BULL",
+                        "reason": f"Spot near day-high (range {range_pos}%) after +{from_open_pct:.2f}% rally — bullish bias EXHAUSTED, halved {old_bull}→{bull_score}, +8 to bear (pullback expected)",
+                        "old_bull": old_bull, "new_bull": bull_score, "bear_boost": 8,
+                    })
+
+                # ── 2. MOVE EXHAUSTION (mid-zone too) ──
+                # Already moved >0.7% AND multi-TF aligned in same direction?
+                # Reduce conviction — fresh signal vs late entry
+                if abs(from_open_pct) > 0.7:
+                    if from_open_pct < 0 and bear_score > 30:  # big drop, bear signal
+                        old = bear_score
+                        bear_score = int(bear_score * 0.7)  # 30% reduction
+                        bias_adjustments.append({
+                            "name": "MOVE_EXHAUSTED_BEAR",
+                            "reason": f"Already {from_open_pct:.2f}% from open — bearish entries are LATE, conviction reduced 30% ({old}→{bear_score})",
+                            "old_bear": old, "new_bear": bear_score,
+                        })
+                    elif from_open_pct > 0 and bull_score > 30:
+                        old = bull_score
+                        bull_score = int(bull_score * 0.7)
+                        bias_adjustments.append({
+                            "name": "MOVE_EXHAUSTED_BULL",
+                            "reason": f"Already +{from_open_pct:.2f}% from open — bullish entries are LATE, conviction reduced 30% ({old}→{bull_score})",
+                            "old_bull": old, "new_bull": bull_score,
+                        })
+
+                # ── 3. CAPITULATION ENGINE BOOST ──
+                # Opposite-direction reversal forming? Boost it
+                try:
+                    import capitulation_engine as cap_eng
+                    cap_state = cap_eng.get_live_state() or {}
+                    cap_idx = (cap_state.get("results") or {}).get(index, {})
+                    cap_bull = (cap_idx.get("bullish") or {}).get("score", 0)
+                    cap_bear = (cap_idx.get("bearish") or {}).get("score", 0)
+
+                    # Capitulation bull = CE entry opportunity at bottom
+                    if cap_bull >= 5 and bear_score > bull_score:
+                        boost = int(cap_bull * 2)  # 5→10pts, 7→14pts
+                        bull_score += boost
+                        bias_adjustments.append({
+                            "name": "CAPITULATION_BULL",
+                            "reason": f"Capitulation engine sees BULLISH reversal forming (score {cap_bull}/10) — boost CE bias by +{boost}",
+                            "cap_score": cap_bull, "bull_boost": boost,
+                        })
+                    if cap_bear >= 5 and bull_score > bear_score:
+                        boost = int(cap_bear * 2)
+                        bear_score += boost
+                        bias_adjustments.append({
+                            "name": "CAPITULATION_BEAR",
+                            "reason": f"Capitulation engine sees BEARISH reversal forming (score {cap_bear}/10) — boost PE bias by +{boost}",
+                            "cap_score": cap_bear, "bear_boost": boost,
+                        })
+                except Exception:
+                    pass
+            except Exception as _e:
+                pass  # smart-bias is additive; never break verdict if it errors
+
+            # ════════════════════════════════════════════════
             # FINAL DECISION — Based on probability spread (out of ~390 max)
             # 11 original engines (190) + 4 buyer suites (200 = 60+50+40+50)
+            # Plus smart-move awareness adjustments
             # ════════════════════════════════════════════════
             bull_prob = min(bull_score, 390)
             bear_prob = min(bear_score, 390)
@@ -2768,6 +2863,20 @@ class MarketEngine:
                     "marketStructure": structure_result or {},
                 },
                 "isExpiryDay": is_expiry,
+                # NEW: Smart Move Awareness — what the system "thought about"
+                # before final verdict. Shows if bias was adjusted due to
+                # range position, move exhaustion, or capitulation reversal.
+                "smartBias": {
+                    "rangePosition": range_pos,
+                    "fromOpenPct": round(from_open_pct, 2),
+                    "adjustments": bias_adjustments,
+                    "verdict": (
+                        "EXHAUSTED_BEAR" if any(a.get("name") in ("RANGE_PENALTY_BEAR", "MOVE_EXHAUSTED_BEAR") for a in bias_adjustments)
+                        else "EXHAUSTED_BULL" if any(a.get("name") in ("RANGE_PENALTY_BULL", "MOVE_EXHAUSTED_BULL") for a in bias_adjustments)
+                        else "REVERSAL_FORMING" if any("CAPITULATION" in a.get("name", "") for a in bias_adjustments)
+                        else "TREND_FOLLOW"
+                    ),
+                },
             }
 
         return result

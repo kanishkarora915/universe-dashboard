@@ -6,6 +6,7 @@ import WatcherControls from "./components/WatcherControls";
 import WatcherStatusBadge from "./components/WatcherStatusBadge";
 import LivePositionChart from "./components/LivePositionChart";
 import WhyNoTradePanel from "./components/WhyNoTradePanel";
+import SmartBiasIndicator from "./components/SmartBiasIndicator";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -373,6 +374,9 @@ export default function PnLTracker() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* SMART BIAS INDICATOR — what verdict engine is thinking RIGHT NOW */}
+      <SmartBiasIndicator />
+
       {/* Independent Capital Tracker for MAIN P&L — base/running/profit-bank logic */}
       <CapitalTracker system="MAIN" />
 

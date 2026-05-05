@@ -23,6 +23,7 @@ import WatcherControls from "./components/WatcherControls";
 import WatcherStatusBadge from "./components/WatcherStatusBadge";
 import LivePositionChart from "./components/LivePositionChart";
 import ReversalCockpit from "./components/ReversalCockpit";
+import SmartBiasIndicator from "./components/SmartBiasIndicator";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -607,6 +608,9 @@ export default function ScalperTab() {
       <CapitalTracker system="SCALPER" />
 
       <CapitalUsagePanel usage={capitalUsage} config={config} todayPnl={todayPnl} openLivePnl={openLivePnl} />
+
+      {/* SMART BIAS INDICATOR — what verdict engine is thinking right now */}
+      <SmartBiasIndicator />
 
       {/* B4 — REVERSAL COCKPIT (capitulation + writer pressure + per-strike OI + smart money) */}
       <ReversalCockpit openTrades={openTrades} />
