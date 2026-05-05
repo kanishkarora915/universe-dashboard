@@ -7,9 +7,10 @@
  */
 
 import { useEffect, useState } from "react";
+import useSWRPoll from "./hooks/useSWRPoll";
 
 const API = import.meta.env.VITE_API_URL || "";
-const REFRESH_MS = 10000;
+const REFRESH_MS = 5000;  // was 10000 — tighter for "real-time" feel
 
 const SIGNAL_LABELS = {
   ce_writer_covering:  "CE Writer Covering",
@@ -27,32 +28,27 @@ const SIGNAL_LABELS = {
 };
 
 export default function ReversalTab() {
-  const [live, setLive] = useState(null);
-  const [history, setHistory] = useState([]);
   const [forcing, setForcing] = useState(false);
 
-  const refresh = async () => {
-    try {
-      const [l, h] = await Promise.all([
-        fetch(`${API}/api/reversal/live`).then(r => r.ok ? r.json() : null),
-        fetch(`${API}/api/reversal/history?limit=30`).then(r => r.ok ? r.json() : null),
-      ]);
-      if (l) setLive(l);
-      if (h) setHistory(h.events || []);
-    } catch (e) { /* silent */ }
-  };
-
-  useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, REFRESH_MS);
-    return () => clearInterval(t);
-  }, []);
+  // SWR — auto-refresh every 5s, ALSO refreshes on tab focus return.
+  // Was using raw setInterval which only fired while tab visible — and
+  // user complained about "not real-time" feel.
+  const { data: live, mutate: mutateLive } = useSWRPoll(
+    "/api/reversal/live",
+    { refreshInterval: REFRESH_MS, revalidateOnFocus: true }
+  );
+  const { data: histResp, mutate: mutateHist } = useSWRPoll(
+    "/api/reversal/history?limit=30",
+    { refreshInterval: 30000, revalidateOnFocus: true }
+  );
+  const history = histResp?.events || [];
 
   const forcePulse = async () => {
     setForcing(true);
     try {
       await fetch(`${API}/api/reversal/pulse-now`, { method: "POST" });
-      await refresh();
+      // Force fresh fetch — bypasses cache
+      await Promise.all([mutateLive(), mutateHist()]);
     } catch (e) { /* silent */ }
     finally { setForcing(false); }
   };

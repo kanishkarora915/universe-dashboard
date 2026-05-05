@@ -30,12 +30,19 @@ def ist_now():
 
 
 def init_mind_db():
-    """Daily pattern memory — survives deploys via persistent disk."""
+    """Daily pattern memory — survives deploys via persistent disk.
+
+    BUG FIX (2026-05-05): Old schema had `date TEXT NOT NULL UNIQUE`
+    WITHOUT idx in unique constraint. Result: BANKNIFTY EOD recording
+    each day OVERWROTE the NIFTY recording (same date). User saw 6
+    BANKNIFTY days but 0 NIFTY days. Migration below converts to
+    composite (date, idx) uniqueness.
+    """
     conn = sqlite3.connect(str(MIND_DB))
     conn.execute("""
         CREATE TABLE IF NOT EXISTS day_patterns (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL UNIQUE,
+            date TEXT NOT NULL,
             idx TEXT NOT NULL,
 
             -- Opening context (9:15-9:30)
@@ -85,6 +92,58 @@ def init_mind_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_dp_date ON day_patterns(date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_dp_idx ON day_patterns(idx)")
+
+    # Migration: drop old single-column UNIQUE constraint on `date` if present.
+    # SQLite UNIQUE constraints are enforced via auto-created indexes — we
+    # detect the auto index name `sqlite_autoindex_day_patterns_*` and rebuild
+    # the table without it. Composite UNIQUE(date, idx) replaces it.
+    try:
+        # Check if old auto-unique index exists on date column alone
+        rows = conn.execute("""
+            SELECT name FROM sqlite_master
+             WHERE type='index' AND tbl_name='day_patterns'
+               AND name LIKE 'sqlite_autoindex_day_patterns_%'
+        """).fetchall()
+        if rows:
+            # Old schema present — migrate via table copy
+            print(f"[MIND] migrating day_patterns schema (drop UNIQUE date) — {len(rows)} stale auto-index")
+            conn.execute("ALTER TABLE day_patterns RENAME TO day_patterns_old")
+            conn.execute("""
+                CREATE TABLE day_patterns (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT NOT NULL,
+                    idx TEXT NOT NULL,
+                    prev_close REAL, open_price REAL, gap_pct REAL, open_type TEXT,
+                    pcr_10am REAL, vix_10am REAL, ivr_10am REAL, max_pain_10am INTEGER,
+                    big_ce_wall INTEGER, big_pe_wall INTEGER,
+                    day_high REAL, day_low REAL, day_close REAL,
+                    day_range_pct REAL, day_change_pct REAL, direction TEXT,
+                    ce_oi_change INTEGER, pe_oi_change INTEGER,
+                    pcr_shift REAL, max_pain_shift INTEGER,
+                    fii_net REAL, global_bias TEXT,
+                    best_strike_ce INTEGER, best_strike_ce_pnl_pct REAL,
+                    best_strike_pe INTEGER, best_strike_pe_pnl_pct REAL,
+                    what_happened TEXT, why_happened TEXT,
+                    created_at TEXT,
+                    UNIQUE(date, idx)
+                )
+            """)
+            conn.execute("""
+                INSERT OR IGNORE INTO day_patterns
+                SELECT * FROM day_patterns_old
+            """)
+            conn.execute("DROP TABLE day_patterns_old")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_dp_date ON day_patterns(date)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_dp_idx ON day_patterns(idx)")
+            print("[MIND] migration complete — composite UNIQUE(date, idx) installed")
+        else:
+            # Already migrated or fresh table — ensure composite unique exists
+            conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_dp_date_idx
+                ON day_patterns(date, idx)
+            """)
+    except Exception as _e:
+        print(f"[MIND] schema migration warning: {_e}")
 
     # Pattern similarity cache (computed on demand, cached for session)
     conn.execute("""
