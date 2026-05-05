@@ -4,24 +4,13 @@ import { FONT, TEXT_SIZE, TEXT_WEIGHT, SPACE, RADIUS, TRANSITION, Z } from "../t
 import { prefetchMany } from "../utils/prefetch";
 
 // N5: Hover-intent prefetch — tab id → endpoints to warm
+// Only known-valid endpoints to avoid 404 storms during prefetch.
 const TAB_PREFETCH = {
-  pnl:      ["/api/positions/health", "/api/trades/open"],
+  pnl:      ["/api/positions/health"],
   scalper:  ["/api/scalper/trades/open", "/api/scalper/stats",
-             "/api/scalper/oi-context?idx=NIFTY",
-             "/api/scalper/oi-context?idx=BANKNIFTY",
              "/api/reversal/live"],
-  reversal: ["/api/reversal/live", "/api/reversal/history"],
-  oi:       ["/api/oi-summary", "/api/multi-tf"],
-  autopsy:  ["/api/autopsy/today"],
-  reports:  ["/api/scalper/trades/closed?days=7"],
-  health:   ["/api/system/health"],
+  reversal: ["/api/reversal/live"],
   ttimes:   ["/api/times/events?idx=NIFTY"],
-  intraday: ["/api/intraday/state"],
-  nextday:  ["/api/nextday/forecast"],
-  weekly:   ["/api/weekly/state"],
-  hidden:   ["/api/hidden-shift"],
-  priceact: ["/api/signals"],
-  backtest: ["/api/backtest/recent"],
 };
 
 // Tab IDs aligned with Universe.jsx (oichange, ttimes — not oi, times)

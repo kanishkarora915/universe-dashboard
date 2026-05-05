@@ -438,13 +438,15 @@ class MarketEngine:
         import time as _time, threading
         now = _time.time()
 
-        # C2: Position Watcher — HEALTH-ESCALATING adaptive cadence
+        # C2 (REVISED): Position Watcher — HEALTH-ESCALATING cadence
+        # Floor lifted from 1s → 3s minimum. 1s pulse with 3+ open trades
+        # was creating SQLite write contention on Render's single CPU
+        # (each pulse = 9 DB ops × N trades). 3s gives breathing room
+        # while keeping sub-3s SL reaction.
         # Idle (no trades)            → 30s
         # All trades healthy (>=6)    → 10s
-        # Any trade health 4-6        → 3s   (warming, watch close)
-        # Any trade health <4 (CRIT)  → 1s   (sub-second SL reaction)
-        # Logic: pull cached health states, find the WORST score among open
-        # trades, choose interval based on it. Cheap (in-memory dict read).
+        # Any trade health 4-6        → 5s   (warming)
+        # Any trade health <4 (CRIT)  → 3s   (was 1s — too aggressive)
         if not hasattr(self, "_watcher_last_pulse"):
             self._watcher_last_pulse = 0
         try:
@@ -453,22 +455,20 @@ class MarketEngine:
             if not _last_health:
                 watcher_interval = 30
             else:
-                # Worst (lowest) score across all open trades
                 _scores = [(h.get("score") or 10) for h in _last_health
                            if not h.get("stub")]
                 if not _scores:
-                    # Only stubs — treat as warming, faster pulse
-                    watcher_interval = 3
+                    watcher_interval = 5  # was 3 — stubs don't need racy pulse
                 else:
                     worst = min(_scores)
                     if worst < 4:
-                        watcher_interval = 1   # CRITICAL — exit imminent
+                        watcher_interval = 3   # was 1
                     elif worst < 6:
-                        watcher_interval = 3   # warming
+                        watcher_interval = 5   # was 3
                     else:
-                        watcher_interval = 10  # healthy
+                        watcher_interval = 10
         except Exception:
-            watcher_interval = 10  # safe default
+            watcher_interval = 10
         if now - self._watcher_last_pulse >= watcher_interval:
             self._watcher_last_pulse = now
             def _watcher_run():
@@ -4071,7 +4071,7 @@ class MarketEngine:
         # market close).
         if not hasattr(self, "_watcher_last_pulse"):
             self._watcher_last_pulse = 0
-        # C2: Same health-escalating cadence as primary scheduler.
+        # C2 (REVISED): floor at 3s minimum — same as primary scheduler.
         try:
             import position_watcher as _pw_mod
             _legacy_health = _pw_mod.get_last_health() or []
@@ -4081,10 +4081,10 @@ class MarketEngine:
                 _legacy_scores = [(h.get("score") or 10) for h in _legacy_health
                                   if not h.get("stub")]
                 if not _legacy_scores:
-                    _legacy_interval = 3
+                    _legacy_interval = 5
                 else:
                     _worst = min(_legacy_scores)
-                    _legacy_interval = (1 if _worst < 4 else 3 if _worst < 6 else 10)
+                    _legacy_interval = (3 if _worst < 4 else 5 if _worst < 6 else 10)
         except Exception:
             _legacy_interval = 10
         if now - self._watcher_last_pulse >= _legacy_interval:

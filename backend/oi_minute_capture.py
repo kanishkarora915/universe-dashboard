@@ -99,10 +99,23 @@ def capture_pulse(engine):
     return {"inserted": rows_inserted, "ts": now_ts}
 
 
+# Per-strike-history cache (in-memory). Watcher pulse calls this every
+# 3-30s per open trade — without cache that's a DB hit per pulse per
+# trade. With 30s TTL the read load drops by ~10x.
+_strike_hist_cache: Dict[str, Dict] = {}  # key: f"{idx}:{strike}:{minutes}" → {ts, data}
+_STRIKE_HIST_TTL = 30  # seconds
+
+
 def get_strike_history(idx: str, strike: int, minutes: int = 60) -> List[Dict]:
-    """Per-strike per-minute history (last N minutes)."""
+    """Per-strike per-minute history (last N minutes). Cached 30s."""
+    cache_key = f"{idx.upper()}:{int(strike)}:{minutes}"
+    cached = _strike_hist_cache.get(cache_key)
+    now = time.time()
+    if cached and (now - cached["ts"]) < _STRIKE_HIST_TTL:
+        return cached["data"]
+
     _init_db()
-    cutoff = time.time() - minutes * 60
+    cutoff = now - minutes * 60
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute("""
         SELECT ts, ce_oi, ce_ltp, pe_oi, pe_ltp, spot
@@ -111,10 +124,12 @@ def get_strike_history(idx: str, strike: int, minutes: int = 60) -> List[Dict]:
         ORDER BY ts ASC
     """, (idx.upper(), int(strike), cutoff)).fetchall()
     conn.close()
-    return [{
+    data = [{
         "ts": r[0], "ce_oi": r[1], "ce_ltp": r[2],
         "pe_oi": r[3], "pe_ltp": r[4], "spot": r[5],
     } for r in rows]
+    _strike_hist_cache[cache_key] = {"ts": now, "data": data}
+    return data
 
 
 def get_all_strikes_for_idx(idx: str, minutes: int = 30) -> Dict[int, List[Dict]]:
