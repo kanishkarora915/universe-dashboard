@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useTheme } from "../ThemeContext";
 import { FONT, TEXT_SIZE, TEXT_WEIGHT, SPACE, RADIUS, TRANSITION, Z } from "../theme";
+import useViewport from "../hooks/useViewport";
 
 function MiniTicker({ label, price, change, pct, theme }) {
   const isUp = change >= 0;
@@ -164,6 +165,7 @@ export default function TopBar({
   onHelpClick,
 }) {
   const { theme, isDark } = useTheme();
+  const { isMobile } = useViewport();
   const [now, setNow] = useState(new Date());
 
   useEffect(() => {
@@ -183,15 +185,15 @@ export default function TopBar({
       `}</style>
       <header
         style={{
-          height: 56,
+          height: isMobile ? 48 : 56,
           background: theme.SCRIM,
           backdropFilter: "blur(12px)",
           WebkitBackdropFilter: "blur(12px)",
           borderBottom: `1px solid ${theme.BORDER}`,
           display: "flex",
           alignItems: "center",
-          padding: `0 ${SPACE.LG}px`,
-          gap: SPACE.LG,
+          padding: `0 ${isMobile ? SPACE.SM : SPACE.LG}px`,
+          gap: isMobile ? SPACE.SM : SPACE.LG,
           flexShrink: 0,
           position: "sticky",
           top: 0,
@@ -199,7 +201,7 @@ export default function TopBar({
         }}
       >
         {/* Logo */}
-        <div style={{ display: "flex", alignItems: "baseline", gap: SPACE.SM, minWidth: 180 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: SPACE.SM, minWidth: isMobile ? 0 : 180 }}>
           <span
             style={{
               color: theme.ACCENT,
@@ -223,23 +225,34 @@ export default function TopBar({
             >
               UNIVERSE
             </div>
-            <div
-              style={{
-                color: theme.TEXT_DIM,
-                fontSize: 8,
-                fontWeight: TEXT_WEIGHT.BOLD,
-                letterSpacing: 1.5,
-                fontFamily: FONT.UI,
-                marginTop: 2,
-              }}
-            >
-              by Kanishk Arora
-            </div>
+            {!isMobile && (
+              <div
+                style={{
+                  color: theme.TEXT_DIM,
+                  fontSize: 8,
+                  fontWeight: TEXT_WEIGHT.BOLD,
+                  letterSpacing: 1.5,
+                  fontFamily: FONT.UI,
+                  marginTop: 2,
+                }}
+              >
+                by Kanishk Arora
+              </div>
+            )}
           </div>
         </div>
 
         {/* Ticker row */}
-        <div style={{ display: "flex", alignItems: "center", gap: SPACE.LG, flex: 1 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: isMobile ? SPACE.SM : SPACE.LG,
+            flex: 1,
+            minWidth: 0,
+            overflowX: isMobile ? "auto" : "visible",
+          }}
+        >
           <MiniTicker
             label="NIFTY"
             price={nifty?.ltp}
@@ -306,69 +319,82 @@ export default function TopBar({
           )}
         </div>
 
-        {/* Search trigger */}
-        <button
-          onClick={onSearchClick}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: SPACE.SM,
-            padding: `6px ${SPACE.MD}px`,
-            background: theme.SURFACE_HI,
-            color: theme.TEXT_MUTED,
-            border: `1px solid ${theme.BORDER}`,
-            borderRadius: RADIUS.MD,
-            cursor: "pointer",
-            fontSize: TEXT_SIZE.BODY,
-            fontFamily: FONT.UI,
-            transition: TRANSITION.FAST,
-            minWidth: 240,
-            textAlign: "left",
-          }}
-          onMouseOver={(e) => {
-            e.currentTarget.style.borderColor = theme.BORDER_HI;
-            e.currentTarget.style.color = theme.TEXT;
-          }}
-          onMouseOut={(e) => {
-            e.currentTarget.style.borderColor = theme.BORDER;
-            e.currentTarget.style.color = theme.TEXT_MUTED;
-          }}
-        >
-          <span style={{ fontSize: 14 }}>⌕</span>
-          <span style={{ flex: 1 }}>Search strike, action...</span>
-          <span
-            style={{
-              fontSize: 10,
-              padding: "2px 6px",
-              background: theme.BG,
-              borderRadius: RADIUS.XS,
-              fontFamily: FONT.MONO,
-              color: theme.TEXT_DIM,
-            }}
-          >
-            ⌘K
-          </span>
-        </button>
-
-        {/* Right controls */}
-        <div style={{ display: "flex", alignItems: "center", gap: SPACE.XS }}>
-          <span
-            style={{
-              color: theme.TEXT_DIM,
-              fontSize: 11,
-              fontFamily: FONT.MONO,
-              marginRight: SPACE.SM,
-            }}
-          >
-            {timeStr}
-          </span>
-
+        {/* Search trigger — full bar on desktop, icon-only on mobile */}
+        {isMobile ? (
           <IconButton
-            icon="?"
-            onClick={onHelpClick}
-            title="Keyboard shortcuts (?)"
+            icon="⌕"
+            onClick={onSearchClick}
+            title="Search (⌘K)"
             theme={theme}
           />
+        ) : (
+          <button
+            onClick={onSearchClick}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: SPACE.SM,
+              padding: `6px ${SPACE.MD}px`,
+              background: theme.SURFACE_HI,
+              color: theme.TEXT_MUTED,
+              border: `1px solid ${theme.BORDER}`,
+              borderRadius: RADIUS.MD,
+              cursor: "pointer",
+              fontSize: TEXT_SIZE.BODY,
+              fontFamily: FONT.UI,
+              transition: TRANSITION.FAST,
+              minWidth: 240,
+              textAlign: "left",
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.borderColor = theme.BORDER_HI;
+              e.currentTarget.style.color = theme.TEXT;
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.borderColor = theme.BORDER;
+              e.currentTarget.style.color = theme.TEXT_MUTED;
+            }}
+          >
+            <span style={{ fontSize: 14 }}>⌕</span>
+            <span style={{ flex: 1 }}>Search strike, action...</span>
+            <span
+              style={{
+                fontSize: 10,
+                padding: "2px 6px",
+                background: theme.BG,
+                borderRadius: RADIUS.XS,
+                fontFamily: FONT.MONO,
+                color: theme.TEXT_DIM,
+              }}
+            >
+              ⌘K
+            </span>
+          </button>
+        )}
+
+        {/* Right controls — clock, help, settings hidden on mobile */}
+        <div style={{ display: "flex", alignItems: "center", gap: SPACE.XS, flexShrink: 0 }}>
+          {!isMobile && (
+            <span
+              style={{
+                color: theme.TEXT_DIM,
+                fontSize: 11,
+                fontFamily: FONT.MONO,
+                marginRight: SPACE.SM,
+              }}
+            >
+              {timeStr}
+            </span>
+          )}
+
+          {!isMobile && (
+            <IconButton
+              icon="?"
+              onClick={onHelpClick}
+              title="Keyboard shortcuts (?)"
+              theme={theme}
+            />
+          )}
 
           <IconButton
             icon={isDark ? "☀" : "☾"}
@@ -385,12 +411,14 @@ export default function TopBar({
             theme={theme}
           />
 
-          <IconButton
-            icon="⚙"
-            onClick={onSettingsClick}
-            title="Settings"
-            theme={theme}
-          />
+          {!isMobile && (
+            <IconButton
+              icon="⚙"
+              onClick={onSettingsClick}
+              title="Settings"
+              theme={theme}
+            />
+          )}
 
           <LiveIndicator theme={theme} status={liveStatus} />
         </div>

@@ -12,6 +12,7 @@
  */
 
 import React, { useState, useEffect } from "react";
+import { responsiveGridCols } from "../hooks/useViewport";
 
 const PURPLE = "#a855f7";
 const GREEN = "#26a69a";
@@ -154,7 +155,7 @@ export default function EODForecastCard() {
       )}
 
       {/* Tomorrow Gap + Bias */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: responsiveGridCols(220), gap: 8, marginBottom: 12 }}>
         <div style={cellBox}>
           <div style={labelStyle}>TOMORROW GAP</div>
           <div style={{
@@ -181,7 +182,7 @@ export default function EODForecastCard() {
       {trapZones && (trapZones.bull_trap_above || trapZones.bear_trap_below) && (
         <div style={{ marginBottom: 12 }}>
           <div style={labelStyle}>🎯 TRAP ZONES</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 6 }}>
+          <div style={{ display: "grid", gridTemplateColumns: responsiveGridCols(220), gap: 8, marginTop: 6 }}>
             {trapZones.bull_trap_above && (
               <div style={{ ...cellBox, borderColor: `${RED}33` }}>
                 <div style={{ fontSize: 9, color: RED, fontWeight: 700 }}>▼ BULL TRAP</div>
@@ -211,7 +212,7 @@ export default function EODForecastCard() {
       {reversalLevels && (reversalLevels.strong_support || reversalLevels.strong_resistance) && (
         <div style={{ marginBottom: 12 }}>
           <div style={labelStyle}>🔄 REVERSAL LEVELS</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 6 }}>
+          <div style={{ display: "grid", gridTemplateColumns: responsiveGridCols(220), gap: 8, marginTop: 6 }}>
             {reversalLevels.strong_support && (
               <div style={cellBox}>
                 <div style={{ fontSize: 9, color: GREEN, fontWeight: 700 }}>STRONG SUPPORT</div>
@@ -261,7 +262,7 @@ export default function EODForecastCard() {
       {timeWindows && (timeWindows.best || timeWindows.avoid) && (
         <div style={{ marginBottom: 12 }}>
           <div style={labelStyle}>⏰ TIME WINDOWS</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 6 }}>
+          <div style={{ display: "grid", gridTemplateColumns: responsiveGridCols(220), gap: 8, marginTop: 6 }}>
             <div>
               <div style={{ fontSize: 9, color: GREEN, fontWeight: 700, marginBottom: 4 }}>✓ BEST</div>
               {(timeWindows.best || []).map((w, i) => (

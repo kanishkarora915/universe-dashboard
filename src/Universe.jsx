@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, lazy, Suspense } from "react";
 import { useMarketData } from "./useMarketData";
+import useViewport from "./hooks/useViewport";
 
 // ── Always-loaded (critical path for home page) ──
 import BuyerCockpit from "./components/BuyerCockpit";
@@ -505,13 +506,13 @@ function LiveDataTab({ liveData }) {
             </div>
           )}
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(80px, 100%), 1fr))", gap: 10, marginBottom: 10 }}>
             <Stat label="LTP"    value={d.ltp.toLocaleString("en-IN")} />
             <Stat label="Change" value={`${d.change > 0 ? "+" : ""}${d.change} (${d.changePct}%)`} color={d.change > 0 ? GREEN : RED} />
             <Stat label="High"   value={d.high?.toLocaleString("en-IN")} color={GREEN} />
             <Stat label="Low"    value={d.low?.toLocaleString("en-IN")}  color={RED}   />
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(80px, 100%), 1fr))", gap: 10, marginBottom: 10 }}>
             <Stat label="PCR" value={d.pcr}
               color={d.pcr < 0.7 ? RED : d.pcr > 1.3 ? GREEN : YELLOW}
               sub={d.pcr < 0.7 ? "Bearish extreme" : d.pcr > 1.3 ? "Bullish extreme" : "Neutral zone"} />
@@ -583,7 +584,7 @@ function SignalsTab({ realSignals }) {
               <div style={{ color: "#444", fontSize: 10 }}>CONFLUENCE</div>
             </div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(80px, 100%), 1fr))", gap: 10, marginBottom: 14 }}>
             <Stat label="Entry"    value={`₹${s.entry}`} />
             <Stat label="Target 1" value={`₹${s.t1}`}    color={GREEN} />
             <Stat label="Target 2" value={`₹${s.t2}`}    color={GREEN} />
@@ -702,7 +703,7 @@ function IntradayTab({ realData }) {
       </Card>
       <Card>
         <Label>Key Technical Levels Today {hasReal ? "(REAL)" : "(Loading...)"}</Label>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(280px, 100%), 1fr))", gap: 10 }}>
           {techLevels.map(t => (
             <Stat key={t.label} label={t.label} value={t.value} color={t.color} />
           ))}
@@ -711,7 +712,7 @@ function IntradayTab({ realData }) {
       {pivotLevels.length > 0 && (
         <Card>
           <Label>Pivot Points + EMAs (REAL)</Label>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(280px, 100%), 1fr))", gap: 10 }}>
             {pivotLevels.map(t => (
               <Stat key={t.label} label={t.label} value={t.value} color={t.color} />
             ))}
@@ -759,7 +760,7 @@ function NextDayTab({ realData }) {
               <div style={{ color: PURPLE, fontWeight: 700 }}>{data.maxPain.toLocaleString("en-IN")}</div>
             </div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(280px, 100%), 1fr))", gap: 12, marginBottom: 12 }}>
             <div style={{ background: "#0D0D15", borderRadius: 8, padding: "12px 14px" }}>
               <Label>Resistance Levels</Label>
               {data.resistance.map((r, i) => (
@@ -828,7 +829,7 @@ function WeeklyTab({ realData }) {
           <span style={{ color: ACCENT, fontWeight: 900, fontSize: 16 }}>WEEKLY OUTLOOK</span>
           <span style={{ color: "#555", fontSize: 12 }}>{w.week}</span>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(280px, 100%), 1fr))", gap: 12, marginBottom: 16 }}>
           {[
             { label: "Nifty Bias",     value: w.niftyBias, range: `${w.niftyRange.low}–${w.niftyRange.high}`, color: RED },
             { label: "BankNifty Bias", value: w.bnBias,    range: `${w.bnRange.low}–${w.bnRange.high}`,       color: RED },
@@ -910,7 +911,7 @@ function UnusualTab({ unusualData, oiData }) {
               <span style={{ color: ACCENT, fontWeight: 900, fontSize: 14 }}>{label} OI FLOW</span>
               <span style={{ color: "#444", fontSize: 10 }}>LTP: {d.ltp?.toLocaleString("en-IN")} | {d.timestamp}</span>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100px, 100%), 1fr))", gap: 8, marginBottom: 8 }}>
               {/* CE Side */}
               <div style={{ background: RED + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${RED}22` }}>
                 <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1, marginBottom: 6 }}>CALL STRIKES</div>
@@ -1050,7 +1051,7 @@ function SellersTab({ data }) {
                 <span style={{ color: ORANGE, fontWeight: 900, fontSize: 14 }}>{label} SELLER FLOW</span>
                 <span style={{ color: "#444", fontSize: 10 }}>LTP: {d.ltp?.toLocaleString("en-IN")} | {d.timestamp}</span>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 8 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(80px, 100%), 1fr))", gap: 8, marginBottom: 8 }}>
                 {/* +OI */}
                 <div style={{ background: GREEN + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${GREEN}22`, textAlign: "center" }}>
                   <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1 }}>+OI (Added)</div>
@@ -1080,7 +1081,7 @@ function SellersTab({ data }) {
 
             {/* ROW 2: CE/PE SELLER BREAKDOWN */}
             <Card style={{ background: "#0D0D15", border: `1px solid ${BORDER}` }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(280px, 100%), 1fr))", gap: 10 }}>
                 {/* CE SELLERS */}
                 <div style={{ background: RED + "06", borderRadius: 8, padding: "10px 12px", border: `1px solid ${RED}15` }}>
                   <div style={{ color: RED, fontSize: 11, fontWeight: 900, marginBottom: 8 }}>CE SELLERS (Resistance)</div>
@@ -1288,7 +1289,7 @@ function TradeAITab({ data }) {
               </div>
 
               {/* Seller Stats Grid */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100px, 100%), 1fr))", gap: 8, marginBottom: 12 }}>
                 <div style={{ background: ORANGE + "0A", borderRadius: 8, padding: "8px 12px", border: `1px solid ${ORANGE}22` }}>
                   <div style={{ color: "#555", fontSize: 9, fontWeight: 700, letterSpacing: 1 }}>CE WRITERS</div>
                   <div style={{ color: ORANGE, fontSize: 16, fontWeight: 900, marginTop: 4 }}>{fmtL(d.sellerStats?.ceWriting)}</div>
@@ -1442,7 +1443,7 @@ function HiddenShiftTab({ data }) {
                 </div>
                 <span style={{ color: "#444", fontSize: 10 }}>{d.timestamp} | Snap: {d.snapshotAge}m ago</span>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(80px, 100%), 1fr))", gap: 8, marginBottom: 12 }}>
                 <div style={{ background: "#111118", borderRadius: 8, padding: "6px 10px", textAlign: "center" }}>
                   <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>LTP NOW</div>
                   <div style={{ color: "#fff", fontSize: 14, fontWeight: 900 }}>{d.ltp?.toLocaleString("en-IN")}</div>
@@ -1615,7 +1616,7 @@ function AIBrainTab() {
             </div>
           </div>
           {d.verdict !== "NO TRADE" && (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 8, marginBottom: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(60px, 100%), 1fr))", gap: 8, marginBottom: 12 }}>
               <div style={{ background: "#111118", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
                 <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>STRIKE</div>
                 <div style={{ color: "#fff", fontSize: 16, fontWeight: 900 }}>{d.strike}</div>
@@ -1876,7 +1877,7 @@ function PriceActionTab() {
               </div>
 
               {trade.action !== "WAIT" && (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 8, marginBottom: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(60px, 100%), 1fr))", gap: 8, marginBottom: 12 }}>
                   {[
                     { label: "STRIKE", value: trade.strike, color: "#fff" },
                     { label: "ENTRY", value: `₹${trade.entry?.toFixed(1)}`, color: GREEN },
@@ -1899,7 +1900,7 @@ function PriceActionTab() {
             </Card>
 
             {/* BIAS CARDS */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(80px, 100%), 1fr))", gap: 8 }}>
               <div style={{ background: (biasColors[d.premBias] || "#555") + "0A", borderRadius: 8, padding: "8px 10px", textAlign: "center", border: `1px solid ${biasColors[d.premBias] || "#555"}22` }}>
                 <div style={{ color: "#555", fontSize: 9, fontWeight: 700 }}>PREMIUM BIAS</div>
                 <div style={{ color: biasColors[d.premBias] || "#555", fontSize: 14, fontWeight: 900, marginTop: 3 }}>{d.premBias}</div>
@@ -2136,7 +2137,7 @@ function TrapFinderTab() {
             {v.action !== "NO TRADE" && t.entry > 0 && (
               <div style={{ background: ac + "08", borderRadius: 10, padding: "12px 14px", marginBottom: 12, border: `1px solid ${ac}33` }}>
                 <div style={{ color: ac, fontSize: 11, fontWeight: 900, marginBottom: 8 }}>TRADE SETUP</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 8 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(60px, 100%), 1fr))", gap: 8 }}>
                   {[
                     { label: "STRIKE", value: t.strike, color: "#fff" },
                     { label: "ENTRY", value: `₹${t.entry}`, color: "#fff" },
@@ -2303,7 +2304,7 @@ function TrapFinderTab() {
               </div>
 
               {/* Data Grid */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 14 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(140px, 100%), 1fr))", gap: 8, marginBottom: 14 }}>
                 {[
                   { label: "Open Interest", value: fmtL(s.oi), color: "#ccc" },
                   { label: "OI Change", value: `${s.oiChange > 0 ? "+" : ""}${fmtL(s.oiChange)}`, color: s.oiChange > 0 ? GREEN : RED },
@@ -2393,7 +2394,7 @@ function TrapFinderTab() {
                 <span style={{ color: borderColor, fontWeight: 900, fontSize: 12 }}>EXPIRY: {exp.label}</span>
                 <span style={{ background: bc + "22", color: bc, padding: "2px 8px", borderRadius: 4, fontSize: 9, fontWeight: 700 }}>{exp.sellerBias}</span>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6, marginBottom: 6 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100px, 100%), 1fr))", gap: 6, marginBottom: 6 }}>
                 <div style={{ textAlign: "center" }}>
                   <div style={{ color: RED, fontSize: 9 }}>Fingerprints</div>
                   <div style={{ color: RED, fontWeight: 900, fontSize: 14 }}>{exp.fingerprints}</div>
@@ -2677,6 +2678,7 @@ function PromptTab() {
 
 export default function Universe({ onLogout }) {
   const { theme, toggle: toggleTheme } = useTheme();
+  const { isMobile } = useViewport();
   const [activeTab, setActiveTab] = useState("dashboard");
   const [searchOpen, setSearchOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
@@ -2920,8 +2922,16 @@ export default function Universe({ onLogout }) {
         onHelpClick={() => setHelpOpen(true)}
       />
 
-      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        {/* LEFT SIDEBAR — primary 6 tabs + watchlist + replay + battle */}
+      <div style={{
+        display: "flex",
+        flex: 1,
+        minHeight: 0,
+        // On mobile: Sidebar is fixed bottom strip, so main area
+        // gets bottom padding equal to its 52px height to avoid overlap.
+        paddingBottom: isMobile ? 52 : 0,
+      }}>
+        {/* LEFT SIDEBAR — primary 6 tabs + watchlist + replay + battle.
+            On mobile, becomes fixed bottom strip via Sidebar's own logic. */}
         <Sidebar
           activeTab={activeTab}
           onTabChange={setActiveTab}
@@ -2937,7 +2947,7 @@ export default function Universe({ onLogout }) {
         />
 
         {/* MAIN AREA — section nav + content */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
 
       {/* COMMAND DECK — Section-based navigation (replaces cluttered 19-tab bar) */}
       <SectionNav

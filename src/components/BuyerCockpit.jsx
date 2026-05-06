@@ -9,6 +9,7 @@
 
 import React, { useMemo, useState, useEffect } from "react";
 import { SPACE, RADIUS, TEXT_SIZE, TEXT_WEIGHT, FONT } from "../theme";
+import { responsiveGridCols } from "../hooks/useViewport";
 import NextDayPredictor from "./NextDayPredictor";
 import OIHeatmap from "./OIHeatmap";
 import AutopsyMindWidget from "./AutopsyMindWidget";
@@ -374,7 +375,7 @@ export function EnhancedVerdictCard({ index, verdict, reasons }) {
           )}
 
           {/* Price row */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: SPACE.XS, marginTop: SPACE.XS }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(70px, 1fr))", gap: SPACE.XS, marginTop: SPACE.XS }}>
             <PriceBox label="ENTRY" value={`₹${entry}`} color={color} highlight />
             <PriceBox label="SL" value={`₹${sl}`} subtext={maxLoss ? `-₹${Math.abs(maxLoss).toLocaleString()}` : ""} color={RED} />
             <PriceBox label="T1" value={`₹${t1}`} subtext={t1Profit ? `+₹${t1Profit.toLocaleString()}` : ""} color={GREEN} />
@@ -513,7 +514,7 @@ export function OpenPositionsQuick({ positions }) {
               border: `1px solid ${color}44`,
               borderRadius: RADIUS.MD,
               display: "grid",
-              gridTemplateColumns: "2fr 1fr 1fr 1fr",
+              gridTemplateColumns: "minmax(140px, 2fr) repeat(auto-fit, minmax(60px, 1fr))",
               gap: SPACE.SM,
               alignItems: "center",
             }}
@@ -582,11 +583,11 @@ export default function BuyerCockpit({ live, verdicts, reasonsMap, openPositions
       {/* 1. GO/NO-GO Banner */}
       <GoNoGoBanner live={live} niftyVerdict={nifty} bnVerdict={bn} />
 
-      {/* 2. Dual Verdict Cards */}
+      {/* 2. Dual Verdict Cards — stack on mobile */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "1fr 1fr",
+          gridTemplateColumns: responsiveGridCols(320),
           gap: SPACE.MD,
         }}
       >
@@ -607,7 +608,7 @@ export default function BuyerCockpit({ live, verdicts, reasonsMap, openPositions
       <OpenPositionsQuick positions={openPositions} />
 
       {/* OI Insight — TODAY's OI Change vs TOTAL OI with buyer interpretation */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: responsiveGridCols(280), gap: 12, marginTop: 12 }}>
         <OIInsightPanel index="NIFTY" />
         <OIInsightPanel index="BANKNIFTY" />
       </div>
@@ -619,7 +620,7 @@ export default function BuyerCockpit({ live, verdicts, reasonsMap, openPositions
       <NextDayPredictor />
 
       {/* 7. Smart Autopsy Mind — pattern-based predictive alerts */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: responsiveGridCols(280), gap: 12, marginTop: 12 }}>
         <AutopsyMindWidget index="NIFTY" />
         <AutopsyMindWidget index="BANKNIFTY" />
       </div>

@@ -16,6 +16,7 @@
 
 import { memo } from "react";
 import useSWRPoll from "../hooks/useSWRPoll";
+import { responsiveGridCols } from "../hooks/useViewport";
 
 const C = {
   bg: "#15151F",
@@ -84,7 +85,7 @@ function ForecastCardImpl() {
         </span>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: responsiveGridCols(280), gap: 8 }}>
         <ForecastIndex label="NIFTY" data={nifty} />
         <ForecastIndex label="BANKNIFTY" data={bn} />
       </div>

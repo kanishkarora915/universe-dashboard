@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTheme } from "../ThemeContext";
 import { FONT, TEXT_SIZE, TEXT_WEIGHT, SPACE, RADIUS, TRANSITION, Z } from "../theme";
 import { prefetchMany } from "../utils/prefetch";
+import useViewport from "../hooks/useViewport";
 
 // N5: Hover-intent prefetch — tab id → endpoints to warm
 // Only known-valid endpoints to avoid 404 storms during prefetch.
@@ -268,7 +269,10 @@ export default function Sidebar({
   battleEnabled,
 }) {
   const { theme } = useTheme();
+  const { isMobile } = useViewport();
 
+  // Mobile: bottom horizontal strip with primary tabs only (no watchlist/replay)
+  // Desktop: vertical left rail with all features
   return (
     <>
       <style>{`
@@ -279,16 +283,36 @@ export default function Sidebar({
       `}</style>
       <aside
         style={{
-          width: 48,
+          ...(isMobile
+            ? {
+                // Mobile: fixed bottom strip, horizontal
+                position: "fixed",
+                bottom: 0,
+                left: 0,
+                right: 0,
+                width: "100%",
+                height: 52,
+                flexDirection: "row",
+                justifyContent: "space-around",
+                padding: `${SPACE.XS}px ${SPACE.SM}px`,
+                borderTop: `1px solid ${theme.BORDER}`,
+                borderRight: "none",
+                zIndex: Z.STICKY,
+                overflowX: "auto",
+                overflowY: "hidden",
+              }
+            : {
+                width: 48,
+                flexDirection: "column",
+                alignItems: "center",
+                padding: `${SPACE.MD}px 0`,
+                borderRight: `1px solid ${theme.BORDER}`,
+                overflowY: "auto",
+              }),
           background: theme.SURFACE,
-          borderRight: `1px solid ${theme.BORDER}`,
           display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          padding: `${SPACE.MD}px 0`,
           gap: SPACE.XS,
           flexShrink: 0,
-          overflowY: "auto",
         }}
       >
         {TABS.map((tab) => (
@@ -303,8 +327,8 @@ export default function Sidebar({
           />
         ))}
 
-        {/* Quick-action buttons — replay + battle */}
-        {(onReplayClick || onBattleClick) && (
+        {/* Quick-action buttons — replay + battle (desktop only) */}
+        {!isMobile && (onReplayClick || onBattleClick) && (
           <div
             style={{
               width: 28,
@@ -314,7 +338,7 @@ export default function Sidebar({
             }}
           />
         )}
-        {onReplayClick && (
+        {!isMobile && onReplayClick && (
           <SidebarButton
             tab={{ id: "replay", label: "Replay Mode (⌘Shift+R)", icon: "🔮", hotkey: "" }}
             active={false}
@@ -322,7 +346,7 @@ export default function Sidebar({
             theme={theme}
           />
         )}
-        {onBattleClick && (
+        {!isMobile && onBattleClick && (
           <SidebarButton
             tab={{ id: "battle", label: battleEnabled ? "Battle Station (B)" : "Pin 2+ strikes to compare", icon: "⚔", hotkey: "B" }}
             active={false}
@@ -331,8 +355,8 @@ export default function Sidebar({
           />
         )}
 
-        {/* Watchlist: always show header + Add button when callback provided */}
-        {(watchlist.length > 0 || onWatchlistAdd) && (
+        {/* Watchlist: always show header + Add button when callback provided (desktop only) */}
+        {!isMobile && (watchlist.length > 0 || onWatchlistAdd) && (
           <>
             <div
               style={{
