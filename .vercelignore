@@ -1,0 +1,35 @@
+# Vercel only deploys the FRONTEND (Vite/React).
+# Backend (FastAPI) stays on Render. Skip these so Vercel doesn't
+# try to detect/build them as separate services.
+
+# Python backend (lives on Render, not Vercel)
+backend/
+*.py
+*.pyc
+__pycache__/
+.venv/
+venv/
+requirements.txt
+
+# Render-specific config
+render.yaml
+build.sh
+
+# Database files (shouldn't be in repo anyway, but safety)
+*.db
+*.sqlite
+*.sqlite3
+
+# Documentation (not needed for build)
+DEPLOYMENT.md
+CLAUDE.md
+README.md
+*.md
+
+# AWS / EC2 docs (separate service)
+.claude/
+
+# Local dev artifacts
+.DS_Store
+.env
+.env.local
