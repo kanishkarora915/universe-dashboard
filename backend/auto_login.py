@@ -248,33 +248,55 @@ def run_auto_login():
 
 
 def daemon_mode():
-    """Run as daemon — auto-login at 8:55 AM IST daily."""
-    print("[AUTO-LOGIN] Daemon mode started. Will login at 8:55 AM IST daily.")
+    """Run as daemon — auto-login at 6:05 AM IST daily.
+
+    Window: 06:05 - 06:59 IST. Kite access_tokens expire at 6 AM IST,
+    so we refresh as soon as that's done. This means whenever you wake
+    up (any time after ~6:10 AM), dashboard is already authenticated
+    with a fresh token valid for the full trading day.
+
+    Retry: if 6:05 attempt fails (e.g., transient Kite outage), tries
+    every 2 minutes until 6:59. Past that, gives up till next day.
+    """
+    print("[AUTO-LOGIN] Daemon mode started. Will login at 6:05 AM IST daily.")
+    print("[AUTO-LOGIN] (Token expires 6 AM, refresh window 06:05-06:59 IST.)")
+
+    LOGIN_HOUR = 6
+    LOGIN_MIN_START = 5
+    LOGIN_MIN_END = 59  # Try until 06:59 if first attempt fails
 
     while True:
         now = ist_now()
 
-        # Check: is it 8:55 AM and not yet logged in today?
-        if now.hour == 8 and 55 <= now.minute <= 59:
+        # Weekend skip — no markets, no trade, no token needed
+        if now.weekday() >= 5:
+            print(f"[AUTO-LOGIN] Skipping — weekend ({now.strftime('%A')})")
+            time.sleep(3600)
+            continue
+
+        # In login window?
+        if now.hour == LOGIN_HOUR and LOGIN_MIN_START <= now.minute <= LOGIN_MIN_END:
+            # Already logged in today?
             if TOKEN_CACHE.exists():
                 try:
                     data = json.loads(TOKEN_CACHE.read_text())
                     if data.get("date") == now.strftime("%Y-%m-%d"):
-                        time.sleep(60)  # Already done today
+                        time.sleep(60)  # Already done — sleep past window
                         continue
                 except Exception:
                     pass
 
-            # Weekend/holiday check
-            if now.weekday() >= 5:
-                print(f"[AUTO-LOGIN] Skipping — weekend ({now.strftime('%A')})")
-                time.sleep(3600)
-                continue
-
-            run_auto_login()
-            time.sleep(300)  # Wait 5 min before next check
+            # Try login. Returns access_token on success, None on failure.
+            result = run_auto_login()
+            if result:
+                # Success — sleep 5 min to skip rest of window
+                time.sleep(300)
+            else:
+                # Failed — retry in 2 minutes (transient Kite issue?)
+                print("[AUTO-LOGIN] Will retry in 120s...")
+                time.sleep(120)
         else:
-            # Sleep until next check (check every 30 seconds)
+            # Outside window — check every 30 seconds
             time.sleep(30)
 
 
