@@ -4057,6 +4057,26 @@ if DIST_DIR.exists():
     async def icons():
         return FileResponse(str(DIST_DIR / "icons.svg"))
 
+    # PWA files — these MUST be served as their own files, not as
+    # index.html. Catch-all SPA route below was returning HTML for
+    # these → broke service worker registration + manifest parsing
+    # → user saw "stale" frozen dashboard because SW never updated.
+    @app.get("/manifest.json")
+    async def manifest_json():
+        return FileResponse(str(DIST_DIR / "manifest.json"),
+                            media_type="application/json")
+
+    @app.get("/sw.js")
+    async def service_worker():
+        # Service workers MUST be served with correct content-type
+        # AND from same origin — extra cache-busting headers.
+        return FileResponse(str(DIST_DIR / "sw.js"),
+                            media_type="application/javascript",
+                            headers={
+                                "Service-Worker-Allowed": "/",
+                                "Cache-Control": "no-cache, no-store, must-revalidate",
+                            })
+
     # ROOT path explicitly — `/{full_path:path}` does not match empty string
     # so without this, GET / returns 404 (browsing dashboard.onrender.com fails).
     @app.get("/")
@@ -4069,6 +4089,12 @@ if DIST_DIR.exists():
         # Don't serve index.html for API/WS routes
         if full_path.startswith("api/") or full_path.startswith("ws/"):
             return JSONResponse({"error": "Not found"}, status_code=404)
+        # Files with extensions in dist root → serve as static (avoid
+        # index.html for things like /robots.txt, /image.png etc.)
+        if "." in full_path and not full_path.startswith("api/"):
+            asset_path = DIST_DIR / full_path
+            if asset_path.is_file() and asset_path.parent == DIST_DIR:
+                return FileResponse(str(asset_path))
         return FileResponse(str(DIST_DIR / "index.html"))
 
 
