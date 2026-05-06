@@ -14,6 +14,30 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+# ── Sentry — error tracking (free tier, only active if SENTRY_DSN set) ──
+# Initialized BEFORE FastAPI import so it can wrap everything.
+_SENTRY_DSN = os.getenv("SENTRY_DSN", "").strip()
+if _SENTRY_DSN:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+        from sentry_sdk.integrations.starlette import StarletteIntegration
+        sentry_sdk.init(
+            dsn=_SENTRY_DSN,
+            integrations=[
+                StarletteIntegration(transaction_style="endpoint"),
+                FastApiIntegration(transaction_style="endpoint"),
+            ],
+            traces_sample_rate=0.1,         # 10% perf traces (free tier ok)
+            profiles_sample_rate=0.1,
+            send_default_pii=False,         # privacy
+            release=os.getenv("RENDER_GIT_COMMIT", "unknown"),
+            environment=("production" if os.getenv("RENDER") else "dev"),
+        )
+        print(f"[SENTRY] Initialized — release={os.getenv('RENDER_GIT_COMMIT', 'dev')[:7]}")
+    except Exception as _se:
+        print(f"[SENTRY] init skipped: {_se}")
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -151,13 +175,33 @@ app = FastAPI(title="UNIVERSE Backend", lifespan=lifespan)
 # Threshold 500 bytes — don't compress tiny responses
 app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=5)
 
-# CORS
+# CORS — Phase 1 (Vercel migration prep):
+# Frontend will be on Vercel (vercel.app domain) but API stays on Render.
+# Need explicit origin allowlist + regex for vercel preview branches.
+# allow_credentials=True + allow_origins=["*"] is invalid per spec —
+# we use regex pattern instead for production safety.
+import os as _os_cors
+_extra_origins = _os_cors.getenv("ALLOWED_ORIGINS", "").split(",")
+_extra_origins = [o.strip() for o in _extra_origins if o.strip()]
+
+_allowed_origins = [
+    "https://universe-dashboard.onrender.com",   # current prod
+    "http://localhost:5173",                     # vite dev
+    "http://localhost:3000",                     # alt dev
+    "http://localhost:4173",                     # vite preview
+    *_extra_origins,                             # custom domains
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
+    # Regex matches Vercel preview branches (any.vercel.app subdomain)
+    # plus the user's eventual custom domain pattern
+    allow_origin_regex=r"https://([a-z0-9-]+\.)?(vercel\.app|netlify\.app|onrender\.com)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count", "X-RateLimit-Remaining"],
 )
 
 
