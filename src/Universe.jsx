@@ -3,6 +3,7 @@ import { useMarketData } from "./useMarketData";
 
 // ── Always-loaded (critical path for home page) ──
 import BuyerCockpit from "./components/BuyerCockpit";
+import ForecastCard from "./components/ForecastCard";
 import TopBar from "./components/TopBar";
 import Sidebar from "./components/Sidebar";
 import SectionNav from "./components/SectionNav";
@@ -2855,15 +2856,19 @@ export default function Universe({ onLogout }) {
     switch (activeTab) {
       case "dashboard":
         return (
-          <BuyerCockpit
-            live={live}
-            verdicts={trapVerdict}
-            reasonsMap={{
-              nifty: trapVerdict?.nifty?.reasons,
-              banknifty: trapVerdict?.banknifty?.reasons,
-            }}
-            openPositions={[]}
-          />
+          <>
+            <BuyerCockpit
+              live={live}
+              verdicts={trapVerdict}
+              reasonsMap={{
+                nifty: trapVerdict?.nifty?.reasons,
+                banknifty: trapVerdict?.banknifty?.reasons,
+              }}
+              openPositions={[]}
+            />
+            {/* Forecast Engine — predictive narrative (path + levels + buyer plan) */}
+            <ForecastCard />
+          </>
         );
       case "live":    return <LiveDataTab liveData={live} />;
       case "signals": return <SignalsTab realSignals={signals} />;
