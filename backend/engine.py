@@ -348,6 +348,11 @@ class MarketEngine:
         self.ltp_history = {}  # {(index, strike, opt_type): [{"t": time, "ltp": x, "oi": y}, ...]}
         self._pa_last_record = 0
 
+        # ── Spot price history (for 5-min trend + regime detection) ──
+        # entry_filters.py reads this. Capped at last 600 ticks (~30 min @ 3s).
+        self._spot_history = {"NIFTY": [], "BANKNIFTY": []}
+        self._spot_history_last_record = 0
+
         # ── Trading Times: 5-min regime detection ──
         self._tt_last_capture = 0
         self._tt_yesterday_saved = False
@@ -4336,8 +4341,8 @@ class MarketEngine:
                         if spot_ltp <= 0:
                             continue
                         atm = round(spot_ltp / cfg["strike_gap"]) * cfg["strike_gap"]
-                        # Pass ATM strike to should_enter_scalp for whipsaw guards
-                        if scalper_mode.should_enter_scalp(idx, v, scalper_enabled=True, atm_strike=atm):
+                        # Pass ATM strike + engine for entry_filters (5-min trend, greeks, regime)
+                        if scalper_mode.should_enter_scalp(idx, v, scalper_enabled=True, atm_strike=atm, engine=self):
                             atm_data = self.chains.get(idx, {}).get(atm, {})
                             entry_premium = atm_data.get("ce_ltp" if "CE" in action else "pe_ltp", 0)
                             if 5 < entry_premium < 5000:
@@ -4563,6 +4568,30 @@ class MarketEngine:
                             except Exception as _e:
                                 pass
 
+                            # ── A12: Entry Filters (5-min trend + greeks + regime) ──
+                            # Final quality gate before main-trade entry. Rejects
+                            # counter-trend, deep OTM/ITM, and CHOP-regime entries.
+                            # CHOP can be overridden if winProbability >= 75 (high conviction).
+                            try:
+                                from entry_filters import check_all_filters
+                                ef_ok, ef_reason, ef_regime = check_all_filters(
+                                    self, idx, int(pending_strike), action
+                                )
+                                if not ef_ok:
+                                    high_conv = v.get("winProbability", 0) >= 75
+                                    if ef_regime.get("regime") == "CHOP" and high_conv:
+                                        print(f"[TRADE] CHOP override (high conviction): {ef_reason}")
+                                    else:
+                                        print(f"[TRADE] BLOCKED by A12 entry_filters: {ef_reason}")
+                                        self.trade_manager._pending_entry.pop(idx, None)
+                                        self.trade_manager._pending_entry_time.pop(idx, None)
+                                        continue
+                                else:
+                                    if ef_regime.get("regime") == "BREAKOUT":
+                                        print(f"[TRADE] BREAKOUT regime — {ef_regime.get('reason')}")
+                            except Exception as _e:
+                                print(f"[TRADE] A12 entry_filters error (allow): {_e}")
+
                             whale_aligned = False
                             try:
                                 from smart_money import is_smart_money_aligned
@@ -4667,13 +4696,24 @@ class MarketEngine:
                 self.day_low[index] = ltp
 
     def _record_price_action(self):
-        """Record LTP + OI for ATM±3 strikes every 10s for Price Action analysis."""
+        """Record LTP + OI for ATM±3 strikes every 10s for Price Action analysis.
+        Also records spot price into _spot_history for entry_filters."""
         now_ts = ist_now()
         for index in ["NIFTY", "BANKNIFTY"]:
             spot_token = self.spot_tokens.get(index)
             ltp = self.prices.get(spot_token, {}).get("ltp", 0)
             if ltp <= 0:
                 continue
+
+            # Record spot tick for entry_filters (5-min trend + regime detection)
+            self._spot_history.setdefault(index, []).append({
+                "t": now_ts.isoformat(),
+                "ltp": ltp,
+            })
+            # Keep last 600 ticks (~30 min @ 3-5s tick rate via 10s _record_price_action)
+            if len(self._spot_history[index]) > 600:
+                self._spot_history[index] = self._spot_history[index][-600:]
+
             cfg = INDEX_CONFIG[index]
             atm = round(ltp / cfg["strike_gap"]) * cfg["strike_gap"]
             chain = self.chains.get(index, {})

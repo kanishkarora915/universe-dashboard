@@ -299,6 +299,11 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
       8. Cooldown after exit (same strike 10m, flip 15m, 2+ SL hits = day-pause)
       9. B1.4 DIRECTION SANITY (OI delta + spot must agree with verdict)
      10. B2.6 CAPITULATION GATE (block entries against reversal direction)
+     11. ENTRY FILTERS (5-min trend + greeks gate + market regime check)
+         - CHOP regime → block (unless capit-confirmed elsewhere)
+         - 5-min trend bearish → block CE (vice versa for PE)
+         - Delta out of 0.30-0.70 → block (deep OTM/ITM)
+         - BREAKOUT regime → fast-track (caller may skip 30s confirmation)
     """
     if not scalper_enabled:
         return False
@@ -529,6 +534,37 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
             return False
     except Exception:
         pass
+
+    # ── GATE 11: ENTRY FILTERS (5-min trend + greeks + regime) ──
+    # Engine may not be passed (legacy call sites). When missing, gates skip.
+    if engine is not None and atm_strike is not None:
+        try:
+            from entry_filters import check_all_filters
+            filters_ok, filter_reason, regime_info = check_all_filters(
+                engine, idx, int(atm_strike), action_str
+            )
+            if not filters_ok:
+                # CHOP regime blocked — but allow capit-confirmed override
+                # (capit ≥ 4 means high-conviction reversal, worth a shot)
+                if regime_info.get("regime") == "CHOP":
+                    capit_confirms_direction = (
+                        (is_ce and cap_bull >= 4) or
+                        (not is_ce and cap_bear >= 4)
+                    )
+                    if not capit_confirms_direction:
+                        print(f"[SCALPER] REJECT entry (G11): {filter_reason}")
+                        return False
+                    else:
+                        print(f"[SCALPER] CHOP override: capit-confirmed, {filter_reason}")
+                else:
+                    print(f"[SCALPER] REJECT entry (G11): {filter_reason}")
+                    return False
+            else:
+                # All filters pass — log regime for telemetry
+                if regime_info.get("regime") == "BREAKOUT":
+                    print(f"[SCALPER] BREAKOUT detected — {regime_info.get('reason')}")
+        except Exception as _e:
+            print(f"[SCALPER] entry_filters error (allow): {_e}")
 
     return True
 
