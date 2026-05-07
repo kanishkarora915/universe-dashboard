@@ -4639,6 +4639,59 @@ class MarketEngine:
                 print(f"[TRADE] {idx} per-idx error: {e}")
                 import traceback
                 traceback.print_exc()
+
+            # ── REVERSAL ZONE TRACKER (parallel entry source for main trades only) ──
+            # Watches option premium for double-bottom re-tests on ATM±1 strikes.
+            # Fires entry when premium re-tests recent low + bullish confirmation.
+            # Tagged source="reversal_zone" → custom exit logic in trade_logger
+            # (-5% SL, trail SL activates at +25%, no fixed T1/T2).
+            try:
+                if not hasattr(self, "_reversal_tracker") or self._reversal_tracker is None:
+                    from reversal_zone_tracker import ReversalZoneTracker
+                    self._reversal_tracker = ReversalZoneTracker(self)
+
+                for rz_idx in ["NIFTY", "BANKNIFTY"]:
+                    # Skip if we already have an open trade on this idx (any action)
+                    try:
+                        from trade_logger import _conn as _tl_conn
+                        _c = _tl_conn()
+                        existing = _c.execute(
+                            "SELECT COUNT(*) FROM trades WHERE idx=? AND status='OPEN'",
+                            (rz_idx,)
+                        ).fetchone()[0]
+                        _c.close()
+                        if existing > 0:
+                            continue
+                    except Exception:
+                        pass
+
+                    rz_signal = self._reversal_tracker.scan_atm_strikes(rz_idx)
+                    if not rz_signal:
+                        continue
+
+                    print(f"[REVERSAL] Setup detected: {rz_idx} {rz_signal['action']} "
+                          f"{rz_signal['strike']} @ ₹{rz_signal['entry_price']} — "
+                          f"{rz_signal['reasoning']}")
+
+                    # Fire entry with source='reversal_zone'
+                    try:
+                        tid = self.trade_manager.log_trade(
+                            idx=rz_idx,
+                            action=rz_signal["action"],
+                            strike=int(rz_signal["strike"]),
+                            entry_price=rz_signal["entry_price"],
+                            probability=70,  # Reversal patterns are high-conviction
+                            source="reversal_zone",
+                            expiry=str(self.nearest_expiry.get(rz_idx, "")),
+                            engine=self,
+                        )
+                        if tid:
+                            print(f"[REVERSAL] FIRED entry id={tid} — custom -5% SL + +25% trail-SL active")
+                    except Exception as e:
+                        print(f"[REVERSAL] log_trade FAILED for {rz_idx}: {e}")
+            except Exception as e:
+                print(f"[REVERSAL] tracker error: {e}")
+
         except Exception as e:
             print(f"[TRADE] Background verdict error: {e}")
             import traceback

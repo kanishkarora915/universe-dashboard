@@ -327,6 +327,113 @@ class TradeManager:
         """Called by engine every 30s with latest verdict data."""
         self._cached_verdict = verdict or {}
 
+    def _handle_reversal_trade(self, t, current_ltp):
+        """Custom exit logic for source='reversal_zone' trades.
+
+        Rules (per user spec):
+          - SL: entry × 0.95 (-5% hard, never overridden)
+          - No fixed T1/T2 — winners ride freely
+          - Trail SL activates at +25% profit
+          - At activation: trail SL = entry × 1.20 (lock +20%)
+          - After activation: trail SL = max(prev_trail, peak × 0.95)
+          - Hits trail SL → TRAIL_EXIT (locked profit)
+          - Hits hard SL → REV_ZONE_SL_HIT (-5% loss)
+        """
+        try:
+            entry = t["entry_price"]
+            sl = t["sl_price"] or round(entry * 0.95, 1)
+            peak = max(t.get("peak_ltp", entry) or entry, current_ltp)
+            trailing_active = bool(t.get("trailing_active", 0))
+
+            if entry <= 0:
+                return
+
+            profit_pct = ((current_ltp - entry) / entry) * 100
+            pnl_pts = round(current_ltp - entry, 2)
+            pnl_rupees = round(pnl_pts * (t.get("qty") or 0), 2)
+
+            # Hard floor: -5% from entry (never moves DOWN)
+            hard_sl = round(entry * 0.95, 1)
+            new_sl = max(sl, hard_sl)
+
+            # Activate trail at +25%
+            if not trailing_active and profit_pct >= 25.0:
+                trailing_active = True
+                # Initial trail floor = entry × 1.20 (lock +20%)
+                init_trail_sl = round(entry * 1.20, 1)
+                if init_trail_sl > new_sl:
+                    new_sl = init_trail_sl
+                print(f"[REV-TRADE] #{t['id']} TRAIL ACTIVATED at +{profit_pct:.1f}% — SL ₹{new_sl} (locked +20%)")
+
+            # Once active, trail at peak × 0.95
+            if trailing_active:
+                peak_trail_sl = round(peak * 0.95, 1)
+                if peak_trail_sl > new_sl:
+                    new_sl = peak_trail_sl
+
+            # Decide exit
+            new_status = "OPEN"
+            exit_price = 0
+            exit_reason = None
+
+            if current_ltp <= new_sl:
+                if trailing_active and new_sl > entry:
+                    new_status = "TRAIL_EXIT"
+                    exit_price = new_sl
+                    locked_pct = round((new_sl / entry - 1) * 100, 1)
+                    exit_reason = (f"REV-ZONE trail exit at ₹{new_sl} — locked +{locked_pct}% "
+                                   f"(peak ₹{peak:.1f}, +{round((peak/entry-1)*100, 1)}%)")
+                else:
+                    new_status = "REV_ZONE_SL_HIT"
+                    exit_price = new_sl
+                    exit_reason = (f"REV-ZONE hard SL hit at ₹{new_sl} ({profit_pct:.1f}%) — "
+                                   f"-5% capital preservation. Entry ₹{entry}.")
+
+            # Persist
+            conn = _conn()
+            try:
+                if new_status != "OPEN":
+                    final_pnl = round((exit_price - entry) * (t.get("qty") or 0), 2)
+                    conn.execute("""
+                        UPDATE trades SET
+                            status=?, exit_price=?, exit_time=?, exit_reason=?,
+                            pnl_pts=?, pnl_rupees=?, peak_ltp=?, sl_price=?,
+                            trailing_active=?, breakeven_active=?
+                        WHERE id=? AND status='OPEN'
+                    """, (
+                        new_status, exit_price, ist_now().isoformat(), exit_reason,
+                        round(exit_price - entry, 2), final_pnl, peak, new_sl,
+                        1 if trailing_active else 0,
+                        1 if (trailing_active or new_sl >= entry) else 0,
+                        t["id"]
+                    ))
+                    conn.commit()
+                    print(f"[REV-TRADE] CLOSED #{t['id']} {t['idx']} {t['action']} {t['strike']}: "
+                          f"₹{final_pnl:+,.0f} ({new_status})")
+                    # Capital tracker
+                    try:
+                        from capital_tracker import record_trade_pnl
+                        desc = f"{t['idx']} {t['action']} {t['strike']} @ ₹{exit_price} ({new_status})"
+                        record_trade_pnl("MAIN", final_pnl, trade_id=t["id"], description=desc)
+                    except Exception:
+                        pass
+                else:
+                    # Still open — update SL, peak, current
+                    conn.execute("""
+                        UPDATE trades SET
+                            current_ltp=?, peak_ltp=?, pnl_pts=?, pnl_rupees=?,
+                            sl_price=?, trailing_active=?
+                        WHERE id=?
+                    """, (
+                        current_ltp, peak, pnl_pts, pnl_rupees,
+                        new_sl, 1 if trailing_active else 0, t["id"]
+                    ))
+                    conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[REV-TRADE] handler error trade={t.get('id')}: {e}")
+
     def _get_strike_30min_trend(self, idx, strike, opt, current_ltp):
         """Analyze last 30 minutes of LTP for this strike's option type.
 
@@ -451,27 +558,49 @@ class TradeManager:
     def log_trade(self, idx, action, strike, entry_price, probability, source="verdict", expiry="",
                   straddle=0, big_wall=0, whale_aligned=False, engine=None):
         """Log a new trade entry with ATR-based realistic SL/targets (A6).
-        whale_aligned=True → uses larger position (smart money agrees with direction)."""
+        whale_aligned=True → uses larger position (smart money agrees with direction).
+
+        Reversal-zone trades (source='reversal_zone') skip ATR — use hard -5% SL.
+        Their T1/T2 are placeholders only; exit logic is handled by
+        _handle_reversal_trade (trail-only at +25%).
+        """
         if entry_price <= 0:
             return None
 
-        # ── ATR-based targets (A6) — replaces fixed +30%/+60% ──
+        # ── REVERSAL ZONE: skip ATR, use hard -5% SL + placeholder T1/T2 ──
+        if source == "reversal_zone":
+            sl_price = round(entry_price * 0.95, 1)        # -5% hard
+            t1_price = round(entry_price * 1.25, 1)        # +25% (trail activation marker)
+            t2_price = round(entry_price * 1.50, 1)        # +50% placeholder (no fixed exit)
+            print(f"[TRADE] REVERSAL ZONE entry: SL ₹{sl_price} (-5%) "
+                  f"T1 ₹{t1_price} (trail-activate) T2 ₹{t2_price} (placeholder)")
+            # Skip rest of ATR computation; jump directly to position sizing logic.
+            # Set targets to mimic ATR result so downstream code doesn't break.
+            targets = {
+                "sl": sl_price, "t1": t1_price, "t2": t2_price,
+                "sl_pct": 5.0, "t1_pct": 25.0, "t2_pct": 50.0,
+                "method": "reversal_zone", "vol_multiplier": 1.0,
+            }
+            # Continue to position sizing below
+        else:
+            # ── ATR-based targets (A6) — replaces fixed +30%/+60% ──
+            targets = None
+
         side = "CE" if "CE" in (action or "") else "PE"
-        targets = None
-        if engine is not None:
+        if source != "reversal_zone" and engine is not None:
             try:
                 from atr_targets import get_realistic_targets
                 targets = get_realistic_targets(engine, idx, strike, side, entry_price)
             except Exception as _e:
                 print(f"[TRADE] ATR target calc failed, using fallback: {_e}")
 
-        if targets and targets.get("method") == "atr":
+        if targets and targets.get("method") in ("atr", "reversal_zone"):
             sl_price = targets["sl"]
             t1_price = targets["t1"]
             t2_price = targets["t2"]
-            print(f"[TRADE] ATR targets: SL ₹{sl_price} (-{targets['sl_pct']}%) "
-                  f"T1 ₹{t1_price} (+{targets['t1_pct']}%) T2 ₹{t2_price} (+{targets['t2_pct']}%) "
-                  f"vol_mult={targets['vol_multiplier']}")
+            method_label = "ATR" if targets["method"] == "atr" else "REVERSAL_ZONE"
+            print(f"[TRADE] {method_label} targets: SL ₹{sl_price} (-{targets['sl_pct']}%) "
+                  f"T1 ₹{t1_price} (+{targets['t1_pct']}%) T2 ₹{t2_price} (+{targets['t2_pct']}%)")
         else:
             # Fallback when ATR-targets unavailable. Aligned with user spec:
             #   SL  = -5% max loss
@@ -618,6 +747,16 @@ class TradeManager:
             strike_data = chain.get(strike, {})
             opt = "ce" if "CE" in action else "pe"
             current_ltp = strike_data.get(f"{opt}_ltp", 0)
+
+            # ── REVERSAL ZONE TRADES: custom exit logic, skip standard stack ──
+            # Per user spec for source='reversal_zone' trades:
+            #   • Hard SL at entry × 0.95 (-5%, no overrides ever)
+            #   • No fixed T1/T2 — let winners run
+            #   • Trail SL activates at +25% profit (locks +20% baseline)
+            #   • After activation, trail SL = peak × 0.95 (5% give-back from peak)
+            if t.get("source") == "reversal_zone" and current_ltp > 0:
+                self._handle_reversal_trade(t, current_ltp)
+                continue
 
             if current_ltp <= 0:
                 continue
