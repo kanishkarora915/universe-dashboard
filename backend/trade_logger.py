@@ -473,19 +473,15 @@ class TradeManager:
                   f"T1 ₹{t1_price} (+{targets['t1_pct']}%) T2 ₹{t2_price} (+{targets['t2_pct']}%) "
                   f"vol_mult={targets['vol_multiplier']}")
         else:
-            # Fallback: legacy fixed SL/T1/T2
-            if entry_price < 100:
-                sl_price = round(entry_price * 0.80)
-            else:
-                sl_price = round(entry_price * 0.85)
-            sl_price = max(sl_price, round(entry_price - max(straddle * 0.15, 5)))
-            sl_price = min(sl_price, round(entry_price * 0.85))
-            if straddle > 0:
-                t1_price = round(entry_price + straddle * 0.20)
-                t2_price = round(entry_price + straddle * 0.40)
-            else:
-                t1_price = round(entry_price * 1.20)
-                t2_price = round(entry_price * 1.40)
+            # Fallback when ATR-targets unavailable. Aligned with user spec:
+            #   SL  = -5% max loss
+            #   T1  = +5% (achievable, locks profit)
+            #   T2  = +12% (mid 10-15% target range)
+            sl_price = round(entry_price * 0.95, 1)   # -5% (was -15% to -20%)
+            t1_price = round(entry_price * 1.05, 1)   # +5% (was +20%)
+            t2_price = round(entry_price * 1.12, 1)   # +12% (was +40%)
+            print(f"[TRADE] Fallback targets (no ATR): SL ₹{sl_price} (-5%) "
+                  f"T1 ₹{t1_price} (+5%) T2 ₹{t2_price} (+12%)")
 
         # Position size SCALED by conviction + whale alignment + ADAPTIVE TIER (A5)
         try:
@@ -696,25 +692,29 @@ class TradeManager:
             if not breakeven_active:
                 context = self._detect_trade_context(t, idx, action, chain, current_ltp)
                 original_sl = t.get("original_sl", sl) or sl
+                # MAX-LOSS FLOOR: SL never looser than -5% (BUYER) / -3% (HEDGER).
+                # Both REVERSAL tightening and STOP_HUNT widening must respect this.
+                max_loss_pct = abs(_bm.get("reversal_exit_pct", -5.0)) / 100.0
+                max_loss_floor = round(entry * (1 - max_loss_pct), 1)  # e.g., 95.0 for 100 entry
+
                 if context == "REVERSAL":
-                    # OI flipped against us → 10% SL (tighter, exit fast)
-                    tight_sl = round(entry * 0.90)
-                    if tight_sl > new_sl:  # Only tighten, never loosen
+                    # OI flipped against us → tight SL = max(entry-5%, current logic).
+                    # Was entry*0.90 (-10%); now respects max_loss cap.
+                    tight_sl = max_loss_floor  # never looser than -5%
+                    if tight_sl > new_sl:  # Only tighten
                         new_sl = tight_sl
                         trail_level = "OI_REVERSAL_TIGHT"
-                        alerts_list.append(f"OI REVERSAL detected — SL tightened to 10% (₹{new_sl}). Exit fast if triggered.")
+                        alerts_list.append(f"OI REVERSAL — SL tightened to max-loss floor ₹{new_sl}.")
                 elif context == "STOP_HUNT" and not sl_raised_by_new_system:
-                    # Price was hunted → 20% SL (wider, give room)
-                    # ONLY if Profit-Trail/Time-Decay haven't already tightened
-                    # (those systems provide better protection than wide -20%)
-                    wide_sl = round(entry * 0.80)
+                    # Price hunted — widen SL slightly but NEVER past max-loss cap.
+                    # Was entry*0.80 (-20%); now capped at max_loss_floor.
+                    wide_sl = max_loss_floor  # never looser than -5%
                     if wide_sl < new_sl and current_ltp > wide_sl:
                         new_sl = wide_sl
-                        trail_level = "STOP_HUNT_WIDE"
-                        alerts_list.append(f"STOP HUNT pattern detected — SL widened to 20% (₹{new_sl}) to avoid hunt. Recovery expected.")
+                        trail_level = "STOP_HUNT_CAPPED"
+                        alerts_list.append(f"STOP HUNT detected — SL set to max-loss floor ₹{new_sl} (was wider, capped).")
                 elif context == "STOP_HUNT" and sl_raised_by_new_system:
-                    # Profit-Trail or Time-Decay already tightened — skip widening
-                    print(f"[TRADE] STOP_HUNT detected but skipping widening — Profit-Trail/Time-Decay already raised SL to ₹{new_sl}")
+                    print(f"[TRADE] STOP_HUNT detected but skipping — Profit-Trail/Time-Decay raised SL to ₹{new_sl}")
 
             # ══════════════════════════════════════════════
             # SMART SL MANAGEMENT
@@ -776,9 +776,20 @@ class TradeManager:
             early_neg_pct = _bm.get("early_neg_exit_pct", -3.0)        # Early exit when trend confirms
             rev_min_hold = _bm.get("reversal_exit_min_hold_sec", 600)
 
-            if not breakeven_active and hold_sec >= rev_min_hold:
-                # Tier (a): early exit on confirmed downtrend (saves 2%)
-                if profit_pct <= early_neg_pct and profit_pct > rev_pct:
+            if not breakeven_active:
+                # Tier (b) FIRST: HARD MAX-LOSS CAP — fires IMMEDIATELY (no min hold).
+                # Capital preservation: in fast-moving markets, position could blow
+                # through -5% to -15% in <2 min. Must fire on first tick at -5%.
+                # This OVERRIDES every other system (engines-hold, STOP_HUNT, etc.).
+                if profit_pct <= rev_pct:
+                    new_status = "REVERSAL_EXIT"
+                    exit_price = current_ltp
+                    exit_reason = f"HARD MAX-LOSS CAP [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — capital preservation, no overrides."
+                    print(f"[TRADE] MAX-LOSS EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}% after {int(hold_sec/60)}min)")
+
+                # Tier (a): early exit on confirmed downtrend (saves 2%, requires hold)
+                # Only checks if hard cap didn't already fire AND we've held >= rev_min_hold.
+                elif hold_sec >= rev_min_hold and profit_pct <= early_neg_pct and profit_pct > rev_pct:
                     trend = self._get_strike_30min_trend(idx, strike, opt, current_ltp)
                     if trend in ("DOWN", "DOWN_HARD"):
                         new_status = "REVERSAL_EXIT"
@@ -788,13 +799,6 @@ class TradeManager:
                             f"30-min trend {trend}, no recovery likely. Held {int(hold_sec/60)}min."
                         )
                         print(f"[TRADE] EARLY-NEG EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}%, trend={trend})")
-
-                # Tier (b): hard max-loss cap (capital preservation)
-                if new_status == "OPEN" and profit_pct <= rev_pct:
-                    new_status = "REVERSAL_EXIT"
-                    exit_price = current_ltp
-                    exit_reason = f"Hard max-loss cap [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — held {int(hold_sec/60)}min."
-                    print(f"[TRADE] MAX-LOSS EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}% after {int(hold_sec/60)}min)")
 
             # STAGE 2: TRAILING SL — HEDGER: 50%/25% give-back / BUYER: 25%/15% give-back
             if breakeven_active and new_status == "OPEN":
@@ -880,19 +884,21 @@ class TradeManager:
                         new_status = "BREAKEVEN_EXIT"
                         exit_reason = f"Breakeven exit at ₹{entry} — no loss. Price reached ₹{peak:.1f} (+{round((peak/entry-1)*100)}%) then reversed"
                 elif self._engines_favor_hold(t, idx, action) and not sl_raised_by_new_system:
-                    # ENGINES SAY HOLD + SL still at original (un-tightened by new systems)
-                    # Old behavior: extend to 15% hard stop. Only kicks in when our
-                    # new SL systems haven't already protected this trade.
-                    #
-                    # ⚠ CLASH GUARD: If Time-Decay/Profit-Trail tightened SL to e.g.
-                    # -5%, we MUST exit there — NOT extend to -15%. That would defeat
-                    # the entire point of those systems.
-                    alerts_list.append(f"SL ZONE: Price ₹{current_ltp:.1f} at SL ₹{new_sl} but engines favor HOLD. Giving 1 more cycle. Max loss stays 15%.")
-                    hard_stop = round(entry * 0.85)
-                    if current_ltp <= hard_stop:
-                        new_status = "SL_HIT"
-                        exit_price = hard_stop
-                        exit_reason = f"Stoploss hit at ₹{hard_stop} (-15% max). Engines tried to hold but hard limit reached. Entry: ₹{entry}"
+                    # ENGINES SAY HOLD + SL still at original (un-tightened).
+                    # OLD behavior: extend to -15% hard stop ← REMOVED (violated max-loss cap).
+                    # NEW behavior: hard cap is REVERSAL_EXIT block (fires at -5%
+                    # IMMEDIATELY, no min-hold). By the time we get here, max loss
+                    # has already been enforced upstream — so just exit at SL now,
+                    # no hard_stop extension allowed.
+                    max_loss_floor_pct = abs(_bm.get("reversal_exit_pct", -5.0))
+                    new_status = "SL_HIT"
+                    exit_price = new_sl
+                    exit_reason = (
+                        f"SL hit at ₹{new_sl} (loss {round((1-new_sl/entry)*100, 1)}%). "
+                        f"Engines favor hold but max-loss cap ({max_loss_floor_pct}%) "
+                        f"prevents extension. Entry: ₹{entry}."
+                    )
+                    print(f"[TRADE] SL_HIT (engines-hold respected, no extension): {action} {idx} {strike} @ ₹{new_sl}")
                 elif self._engines_favor_hold(t, idx, action) and sl_raised_by_new_system:
                     # SL was tightened by Profit-Trail or Time-Decay — RESPECT it.
                     # Don't extend to -15%. Exit at the tightened SL right now.
