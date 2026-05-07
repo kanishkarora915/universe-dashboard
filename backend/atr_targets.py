@@ -107,13 +107,19 @@ def calculate_targets(entry_price, atr_pct, vol_multiplier=1.0):
         atr_pct: ATR as decimal (0.05 = 5%)
         vol_multiplier: from VolatilityDetector (1.5 on HIGH-VOL, 0.7 on EXPIRY)
 
-    Returns dict with sl, t1, t2 prices.
+    Bounds (tuned 2026-05-07 from real closed-trade analysis):
+        T1: 5% floor, 8% ceiling     — actually-hittable target, locks profit
+        T2: 10% floor, 15% ceiling   — stretch but realistic, basis avg ATR
+        SL: 5% hard cap              — asymmetry kills wins faster than this
     """
     if entry_price <= 0 or atr_pct <= 0:
         return {
-            "sl": entry_price * 0.85,
-            "t1": entry_price * 1.30,
-            "t2": entry_price * 1.60,
+            "sl": round(entry_price * 0.95, 1),    # -5% (was -15%)
+            "t1": round(entry_price * 1.05, 1),    # +5% (was +30%)
+            "t2": round(entry_price * 1.12, 1),    # +12% (was +60%)
+            "sl_pct": 5.0,
+            "t1_pct": 5.0,
+            "t2_pct": 12.0,
             "atr_pct": 0,
             "method": "fallback",
         }
@@ -123,10 +129,14 @@ def calculate_targets(entry_price, atr_pct, vol_multiplier=1.0):
     t1_atr = atr_pct * 1.5 * vol_multiplier
     t2_atr = atr_pct * 3.0 * vol_multiplier
 
-    # Sanity caps (no SL >25%, no T1 >50%, no T2 >100%)
-    sl_atr = min(sl_atr, 0.25)
-    t1_atr = min(t1_atr, 0.50)
-    t2_atr = min(t2_atr, 1.00)
+    # Hard bounds — don't let ATR push targets into fantasy or too-tight zones.
+    # T1 5-8%: must be hittable (5%) but stretch when vol allows (up to 8%).
+    # T2 10-15%: realistic stretch; capped because options rarely move >15% intraday
+    #   without major events.
+    # SL 5% max: capital preservation > extra room. Wider SL = bigger blow-ups.
+    sl_atr = max(0.03, min(sl_atr, 0.05))    # 3-5%
+    t1_atr = max(0.05, min(t1_atr, 0.08))    # 5-8%
+    t2_atr = max(0.10, min(t2_atr, 0.15))    # 10-15%
 
     sl = round(entry_price * (1 - sl_atr), 1)
     t1 = round(entry_price * (1 + t1_atr), 1)

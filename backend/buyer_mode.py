@@ -55,24 +55,33 @@ HEDGER_DEFAULTS = {
 
 BUYER_DEFAULTS = {
     "mode": "BUYER",
-    "breakeven_pct": 20.0,           # +20% triggers BE — meaningful move
-    "trail_giveback_pct": 25.0,      # 25% trail — let it breathe
-    "tight_trail_giveback_pct": 15.0,  # @ +60% profit, lock 85%
-    "tight_trail_trigger_pct": 60.0,
-    "reversal_exit_pct": -8.0,       # -8% only after 10min (hard SL still 15%)
-    "reversal_exit_min_hold_sec": 600,
-    "t1_partial_booking": False,     # NO partial book — ride full to T2
+    # Tuned 2026-05-07 per user feedback: actual closed trades exited at
+    # +0.6% to +1.76% (REVERSAL_EXIT) while T1/T2 were set at +50%/+100%
+    # — fantasy targets, real cuts at micro-reversals.
+    # Death-by-thousand-cuts: 4 wins of +1.21% wiped out by 1 loss at -7.9%.
+    # New target: realistic T1 +5% (achievable, locks profit), T2 +12% (stretch),
+    # max loss capped at -5% (asymmetry fixed: 1:1 → 1:2.4 R:R).
+    "breakeven_pct": 3.0,            # +3% triggers BE (was +20%, never hit)
+    "trail_giveback_pct": 30.0,      # 30% peak trail (between old 25% and 50%)
+    "tight_trail_giveback_pct": 20.0,  # @ +8% profit, lock 80%
+    "tight_trail_trigger_pct": 8.0,    # tighten earlier (was +60%, fantasy)
+    "reversal_exit_pct": -5.0,       # MAX LOSS CAP — never beyond -5% (was -8%)
+    "reversal_exit_min_hold_sec": 120,  # 2 min hold (was 10 min, allow faster cuts)
+    "early_neg_exit_pct": -3.0,      # NEW: if 30-min strike trend down, exit at -3%
+    "t1_partial_booking": False,     # No partial — ride full position
     "t1_partial_pct": 0,
-    "conviction_exit_enabled": False,  # ignore conviction noise
-    "conviction_exit_threshold": 30,   # only if conv tanks below 30%
-    "conviction_exit_min_profit": 15,  # and only if big profit (>+15%)
-    "engine_flip_cycles": 3,         # need 3 consecutive flips
-    "scalper_max_hold_min": 180,     # 3 hours
-    "scalper_cooldown_same_strike_min": 2,  # quick re-entry
+    "conviction_exit_enabled": False,
+    "conviction_exit_threshold": 30,
+    "conviction_exit_min_profit": 5,  # was +15%, lower bar for protective exit
+    "engine_flip_cycles": 2,         # 2 flips (was 3, react faster)
+    "scalper_max_hold_min": 180,
+    "scalper_cooldown_same_strike_min": 2,
     "scalper_cooldown_flip_min": 5,
-    "scalper_sl_pct": 0.18,          # wider SL (18%)
-    "scalper_t1_pct": 0.50,          # T1 +50% (not partial-booked anyway)
-    "scalper_t2_pct": 1.00,          # T2 +100% (home run target)
+    "scalper_sl_pct": 0.05,          # MAX 5% LOSS (was 18%) — hard cap
+    "scalper_t1_pct": 0.05,          # T1 +5% (was +50%, never realistic)
+    "scalper_t2_pct": 0.12,          # T2 +12% (was +100%, mid of 10-15%)
+    "post_t2_trail_giveback_pct": 30.0,  # NEW: after T2, trail 30% of peak-from-T2
+    "post_t2_lock_t2": True,         # NEW: SL never below T2 once T2 crossed
 }
 
 

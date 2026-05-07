@@ -327,6 +327,55 @@ class TradeManager:
         """Called by engine every 30s with latest verdict data."""
         self._cached_verdict = verdict or {}
 
+    def _get_strike_30min_trend(self, idx, strike, opt, current_ltp):
+        """Analyze last 30 minutes of LTP for this strike's option type.
+
+        Used to decide early exit on a fresh negative position: if strike
+        is clearly trending DOWN, no point holding to -5%; cut at -3%.
+
+        Returns: 'DOWN_HARD' | 'DOWN' | 'FLAT' | 'UP' | 'UNKNOWN'
+        """
+        try:
+            if not self._engine_ref or not hasattr(self._engine_ref, "ltp_history"):
+                return "UNKNOWN"
+
+            opt_upper = opt.upper()  # 'CE' or 'PE'
+            history = self._engine_ref.ltp_history.get((idx, strike, opt_upper), [])
+            if len(history) < 6:
+                return "UNKNOWN"  # Need at least 6 ticks for trend
+
+            # Filter to last 30 minutes
+            from datetime import datetime as _dt
+            cutoff = ist_now() - timedelta(minutes=30)
+            recent = [
+                h for h in history
+                if h.get("ltp", 0) > 0
+                and _dt.fromisoformat(h["t"]) >= cutoff
+            ]
+            if len(recent) < 6:
+                return "UNKNOWN"
+
+            ltps = [h["ltp"] for h in recent]
+            first_third = sum(ltps[: len(ltps) // 3]) / max(1, len(ltps) // 3)
+            last_third = sum(ltps[-len(ltps) // 3 :]) / max(1, len(ltps) // 3)
+
+            if first_third <= 0:
+                return "UNKNOWN"
+
+            change_pct = ((last_third - first_third) / first_third) * 100
+
+            if change_pct <= -3.0:
+                return "DOWN_HARD"  # Strong drop in last 30 min
+            elif change_pct <= -0.8:
+                return "DOWN"
+            elif change_pct >= 0.8:
+                return "UP"
+            else:
+                return "FLAT"
+        except Exception as e:
+            print(f"[TREND] {idx} {strike} {opt}: {e}")
+            return "UNKNOWN"
+
     def _engines_favor_hold(self, trade, idx, action):
         """Check if engines still support the trade direction.
         Returns True if engines say HOLD (don't exit at SL)."""
@@ -709,20 +758,43 @@ class TradeManager:
                 alerts_list.append(f"BREAKEVEN [{_bm['mode']}] activated at +{profit_pct:.1f}% (threshold {be_threshold}%) — SL moved to entry ₹{entry}")
                 print(f"[TRADE] BREAKEVEN [{_bm['mode']}]: {action} {idx} {strike} — SL moved to entry ₹{entry} (was ₹{sl})")
 
-            # STAGE 1.5: REVERSAL EXIT — HEDGER: -3% / BUYER: -8%
+            # STAGE 1.5: REVERSAL EXIT — MAX LOSS CAP at -5% (BUYER mode default)
+            #
+            # Two-tier protection:
+            #  (a) EARLY NEGATIVE EXIT: position negative + 30-min strike trend is
+            #      DOWN → don't wait for full -5%, exit at -3% (early_neg_exit_pct).
+            #      Saves 2% on bad-direction entries.
+            #  (b) HARD CAP: regardless of trend, never exceed reversal_exit_pct
+            #      (-5% in BUYER mode). User's explicit requirement: max loss 5%.
             try:
                 entry_time = datetime.fromisoformat(t["entry_time"])
                 hold_sec = (ist_now() - entry_time).total_seconds()
             except Exception:
                 hold_sec = 0
 
-            rev_pct = _bm.get("reversal_exit_pct", -3.0)
+            rev_pct = _bm.get("reversal_exit_pct", -3.0)              # Hard max loss
+            early_neg_pct = _bm.get("early_neg_exit_pct", -3.0)        # Early exit when trend confirms
             rev_min_hold = _bm.get("reversal_exit_min_hold_sec", 600)
-            if not breakeven_active and hold_sec >= rev_min_hold and profit_pct <= rev_pct:
-                new_status = "REVERSAL_EXIT"
-                exit_price = current_ltp
-                exit_reason = f"Reversal exit [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — held {int(hold_sec/60)}min, no recovery."
-                print(f"[TRADE] REVERSAL EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}% after {int(hold_sec/60)}min)")
+
+            if not breakeven_active and hold_sec >= rev_min_hold:
+                # Tier (a): early exit on confirmed downtrend (saves 2%)
+                if profit_pct <= early_neg_pct and profit_pct > rev_pct:
+                    trend = self._get_strike_30min_trend(idx, strike, opt, current_ltp)
+                    if trend in ("DOWN", "DOWN_HARD"):
+                        new_status = "REVERSAL_EXIT"
+                        exit_price = current_ltp
+                        exit_reason = (
+                            f"Early neg exit [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — "
+                            f"30-min trend {trend}, no recovery likely. Held {int(hold_sec/60)}min."
+                        )
+                        print(f"[TRADE] EARLY-NEG EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}%, trend={trend})")
+
+                # Tier (b): hard max-loss cap (capital preservation)
+                if new_status == "OPEN" and profit_pct <= rev_pct:
+                    new_status = "REVERSAL_EXIT"
+                    exit_price = current_ltp
+                    exit_reason = f"Hard max-loss cap [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — held {int(hold_sec/60)}min."
+                    print(f"[TRADE] MAX-LOSS EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}% after {int(hold_sec/60)}min)")
 
             # STAGE 2: TRAILING SL — HEDGER: 50%/25% give-back / BUYER: 25%/15% give-back
             if breakeven_active and new_status == "OPEN":
@@ -746,6 +818,48 @@ class TradeManager:
                         alerts_list.append(f"Tight trail [{_bm['mode']}]: locking {lock_pct}% profit, SL at ₹{new_sl}")
                 elif profit_pct >= 25:
                     trail_level = "TRAIL_BASE"
+
+            # ══════════════════════════════════════════════
+            # POST-T2 TRAILING — once T2 crossed, lock T2 as new floor SL.
+            # User's spec: "T2 cross karne ke baad agar position plus mein
+            # chalri hai toh trailing max SL will be T2 plus trailing".
+            #
+            # Logic:
+            #   1. Peak reached T2 → SL minimum = T2 (lock 10-15% gain)
+            #   2. Each additional +2% above T2 in peak → SL ratchets +2%
+            #   Example: T2=1240, peak=1290 (+4% over T2) → SL = 1240+2% = 1265
+            #
+            # This replaces the % give-back trail above for post-T2 territory
+            # because we want to RIDE winners, not give back 25-30% to the trail.
+            # ══════════════════════════════════════════════
+            if (_bm.get("post_t2_lock_t2", False)
+                    and t2 > entry
+                    and peak >= t2
+                    and new_status == "OPEN"):
+                # Lock T2 as floor
+                if t2 > new_sl:
+                    new_sl = t2
+                    if not breakeven_active:
+                        breakeven_active = 1  # T2 is automatic BE+
+                    trail_level = "POST_T2_LOCK"
+                    alerts_list.append(
+                        f"POST-T2 LOCK: Peak hit T2 ₹{t2:.1f} — SL floor locked at T2. "
+                        f"Position now risk-free with +{round((t2/entry-1)*100, 1)}% guaranteed."
+                    )
+
+                # Ratchet: each +2% above T2 (in peak) → SL raised +2%
+                over_t2_pct = ((peak - t2) / entry) * 100
+                if over_t2_pct >= 2.0:
+                    ratchet_steps = int(over_t2_pct / 2.0)
+                    ratcheted_sl = round(t2 + (entry * 0.02 * ratchet_steps), 1)
+                    if ratcheted_sl > new_sl:
+                        new_sl = ratcheted_sl
+                        locked_above_t2 = ratchet_steps * 2
+                        trail_level = f"POST_T2_RATCHET_+{locked_above_t2}"
+                        alerts_list.append(
+                            f"POST-T2 RATCHET: Peak +{round(over_t2_pct,1)}% above T2 → "
+                            f"SL ₹{new_sl:.1f} (locked T2+{locked_above_t2}%)."
+                        )
 
             # ══════════════════════════════════════════════
             # EXIT CONDITIONS (with engine override)
