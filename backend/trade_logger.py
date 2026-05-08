@@ -780,6 +780,24 @@ class TradeManager:
             alerts_list = []
             trail_level = t.get("trail_level", "")
 
+            # ── BUYER MODE thresholds (loaded EARLY — used by adaptive SL below) ──
+            # BUG FIX 2026-05-08: _bm was used at line 836 before being defined at
+            # line 864, causing NameError → silent check_and_update failure → trade
+            # current_ltp/peak/pnl frozen at entry. Moved load up here.
+            try:
+                from buyer_mode import get_thresholds
+                _bm = get_thresholds()
+            except Exception:
+                _bm = {
+                    "mode": "HEDGER", "breakeven_pct": 2.0, "trail_giveback_pct": 50.0,
+                    "tight_trail_giveback_pct": 25.0, "tight_trail_trigger_pct": 35.0,
+                    "reversal_exit_pct": -5.0, "reversal_exit_min_hold_sec": 600,
+                    "early_neg_exit_pct": -3.0,
+                    "conviction_exit_enabled": True, "conviction_exit_threshold": 50,
+                    "conviction_exit_min_profit": 5,
+                    "post_t2_lock_t2": False,
+                }
+
             # ══════════════════════════════════════════════
             # PROFIT-LOCK TRAILING SL — locks gains as profit grows.
             # Only fires when trade is in profit (≥+3%).
@@ -858,19 +876,7 @@ class TradeManager:
             # ══════════════════════════════════════════════
             # SMART SL MANAGEMENT
             # ══════════════════════════════════════════════
-
-            # ── BUYER MODE thresholds (per-cycle) ──
-            try:
-                from buyer_mode import get_thresholds
-                _bm = get_thresholds()
-            except Exception:
-                _bm = {
-                    "mode": "HEDGER", "breakeven_pct": 2.0, "trail_giveback_pct": 50.0,
-                    "tight_trail_giveback_pct": 25.0, "tight_trail_trigger_pct": 35.0,
-                    "reversal_exit_pct": -3.0, "reversal_exit_min_hold_sec": 600,
-                    "conviction_exit_enabled": True, "conviction_exit_threshold": 50,
-                    "conviction_exit_min_profit": 5,
-                }
+            # _bm already loaded at top of trade-loop iteration (post bugfix 2026-05-08).
 
             # STAGE 0: CONVICTION DROP + PROFIT → Early breakeven
             # (BUYER MODE disables this — pure price-based management)
