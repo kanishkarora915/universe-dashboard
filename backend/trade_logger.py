@@ -678,6 +678,13 @@ class TradeManager:
             except Exception as e:
                 print(f"[AUTOPSY] ENTRY snapshot failed for trade #{trade_id}: {e}")
 
+        # Invalidate cache so new trade appears instantly in /api/trades/open
+        try:
+            from api_cache import cache_invalidate_prefix
+            cache_invalidate_prefix("trades_")
+        except Exception:
+            pass
+
         return trade_id
 
     def check_and_update(self, chains, prices, spot_tokens, token_to_info):

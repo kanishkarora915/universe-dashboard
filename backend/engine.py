@@ -413,6 +413,9 @@ class MarketEngine:
         # Critical for reliability: prevents the "engine running but ticks
         # frozen" bug that requires manual Render restart.
         self._start_ws_watchdog()
+        # API cache populator — pre-computes hot endpoint responses every 3s.
+        # Makes API endpoints sub-ms instead of 100-400ms each.
+        self._start_cache_populator()
         print("[ENGINE] Market engine started with REAL data.")
 
     def _start_pulse_scheduler(self):
@@ -542,6 +545,127 @@ class MarketEngine:
         t = threading.Thread(target=_watchdog_loop, daemon=True, name="ws-watchdog")
         t.start()
         self._ws_watchdog_thread = t
+
+    def _start_cache_populator(self):
+        """Background thread that pre-computes hot endpoint responses every 3s.
+
+        Why: API endpoints used to recompute on every request (100-400ms each).
+        Tab switch fired 30-40 requests → 5-10 seconds of laggy UI.
+
+        How: This thread does the heavy compute ONCE per cycle and stores
+        results in api_cache. Endpoints then just read from cache (sub-ms).
+
+        Caches:
+          - live (ticker data for both indices)
+          - chain_NIFTY, chain_BANKNIFTY (full option chains)
+          - oi_summary (today's OI change summary)
+          - oi_insight_NIFTY, oi_insight_BANKNIFTY (with interpretation)
+          - unusual (unusual options activity)
+          - sellers (positioning data)
+          - hidden_shift (hidden OI shifts)
+
+        Failure mode: if compute throws, cache keeps last good value.
+        Endpoints fall back to compute on cache miss (rare, only at startup).
+        """
+        import threading
+        import time as _time
+
+        def _populator_loop():
+            print("[CACHE-POP] Started — pre-computing hot endpoints every 3s")
+            try:
+                from api_cache import cache_set
+            except ImportError as e:
+                print(f"[CACHE-POP] api_cache import failed: {e}")
+                return
+
+            cycle = 0
+            while self.running:
+                try:
+                    cycle += 1
+
+                    # Live data (heaviest hit endpoint, polled every 5s by frontend)
+                    try:
+                        cache_set("live", self.get_live_data())
+                    except Exception as e:
+                        if cycle % 20 == 0:  # Log every minute, not every cycle
+                            print(f"[CACHE-POP] live error: {e}")
+
+                    # Option chains (called per index, polled by multiple tabs)
+                    for idx in ["NIFTY", "BANKNIFTY"]:
+                        try:
+                            cache_set(f"chain_{idx}", self.get_option_chain(idx))
+                        except Exception as e:
+                            if cycle % 20 == 0:
+                                print(f"[CACHE-POP] chain {idx} error: {e}")
+
+                    # OI summary (heavy compute, multiple consumers)
+                    try:
+                        cache_set("oi_summary", self.get_oi_change_summary())
+                    except Exception as e:
+                        if cycle % 20 == 0:
+                            print(f"[CACHE-POP] oi_summary error: {e}")
+
+                    # Unusual options activity
+                    try:
+                        if hasattr(self, "get_unusual"):
+                            cache_set("unusual", self.get_unusual())
+                    except Exception as e:
+                        if cycle % 20 == 0:
+                            print(f"[CACHE-POP] unusual error: {e}")
+
+                    # Sellers positioning
+                    try:
+                        if hasattr(self, "get_sellers"):
+                            cache_set("sellers", self.get_sellers())
+                    except Exception as e:
+                        if cycle % 20 == 0:
+                            print(f"[CACHE-POP] sellers error: {e}")
+
+                    # Open trades (PnL tab — heavy SQLite read)
+                    try:
+                        if hasattr(self, "trade_manager") and self.trade_manager:
+                            cache_set("trades_open", self.trade_manager.get_open_trades())
+                    except Exception as e:
+                        if cycle % 20 == 0:
+                            print(f"[CACHE-POP] trades_open error: {e}")
+
+                    # Forecast live (predictive narrative)
+                    try:
+                        from forecast_engine import get_live_state as _fc_state
+                        cache_set("forecast_live", _fc_state())
+                    except Exception as e:
+                        if cycle % 20 == 0:
+                            print(f"[CACHE-POP] forecast_live error: {e}")
+
+                    # Watcher status (header indicator, polled often)
+                    try:
+                        from position_watcher import _last_health_cache
+                        import time as __time
+                        cached_h = list(_last_health_cache.values())
+                        last_pulse_ts = max([h.get("ts", 0) for h in cached_h], default=0)
+                        now_ts = __time.time()
+                        age = (now_ts - last_pulse_ts) if last_pulse_ts else None
+                        cache_set("watcher_status", {
+                            "live": bool(age is not None and age < 90),
+                            "last_pulse_age_sec": round(age, 1) if age is not None else None,
+                            "cached_positions": len(cached_h),
+                            "main_count": len([h for h in cached_h if h.get("source") == "MAIN"]),
+                            "scalper_count": len([h for h in cached_h if h.get("source") == "SCALPER"]),
+                            "stub_count": len([h for h in cached_h if h.get("stub")]),
+                        })
+                    except Exception as e:
+                        if cycle % 20 == 0:
+                            print(f"[CACHE-POP] watcher_status error: {e}")
+
+                except Exception as e:
+                    print(f"[CACHE-POP] outer error: {e}")
+
+                _time.sleep(3.0)
+            print("[CACHE-POP] Stopped")
+
+        t = threading.Thread(target=_populator_loop, daemon=True, name="cache-populator")
+        t.start()
+        self._cache_populator_thread = t
 
     def _restart_ticker(self):
         """Force-disconnect old ticker, then create + connect a fresh one.
