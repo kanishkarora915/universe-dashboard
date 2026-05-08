@@ -516,6 +516,15 @@ class MarketEngine:
                                 (now - last_restart_attempt) > 300):
                             print(f"[WS-WATCHDOG] FORCE RECONNECT: WS confirmed "
                                   f"dead, restarting ticker...")
+                            try:
+                                from structured_logger import log
+                                log.warn(
+                                    "ws_force_reconnect",
+                                    last_tick_age_sec=round(last_tick_age, 1),
+                                    consecutive_stale=consecutive_stale,
+                                )
+                            except Exception:
+                                pass
                             last_restart_attempt = now
                             try:
                                 self._restart_ticker()
@@ -525,10 +534,20 @@ class MarketEngine:
                                 self._last_tick_time = now
                                 print(f"[WS-WATCHDOG] Ticker restart complete — "
                                       f"watching for fresh ticks...")
+                                try:
+                                    from structured_logger import log
+                                    log.info("ws_reconnect_success")
+                                except Exception:
+                                    pass
                             except Exception as e:
                                 print(f"[WS-WATCHDOG] Restart FAILED: {e}")
                                 import traceback
                                 traceback.print_exc()
+                                try:
+                                    from structured_logger import log
+                                    log.error("ws_reconnect_failed", error=str(e))
+                                except Exception:
+                                    pass
                     else:
                         # Healthy — reset counter
                         if consecutive_stale > 0:

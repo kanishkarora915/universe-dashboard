@@ -471,6 +471,17 @@ async def cache_invalidate_endpoint(prefix: str):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/db/status")
+async def db_migrations_status():
+    """Per-database schema-migration status. Used to verify that all DBs
+    are at expected schema version after deploy."""
+    try:
+        from db_migrations import status as _ms
+        return _ms()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.post("/api/logout")
 async def logout():
     global engine

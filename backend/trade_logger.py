@@ -685,6 +685,29 @@ class TradeManager:
         except Exception:
             pass
 
+        # Structured log for observability (alerting, analytics)
+        try:
+            from structured_logger import log
+            log.info(
+                "trade_opened",
+                trade_id=trade_id,
+                idx=idx,
+                action=action,
+                strike=int(strike),
+                entry_price=float(entry_price),
+                sl_price=float(sl_price),
+                t1_price=float(t1_price),
+                t2_price=float(t2_price),
+                qty=int(qty),
+                lots=int(lots),
+                probability=int(probability),
+                source=source,
+                whale_aligned=bool(whale_aligned),
+                capital_used=float(round(capital_used, 2)) if capital_used else None,
+            )
+        except Exception:
+            pass
+
         return trade_id
 
     def check_and_update(self, chains, prices, spot_tokens, token_to_info):
@@ -1168,6 +1191,25 @@ class TradeManager:
                       new_sl, breakeven_active, trailing_active, trail_level,
                       new_status, exit_price, ist_now().isoformat(), exit_reason, alerts_str, t["id"]))
                 print(f"[TRADE] CLOSED: {action} {idx} {strike} — {new_status} — PnL: ₹{total_pnl:+,.0f} (partial: ₹{already_booked_pnl:+,.0f} + exit: ₹{remaining_pnl_for_log:+,.0f})")
+                try:
+                    from structured_logger import log
+                    _hold_min = round(hold_sec / 60, 1) if hold_sec else None
+                    log.info(
+                        "trade_closed",
+                        trade_id=t["id"],
+                        idx=idx, action=action, strike=int(strike),
+                        entry_price=float(entry),
+                        exit_price=float(exit_price),
+                        status=new_status,
+                        pnl_rupees=float(total_pnl),
+                        pnl_pct=round((exit_price/entry - 1) * 100, 2) if entry > 0 else 0,
+                        peak_ltp=float(peak),
+                        hold_minutes=_hold_min,
+                        source=t.get("source", "verdict_momentum"),
+                        exit_reason=str(exit_reason)[:200] if exit_reason else None,
+                    )
+                except Exception:
+                    pass
                 # ── Record P&L in capital tracker (auto-adjust running capital + profit bank) ──
                 try:
                     from capital_tracker import record_trade_pnl
