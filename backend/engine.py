@@ -409,6 +409,10 @@ class MarketEngine:
         # Start independent pulse scheduler so pulse loops fire even when
         # WebSocket has dead periods (Kite reconnects, lunch chop, etc).
         self._start_pulse_scheduler()
+        # WebSocket watchdog — auto-detects stale ticks and force-reconnects.
+        # Critical for reliability: prevents the "engine running but ticks
+        # frozen" bug that requires manual Render restart.
+        self._start_ws_watchdog()
         print("[ENGINE] Market engine started with REAL data.")
 
     def _start_pulse_scheduler(self):
@@ -446,6 +450,164 @@ class MarketEngine:
         t = threading.Thread(target=_scheduler_loop, daemon=True, name="pulse-scheduler")
         t.start()
         self._pulse_scheduler_thread = t
+
+    def _start_ws_watchdog(self):
+        """Watchdog thread — auto-detects stale WS and force-reconnects.
+
+        Problem this solves:
+          Engine sometimes shows "running" but ticks are frozen during market
+          hours (WS connection died silently, Kite library's auto-reconnect
+          didn't recover). Required manual Render restart.
+
+        How it works:
+          - Every 30s during market hours, checks last_tick_time
+          - If no tick in 60+ seconds → counts as STALE
+          - 2 consecutive stale checks (90s+ frozen) → force-reconnect ticker
+          - Cooldown 5 min between restart attempts (avoid restart loop)
+          - Off-hours / pre-market / weekends: dormant
+        """
+        import threading
+        import time as _time
+
+        def _watchdog_loop():
+            print("[WS-WATCHDOG] Started — auto-heals frozen WebSocket every 30s")
+            consecutive_stale = 0
+            last_restart_attempt = 0
+
+            while self.running:
+                try:
+                    now = _time.time()
+                    ist = ist_now()
+
+                    # Only watch during market hours (9:15-15:30 IST, weekdays)
+                    is_weekday = ist.weekday() <= 4
+                    is_market = (
+                        is_weekday and (
+                            (ist.hour == 9 and ist.minute >= 15) or
+                            (10 <= ist.hour <= 14) or
+                            (ist.hour == 15 and ist.minute <= 30)
+                        )
+                    )
+
+                    if not is_market:
+                        consecutive_stale = 0
+                        _time.sleep(30)
+                        continue
+
+                    # How long since the last tick?
+                    last_tick_age = (
+                        now - self._last_tick_time
+                        if self._last_tick_time > 0
+                        else 999
+                    )
+
+                    # Stale = no tick in 60+ seconds during market hours
+                    if last_tick_age > 60:
+                        consecutive_stale += 1
+                        print(f"[WS-WATCHDOG] STALE: last tick {last_tick_age:.0f}s ago "
+                              f"(consecutive {consecutive_stale}/2)")
+
+                        # 2 consecutive stale checks (90s+ frozen) AND
+                        # at least 5 min since last restart attempt
+                        if (consecutive_stale >= 2 and
+                                (now - last_restart_attempt) > 300):
+                            print(f"[WS-WATCHDOG] FORCE RECONNECT: WS confirmed "
+                                  f"dead, restarting ticker...")
+                            last_restart_attempt = now
+                            try:
+                                self._restart_ticker()
+                                consecutive_stale = 0
+                                # Mark _last_tick_time so we don't immediately
+                                # re-trigger before fresh ticks arrive.
+                                self._last_tick_time = now
+                                print(f"[WS-WATCHDOG] Ticker restart complete — "
+                                      f"watching for fresh ticks...")
+                            except Exception as e:
+                                print(f"[WS-WATCHDOG] Restart FAILED: {e}")
+                                import traceback
+                                traceback.print_exc()
+                    else:
+                        # Healthy — reset counter
+                        if consecutive_stale > 0:
+                            print(f"[WS-WATCHDOG] Recovered — last tick "
+                                  f"{last_tick_age:.0f}s ago")
+                        consecutive_stale = 0
+                except Exception as e:
+                    print(f"[WS-WATCHDOG] Loop error: {e}")
+
+                _time.sleep(30)
+
+            print("[WS-WATCHDOG] Stopped")
+
+        t = threading.Thread(target=_watchdog_loop, daemon=True, name="ws-watchdog")
+        t.start()
+        self._ws_watchdog_thread = t
+
+    def _restart_ticker(self):
+        """Force-disconnect old ticker, then create + connect a fresh one.
+
+        Called by watchdog on confirmed WS death. Safe to call repeatedly
+        (idempotent close, fresh connect). Holds 2-second cooldown between
+        close and reconnect to allow socket teardown to complete.
+        """
+        import time as _time
+
+        # Step 1: close old ticker if exists
+        if hasattr(self, "ticker") and self.ticker is not None:
+            try:
+                old_ticker = self.ticker
+                self.ticker = None  # Clear ref first to prevent races
+                try:
+                    old_ticker.close()
+                except Exception as e:
+                    print(f"[WS-WATCHDOG] old ticker close warning: {e}")
+                print("[WS-WATCHDOG] Old ticker closed")
+            except Exception as e:
+                print(f"[WS-WATCHDOG] Failed to close old ticker: {e}")
+
+        # Step 2: brief pause to let socket teardown complete
+        _time.sleep(2)
+
+        # Step 3: create fresh ticker (uses same _connect_ticker as initial setup)
+        self._connect_ticker()
+        print("[WS-WATCHDOG] Fresh ticker connected, subscriptions in progress")
+
+    def get_ws_health(self):
+        """Return current WebSocket health snapshot for /api/ws/health endpoint."""
+        import time as _time
+        now = _time.time()
+        last_tick_age = (
+            now - self._last_tick_time
+            if self._last_tick_time > 0
+            else None
+        )
+        ist = ist_now()
+        is_market = (
+            ist.weekday() <= 4 and (
+                (ist.hour == 9 and ist.minute >= 15) or
+                (10 <= ist.hour <= 14) or
+                (ist.hour == 15 and ist.minute <= 30)
+            )
+        )
+        ticker_obj = getattr(self, "ticker", None)
+        return {
+            "running": bool(self.running),
+            "is_market_hours": is_market,
+            "ticker_exists": ticker_obj is not None,
+            "last_tick_age_sec": (
+                round(last_tick_age, 1) if last_tick_age is not None else None
+            ),
+            "is_stale": (
+                last_tick_age is not None and last_tick_age > 60 and is_market
+            ),
+            "watchdog_active": (
+                hasattr(self, "_ws_watchdog_thread") and
+                self._ws_watchdog_thread.is_alive()
+                if hasattr(self, "_ws_watchdog_thread")
+                else False
+            ),
+            "now_ist": ist.strftime("%H:%M:%S"),
+        }
 
     def _run_pulse_checks(self):
         """Pulse-only logic — same time-gated checks that live in on_ticks,

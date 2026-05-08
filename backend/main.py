@@ -399,6 +399,51 @@ async def get_status():
     }
 
 
+@app.get("/api/ws/health")
+async def ws_health():
+    """WebSocket health snapshot — used by watchdog telemetry + external
+    monitoring (e.g., Uptime Robot can alert on `is_stale: true`).
+
+    Returns:
+      running               engine.running flag
+      is_market_hours       9:15-15:30 IST weekday?
+      ticker_exists         WS ticker object alive?
+      last_tick_age_sec     seconds since last tick (None if never)
+      is_stale              true if no tick in 60+ sec during market hours
+      watchdog_active       watchdog thread running?
+      now_ist               current IST timestamp
+    """
+    if engine is None:
+        return {
+            "running": False,
+            "is_market_hours": None,
+            "ticker_exists": False,
+            "last_tick_age_sec": None,
+            "is_stale": True,
+            "watchdog_active": False,
+            "now_ist": None,
+            "error": "engine not initialized",
+        }
+    try:
+        return engine.get_ws_health()
+    except Exception as e:
+        return {"error": str(e), "running": False, "is_stale": True}
+
+
+@app.post("/api/ws/force-reconnect")
+async def ws_force_reconnect():
+    """Manually trigger WebSocket reconnect (admin/debug endpoint).
+    Same logic as watchdog auto-reconnect but on-demand.
+    """
+    if engine is None:
+        return JSONResponse({"error": "engine not initialized"}, status_code=400)
+    try:
+        engine._restart_ticker()
+        return {"status": "success", "message": "Ticker restart triggered"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.post("/api/logout")
 async def logout():
     global engine
