@@ -482,6 +482,30 @@ async def db_migrations_status():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/backup/status")
+async def backup_status():
+    """Backup daemon status — config, last run, DB count.
+    Use to verify backup is configured + running.
+    """
+    try:
+        from backup_manager import get_status
+        return get_status()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/backup/run-now")
+async def backup_run_now():
+    """Trigger manual backup immediately. Admin/debug endpoint.
+    Returns archive size, DB count, success/failure.
+    """
+    try:
+        from backup_manager import _run_backup_now
+        return _run_backup_now()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/dashboard/snapshot")
 async def dashboard_snapshot():
     """ONE call returns everything the Dashboard tab needs.

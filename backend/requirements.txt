@@ -10,3 +10,4 @@ yfinance>=0.2.30
 requests>=2.31.0
 pyotp
 sentry-sdk[fastapi]>=2.18.0
+boto3>=1.34.0

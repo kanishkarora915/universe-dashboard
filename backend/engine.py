@@ -416,6 +416,15 @@ class MarketEngine:
         # API cache populator — pre-computes hot endpoint responses every 3s.
         # Makes API endpoints sub-ms instead of 100-400ms each.
         self._start_cache_populator()
+
+        # Daily backup daemon — uploads /data/*.db to S3 at 3 AM IST.
+        # Silently no-op if BACKUP_S3_BUCKET + AWS_* env vars not set.
+        try:
+            from backup_manager import start_daemon as _backup_start
+            _backup_start()
+        except Exception as _e:
+            print(f"[ENGINE] backup daemon start failed: {_e}")
+
         print("[ENGINE] Market engine started with REAL data.")
 
     def _start_pulse_scheduler(self):
