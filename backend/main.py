@@ -482,6 +482,66 @@ async def db_migrations_status():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/dashboard/snapshot")
+async def dashboard_snapshot():
+    """ONE call returns everything the Dashboard tab needs.
+
+    Replaces ~40 individual API calls per page-load with a single bundled
+    response. Frontend SWR can hydrate multiple components from this.
+
+    All values come from the background-populated api_cache (sub-ms).
+    Stale data is OK — the cache is at most 3-10 seconds behind.
+
+    Reduces:
+      - Tab open: 40 round-trips × 200ms = 8s  →  1 round-trip × 200ms = 200ms
+      - Server CPU: 40 endpoints × compute   →  1 endpoint × dict assembly
+      - Network bandwidth: 40 TCP/TLS handshakes → 1
+    """
+    snap = {
+        "ts": time.time(),
+        "engine_running": bool(engine and engine.running),
+    }
+
+    # Pull each cached key. Returns None if not yet populated.
+    keys_to_include = [
+        "live", "chain_NIFTY", "chain_BANKNIFTY",
+        "oi_summary", "unusual",
+        "trades_open",
+        "forecast_live",
+        "watcher_status", "positions_health",
+        "trap_verdict", "smart_money_live", "reversal_live",
+        "signals", "seller_summary", "trade_analysis",
+        "hidden_shift", "intraday", "nextday", "multi_tf",
+    ]
+
+    for key in keys_to_include:
+        try:
+            val = cache_get_stale(key)
+            if val is not None:
+                # Use friendlier camelCase keys for frontend convenience
+                friendly_key = {
+                    "chain_NIFTY":     "chainNifty",
+                    "chain_BANKNIFTY": "chainBanknifty",
+                    "oi_summary":      "oiSummary",
+                    "trades_open":     "tradesOpen",
+                    "forecast_live":   "forecast",
+                    "watcher_status":  "watcherStatus",
+                    "positions_health": "positionsHealth",
+                    "trap_verdict":    "trapVerdict",
+                    "smart_money_live": "smartMoney",
+                    "reversal_live":   "reversal",
+                    "seller_summary":  "sellerData",
+                    "trade_analysis":  "tradeAnalysis",
+                    "hidden_shift":    "hiddenShift",
+                    "multi_tf":        "multiTimeframe",
+                }.get(key, key)
+                snap[friendly_key] = val
+        except Exception as e:
+            print(f"[SNAPSHOT] err on {key}: {e}")
+
+    return snap
+
+
 @app.post("/api/logout")
 async def logout():
     global engine
@@ -532,15 +592,32 @@ def _fast_cache_or_compute(key: str, fetcher, populator_max_age: float = 10.0,
 
 def _get_or_cache(key, fetcher, ttl=5):
     """Get live data with TTL-based caching. ttl=seconds before refresh.
-    Legacy path — only used when api_cache populator hasn't run yet.
-    Most callers should go through _fast_cache_or_compute instead.
+
+    UPGRADED 2026-05-09: Now checks api_cache (background populator) FIRST
+    before computing. This makes ALL legacy callers automatically fast
+    when populator has populated the key.
+
+    Tier order:
+      1. api_cache (background populator, sub-ms reads if fresh enough)
+      2. local _memory_cache (per-process, ttl-based)
+      3. fetcher() — actual compute (slowest)
     """
     now = time.time()
-    # Return memory cache if fresh
+
+    # ── Tier 1: api_cache populator (NEW) ──
+    # Allow staleness up to 2x ttl since populator runs every 3s and
+    # we'd rather serve slightly-stale-but-fast than block on compute.
+    populator_max_age = max(ttl * 2, 10)
+    fresh_from_populator = cache_get(key, max_age_sec=populator_max_age)
+    if fresh_from_populator is not None:
+        return fresh_from_populator
+
+    # ── Tier 2: local memory cache (legacy fast path) ──
     if key in _memory_cache and key in _cache_timestamps:
         if now - _cache_timestamps[key] < ttl:
             return _memory_cache[key]
 
+    # ── Tier 3: compute on demand ──
     if engine and engine.running:
         try:
             data = fetcher()

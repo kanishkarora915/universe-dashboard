@@ -676,6 +676,56 @@ class MarketEngine:
                         if cycle % 20 == 0:
                             print(f"[CACHE-POP] watcher_status error: {e}")
 
+                    # Trap verdict (used by Verdict cards on dashboard)
+                    try:
+                        if hasattr(self, "get_trap_verdict"):
+                            cache_set("trap_verdict", self.get_trap_verdict())
+                    except Exception as e:
+                        if cycle % 20 == 0:
+                            print(f"[CACHE-POP] trap_verdict error: {e}")
+
+                    # Hidden shift, signals, seller summary, trade analysis
+                    for getter_name, key in [
+                        ("get_signals", "signals"),
+                        ("get_seller_summary", "seller_summary"),
+                        ("get_trade_analysis", "trade_analysis"),
+                        ("get_hidden_shift", "hidden_shift"),
+                        ("get_price_action", "price_action"),
+                        ("get_intraday", "intraday"),
+                        ("get_nextday", "nextday"),
+                        ("get_multi_timeframe", "multi_tf"),
+                    ]:
+                        try:
+                            if hasattr(self, getter_name):
+                                cache_set(key, getattr(self, getter_name)())
+                        except Exception as e:
+                            if cycle % 20 == 0:
+                                print(f"[CACHE-POP] {key} error: {e}")
+
+                    # Smart money detector
+                    try:
+                        from smart_money_detector import get_live_state as _sm_state
+                        cache_set("smart_money_live", _sm_state())
+                    except Exception as e:
+                        if cycle % 20 == 0:
+                            print(f"[CACHE-POP] smart_money_live error: {e}")
+
+                    # Reversal/capitulation live (used by Reversal tab)
+                    try:
+                        from capitulation_engine import get_live_state as _cap_state
+                        cache_set("reversal_live", _cap_state())
+                    except Exception as e:
+                        if cycle % 20 == 0:
+                            print(f"[CACHE-POP] reversal_live error: {e}")
+
+                    # Positions aggregate health (PnL tab status row)
+                    try:
+                        from position_watcher import get_last_health
+                        cache_set("positions_health", get_last_health())
+                    except Exception as e:
+                        if cycle % 20 == 0:
+                            print(f"[CACHE-POP] positions_health error: {e}")
+
                 except Exception as e:
                     print(f"[CACHE-POP] outer error: {e}")
 
