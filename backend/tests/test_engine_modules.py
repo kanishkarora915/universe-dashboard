@@ -22,6 +22,7 @@ from engine_modules.price_action import (
 )
 from engine_modules.watchdog import WSWatchdog
 from engine_modules.cache_populator import CachePopulator
+from engine_modules.pulse_scheduler import PulseScheduler
 
 
 # ── price_action ──────────────────────────────────────────────────────────
@@ -168,6 +169,92 @@ class TestCachePopulator:
         cache_set.assert_called_once_with("test_key", {"data": 42})
 
 
+# ── pulse_scheduler ────────────────────────────────────────────────────────
+
+class TestPulseScheduler:
+    def test_init_defaults(self):
+        engine = MagicMock()
+        ps = PulseScheduler(engine)
+        assert ps.engine is engine
+        assert ps.interval == 1.0
+        assert ps.error_log_throttle == 30
+
+    def test_init_custom(self):
+        engine = MagicMock()
+        ps = PulseScheduler(engine, interval=2.0, error_log_throttle=60)
+        assert ps.interval == 2.0
+        assert ps.error_log_throttle == 60
+
+    def test_start_stop_thread(self):
+        """Scheduler start spawns thread; stop signals exit."""
+        engine = MagicMock()
+        engine.running = True  # keep loop alive so we can observe is_alive()
+        # No `ticker` attr → loop runs but is a no-op (matches early-startup state)
+        del engine.ticker
+        ps = PulseScheduler(engine, interval=0.05)
+        ps.start()
+        assert ps._thread is not None
+        assert ps._thread.is_alive()
+        ps.stop()
+        engine.running = False  # belt-and-braces: also break the running guard
+        time.sleep(0.2)
+
+    def test_start_idempotent(self):
+        """Calling start twice doesn't spawn duplicate thread."""
+        engine = MagicMock()
+        engine.running = True
+        del engine.ticker
+        ps = PulseScheduler(engine, interval=0.05)
+        ps.start()
+        first_thread = ps._thread
+        ps.start()  # second call must be no-op while first thread alive
+        assert ps._thread is first_thread
+        ps.stop()
+        engine.running = False
+        time.sleep(0.2)
+
+    def test_loop_calls_run_pulse_checks(self):
+        """When running and ticker present, loop drives engine._run_pulse_checks."""
+        engine = MagicMock()
+        engine.running = True
+        engine.ticker = object()  # truthy hasattr check
+        ps = PulseScheduler(engine, interval=0.02)
+        ps.start()
+        time.sleep(0.15)  # ~5-7 cycles
+        engine.running = False  # cause loop to exit
+        ps.stop()
+        time.sleep(0.1)
+        assert engine._run_pulse_checks.call_count >= 2
+
+    def test_loop_skips_when_no_ticker(self):
+        """Loop must NOT call _run_pulse_checks before ticker is wired."""
+        engine = MagicMock(spec=["running", "_run_pulse_checks"])
+        engine.running = True
+        # No `ticker` attr → hasattr returns False
+        ps = PulseScheduler(engine, interval=0.02)
+        ps.start()
+        time.sleep(0.1)
+        engine.running = False
+        ps.stop()
+        time.sleep(0.1)
+        engine._run_pulse_checks.assert_not_called()
+
+    def test_loop_swallows_pulse_check_errors(self):
+        """Errors in _run_pulse_checks must not crash the loop."""
+        engine = MagicMock()
+        engine.running = True
+        engine.ticker = object()
+        engine._run_pulse_checks = MagicMock(side_effect=RuntimeError("boom"))
+        ps = PulseScheduler(engine, interval=0.02, error_log_throttle=0)
+        ps.start()
+        time.sleep(0.15)
+        engine.running = False
+        ps.stop()
+        time.sleep(0.1)
+        # Loop kept calling despite repeated errors → resilience confirmed
+        assert engine._run_pulse_checks.call_count >= 2
+
+
 # ── Module imports work ───────────────────────────────────────────────────
 
 class TestPackageImports:
@@ -178,3 +265,4 @@ class TestPackageImports:
         assert hasattr(engine_modules, "prune_history")
         assert hasattr(engine_modules, "WSWatchdog")
         assert hasattr(engine_modules, "CachePopulator")
+        assert hasattr(engine_modules, "PulseScheduler")

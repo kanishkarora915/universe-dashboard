@@ -16,7 +16,7 @@ Order of extraction (lowest risk first):
   1. ✅ price_action     (just spot history tracking)
   2. ✅ watchdog         (well-isolated WS health monitor)
   3. ✅ cache_populator  (well-isolated background job)
-  4. 🟡 pulse_scheduler  (touches engine internals)
+  4. ✅ pulse_scheduler  (1Hz dispatch — calls engine._run_pulse_checks)
   5. ⚠️ ticker          (real-time critical — DEFER)
   6. ⚠️ trade_flow       (touches money — DEFER)
 
@@ -29,10 +29,12 @@ Once migration complete, can rename to `engine/` package.
 from .price_action import record_spot_tick, prune_history
 from .watchdog import WSWatchdog
 from .cache_populator import CachePopulator
+from .pulse_scheduler import PulseScheduler
 
 __all__ = [
     "record_spot_tick",
     "prune_history",
     "WSWatchdog",
     "CachePopulator",
+    "PulseScheduler",
 ]
