@@ -222,10 +222,18 @@ def run_full_check(engine) -> Dict:
     cat.append(_check("Backtest Validator", chk_backtest_validator))
 
     def chk_ai_brain():
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        # ai_brain.py accepts either env var name — match that here so
+        # the health check reflects reality.
+        anth = os.environ.get("ANTHROPIC_API_KEY", "")
+        claude = os.environ.get("CLAUDE_API_KEY", "")
+        api_key = anth or claude
         if not api_key:
-            return {"status": "WARN", "detail": "ANTHROPIC_API_KEY env var not set"}
-        return {"status": "PASS", "detail": f"key present (len={len(api_key)})"}
+            return {
+                "status": "WARN",
+                "detail": "neither ANTHROPIC_API_KEY nor CLAUDE_API_KEY set",
+            }
+        which = "ANTHROPIC_API_KEY" if anth else "CLAUDE_API_KEY"
+        return {"status": "PASS", "detail": f"{which} present (len={len(api_key)})"}
     cat.append(_check("AI Brain (Claude Haiku)", chk_ai_brain))
 
     report["categories"]["3. Trading Intelligence"] = cat
