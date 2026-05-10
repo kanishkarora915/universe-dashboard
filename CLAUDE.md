@@ -36,7 +36,7 @@ USER (Mumbai) → Vercel (edge) → Render (Singapore) → Kite Connect WebSocke
 
 ---
 
-## State as of 2026-05-09 (Option B Phase 1 complete)
+## State as of 2026-05-10 (Option B Phase 2 partially done)
 
 User chose **Option B: build into product / show to investors** (~50 hrs Tier-1
 work over 4 weeks).
@@ -53,15 +53,28 @@ work over 4 weeks).
 3. **GitHub Actions CI** (`.github/workflows/ci.yml`) — runs on every push:
    pytest + Vite build + bundle size check.
 
-### 🟡 Pending (Phase 2, week 2-3)
-**`engine.py` modularization** — currently 5,514 LOC monolith. Split into:
-- `engine/core.py` (MarketEngine class)
-- `engine/ticker.py` (WebSocket + watchdog)
-- `engine/cache_populator.py`
-- `engine/scheduler.py` (pulse scheduler)
-- `engine/trade_flow.py` (verdict-based + reversal-zone entry paths)
+### 🟡 Phase 2 — engine.py modularization (in progress, 2026-05-09 / 2026-05-10)
 
-See `ROADMAP.md` for specific tasks.
+Strategy: ADDITIVE extraction first. Each task creates a new module in
+`backend/engine_modules/` (note: `_modules` suffix, not `engine/`, to
+avoid collision with the existing `engine.py` during gradual migration).
+engine.py stays UNCHANGED through 2.1–2.7 — production still runs the
+old inline methods. Wiring (2.8) and slimming (2.9) come last.
+
+**Done so far** (101 tests passing, was 78):
+- ✅ 2.1 Module skeleton (`backend/engine_modules/__init__.py`)
+- ✅ 2.2 `WSWatchdog` class — `engine_modules/watchdog.py`
+- ✅ 2.3 `CachePopulator` class — `engine_modules/cache_populator.py`
+- ✅ 2.4 `PulseScheduler` class — `engine_modules/pulse_scheduler.py`
+- ✅ 2.7 price_action helpers — `engine_modules/price_action.py`
+
+**Pending**:
+- 🟡 2.5 ticker subscription extract — HIGH RISK (real-time critical), defer
+- 🟡 2.6 trade flow extract — HIGH RISK (touches money), defer
+- 🟡 2.8 wire engine.py to use new modules (replace inline impls with class instances)
+- 🟡 2.9 slim engine.py final (remove old methods, target < 500 LOC)
+
+See `ROADMAP.md` for full task list + success criteria.
 
 ### 🟡 Pending (Phase 3, week 4)
 **Postgres migration** — replace 12 SQLite files with single Render Postgres
@@ -174,9 +187,9 @@ When user says these in a fresh chat, you should know what they mean:
 
 | Phrase | Action |
 |---|---|
-| "Continue Phase 2" or "Phase 2 start kar" | Read ROADMAP.md → start engine.py split |
+| "Continue Phase 2" or "Phase 2 start kar" | Read ROADMAP.md → next is Task 2.8 (wire engine.py) |
 | "Continue Phase 3" or "Postgres migration" | Read ROADMAP.md → start Postgres migration |
-| "Continue Option B" | Where we left off in Option B plan (currently Phase 2 pending) |
+| "Continue Option B" | Where we left off in Option B plan (currently Phase 2 mid-flight) |
 | "How is the system doing" | Check Sentry + Render logs + run /api/cache/stats |
 | "Run tests" | `cd backend && python -m pytest tests/ -v` |
 | "Verify backup is working" | `curl -X POST .../api/backup/run-now` then check S3 |
@@ -196,10 +209,25 @@ When user says these in a fresh chat, you should know what they mean:
 
 ## Last session summary
 
-Date: 2026-05-09
-What user asked: "Tier 1 from Option B" (build into product)
-What got done: Phase 1.1 + 1.2 + 1.3 (backup + tests + CI)
-What's next: Phase 2 (engine.py modularization, ~16 hrs, week 2-3)
+Date: 2026-05-10
+What user asked: "Continue Phase 2 from Task 2.4 only"
+What got done:
+  - Task 2.4 — extracted `PulseScheduler` into `engine_modules/pulse_scheduler.py`
+  - 7 new tests added (101 total now passing)
+  - Commit `c3ed0bb` pushed to main
+  - Doc updates (this file + ROADMAP.md) — separate commit
+
+User explicitly held off on Tasks 2.5/2.6 as HIGH RISK.
+2.8 (wiring) deferred — user will decide when to do it (needs Sentry monitoring
+window after deploy).
+
+What's next when user returns:
+- Decide whether to do Task 2.8 (wire engine.py to use new modules).
+  This is the smallest-diff "switch the lights on" commit, but it DOES
+  modify engine.py so it needs the user's attention post-deploy.
+- After 2.8 stable in prod → consider 2.5/2.6 (still high risk).
+- Postgres migration (Phase 3) is the bigger fish after Phase 2 done.
+
 User's open S3 todo: Add 4 env vars to Render to activate backup daemon
 
 If user starts new chat saying "let's continue", point them to:

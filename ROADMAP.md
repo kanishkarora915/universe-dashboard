@@ -36,73 +36,90 @@ Read `CLAUDE.md` for project context first.
 
 ## 🟡 Phase 2 — engine.py modularization (week 2-3, ~16 hrs)
 
-**Why:** `backend/engine.py` is 5,514 LOC monolith. Hard to test, refactor, debug.
+**Why:** `backend/engine.py` is 5,500+ LOC monolith. Hard to test, refactor, debug.
 
-### Goal: Split into focused modules under `backend/engine/`
+**Strategy adjustment (2026-05-09):** Originally planned `backend/engine/`
+package, but that name collides with the existing `engine.py` file during
+gradual migration. Going with `backend/engine_modules/` instead. Once
+migration complete, can rename to `engine/`.
+
+**Approach: ADDITIVE EXTRACTION FIRST.** New modules live alongside engine.py.
+engine.py stays UNCHANGED through extraction commits — production keeps
+running the original inline methods. The wiring change (2.8) is done in
+its own small, easy-to-revert commit. This sequencing keeps each task
+zero-risk on its own.
+
+### Goal: Split into focused modules under `backend/engine_modules/`
 
 ```
 backend/
-├── engine.py                    # Slim orchestrator (re-exports for backcompat)
-└── engine/
-    ├── __init__.py              # Re-exports MarketEngine, etc.
-    ├── core.py                  # MarketEngine class (state + lifecycle)
-    ├── ticker.py                # WebSocket subscription + tick handlers
-    ├── watchdog.py              # WS watchdog (auto-reconnect logic)
-    ├── cache_populator.py       # Background cache pre-compute
-    ├── pulse_scheduler.py       # 1Hz pulse scheduler (drives engines)
-    ├── trade_flow.py            # Verdict-based + reversal-zone entry logic
-    ├── verdict_cycle.py         # 60s verdict computation cycle
-    └── price_action.py          # _record_price_action + _spot_history
+├── engine.py                            # Slim orchestrator (after 2.9)
+└── engine_modules/
+    ├── __init__.py                      # Re-exports
+    ├── price_action.py        ✅ DONE   # Spot history tracking helpers
+    ├── watchdog.py            ✅ DONE   # WSWatchdog class
+    ├── cache_populator.py     ✅ DONE   # CachePopulator class
+    ├── pulse_scheduler.py     ✅ DONE   # PulseScheduler class
+    ├── ticker.py              🟡 DEFER  # WS subscription + handlers (2.5)
+    └── trade_flow.py          🟡 DEFER  # Verdict + reversal entry paths (2.6)
 ```
 
 ### Specific tasks (in order):
 
-**Task 2.1 — Setup module skeleton** (1 hr)
-- Create `backend/engine/__init__.py`
-- Move imports from `engine.py` to `engine/__init__.py` for backcompat
+**Task 2.1 — Setup module skeleton** ✅ DONE (commit 76bf0e3)
+- Created `backend/engine_modules/__init__.py` with re-exports
 
-**Task 2.2 — Extract WS watchdog** (2 hrs)
-- Move `_start_ws_watchdog` + `_restart_ticker` → `engine/watchdog.py`
-- Tests: ensure `engine.start()` still calls watchdog
-- Run pytest after to verify nothing broke
+**Task 2.2 — Extract WS watchdog** ✅ DONE (commit 76bf0e3)
+- `WSWatchdog` class in `engine_modules/watchdog.py` (~130 LOC)
+- 4 tests in `test_engine_modules.py::TestWSWatchdog`
 
-**Task 2.3 — Extract cache populator** (2 hrs)
-- Move `_start_cache_populator` + `_populator_loop` → `engine/cache_populator.py`
-- Tests: hit `/api/cache/stats` after deploy, verify keys populating
+**Task 2.3 — Extract cache populator** ✅ DONE (commit 76bf0e3)
+- `CachePopulator` class in `engine_modules/cache_populator.py` (~175 LOC)
+- 4 tests in `TestCachePopulator`
 
-**Task 2.4 — Extract pulse scheduler** (2 hrs)
-- Move `_start_pulse_scheduler` + `_scheduler_loop` → `engine/pulse_scheduler.py`
-- Tests: verify watcher pulse, capit pulse still firing
+**Task 2.4 — Extract pulse scheduler** ✅ DONE (commit c3ed0bb)
+- `PulseScheduler` class in `engine_modules/pulse_scheduler.py` (~95 LOC)
+- 7 tests in `TestPulseScheduler`
+- Mirrors WSWatchdog/CachePopulator pattern (threading.Event stop, idempotent start)
 
-**Task 2.5 — Extract ticker subscription** (3 hrs)
-- Move `_connect_ticker` + `on_ticks` + `on_message` → `engine/ticker.py`
-- This is the trickiest — many handlers and state.
-- Run all tests + manual deploy verification.
+**Task 2.7 — Extract price action** ✅ DONE (commit 76bf0e3)
+- Helpers in `engine_modules/price_action.py` (~75 LOC)
+- 7 tests in `TestPriceAction`
+- Done out of order (low-risk pure functions, batched with 2.1–2.3)
 
-**Task 2.6 — Extract trade flow** (3 hrs)
-- Move verdict-momentum entry path (line ~4380-4640) → `engine/trade_flow.py`
-- Move reversal-zone entry path (recent commit dd8cd7d) → same
-- Update entry_filters integration
+**Task 2.5 — Extract ticker subscription** 🟡 DEFERRED (HIGH RISK)
+- Would move `_connect_ticker` + `on_ticks` + `on_message` → `engine_modules/ticker.py`
+- Trickiest extraction — many handlers and state.
+- Defer until 2.8 stable in prod for ≥1 week.
 
-**Task 2.7 — Extract price action** (1 hr)
-- Move `_record_price_action` + `_spot_history` → `engine/price_action.py`
+**Task 2.6 — Extract trade flow** 🟡 DEFERRED (HIGH RISK — touches money)
+- Would move verdict-momentum entry path → `engine_modules/trade_flow.py`
+- Plus reversal-zone entry path
+- Defer until 2.8 stable in prod for ≥1 week.
 
-**Task 2.8 — Slim engine.py** (1 hr)
-- engine.py becomes orchestrator: imports submodules, ties them together
-- Should be < 500 LOC
+**Task 2.8 — Wire engine.py to use new modules** 🟡 NEXT
+- Replace inline `_start_ws_watchdog` body with `WSWatchdog(self).start()`
+- Replace inline `_start_cache_populator` body with `CachePopulator(self).start()`
+- Replace inline `_start_pulse_scheduler` body with `PulseScheduler(self).start()`
+- Replace inline `_record_price_action` calls with `record_spot_tick(...)`
+- Hold reference on the engine for `.stop()` (so `engine.stop()` can clean up).
+- Smallest possible diff — one method body at a time, ideally one commit each.
+- DEPLOY DURING WEEKEND so Sentry can be monitored ≥30 min post-deploy.
 
-**Task 2.9 — Add per-module tests** (1 hr)
-- Each new module gets a basic smoke test
+**Task 2.9 — Slim engine.py final** 🟡 PENDING
+- After 2.8 stable, delete the now-unused inline methods.
+- Target: engine.py < 500 LOC.
+- Confirm: all 101+ tests still pass, production untouched.
 
 ### Success criteria:
-- All 78 existing tests still pass
+- All 101+ tests still pass (was 78 → 94 → 101)
 - engine.py < 500 LOC
-- Each engine/ submodule < 700 LOC
+- Each engine_modules/ submodule < 700 LOC
 - No regression in production (verify in Sentry post-deploy)
 
 ### Risk mitigation:
-- Make small commits (one task per commit)
-- After each task, run tests + deploy to staging URL if possible
+- Make small commits (one task per commit, one method per sub-commit in 2.8)
+- After each task, run tests + monitor Sentry for ≥30 min
 - If anything breaks, revert that one commit
 
 ---
@@ -204,9 +221,18 @@ Claude reads CLAUDE.md → sees "next is Phase 2" → reads ROADMAP.md → start
 | 1.2 Tests | 16 hrs | 2 hrs |
 | 1.3 CI | 6 hrs | 1 hr |
 | **Phase 1 total** | 26 hrs | **4 hrs** |
-| 2.x Engine split | 16 hrs | TBD |
+| 2.1 Skeleton | 1 hr | 0.5 hr ✅ |
+| 2.2 Watchdog | 2 hrs | 1 hr ✅ |
+| 2.3 Cache populator | 2 hrs | 1 hr ✅ |
+| 2.4 Pulse scheduler | 2 hrs | 0.5 hr ✅ |
+| 2.7 Price action | 1 hr | 0.5 hr ✅ |
+| 2.5 Ticker | 3 hrs | DEFERRED |
+| 2.6 Trade flow | 3 hrs | DEFERRED |
+| 2.8 Wire engine.py | 1 hr | NEXT |
+| 2.9 Slim engine.py | 1 hr | TBD |
+| **Phase 2 partial** | 16 hrs | **3.5 hrs done, ~2 hrs left (excl. 2.5/2.6)** |
 | 3.x Postgres | 12 hrs | TBD |
-| **Total Option B** | 54 hrs | **4 hrs done, ~28 hrs left** |
+| **Total Option B** | 54 hrs | **7.5 hrs done, ~24 hrs left** |
 
 ---
 
