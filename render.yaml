@@ -14,4 +14,4 @@ services:
     disk:
       name: universe-data
       mountPath: /data
-      sizeGB: 1
+      sizeGB: 5

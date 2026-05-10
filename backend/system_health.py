@@ -15,6 +15,7 @@ Returns structured PASS / WARN / FAIL per component with detail.
 """
 
 import os
+import shutil
 import time
 import sqlite3
 from pathlib import Path
@@ -430,14 +431,20 @@ def run_full_check(engine) -> Dict:
 
     def chk_disk_usage():
         try:
-            total = 0
-            for p in _DATA_DIR.iterdir():
-                if p.is_file():
-                    total += p.stat().st_size
-            mb = total / 1024 / 1024
-            if mb > 800:
-                return {"status": "WARN", "detail": f"data dir using {mb:.1f}MB — approaching 1GB"}
-            return {"status": "PASS", "detail": f"data dir using {mb:.1f}MB"}
+            # Query actual mounted disk capacity — handles any sizeGB
+            # configured on Render (1 GB, 5 GB, etc.) without hardcoded
+            # assumptions. Previous version warned at 800 MB referencing
+            # "1 GB" which became a false alarm after disk was upgraded.
+            usage = shutil.disk_usage(str(_DATA_DIR))
+            total_mb = usage.total / 1024 / 1024
+            used_mb = (usage.total - usage.free) / 1024 / 1024
+            pct = (used_mb / total_mb * 100) if total_mb > 0 else 0
+            detail = f"{used_mb:.0f}MB / {total_mb:.0f}MB ({pct:.1f}% of mounted disk)"
+            if pct > 95:
+                return {"status": "FAIL", "detail": f"DISK CRITICAL — {detail}"}
+            if pct > 85:
+                return {"status": "WARN", "detail": f"disk filling — {detail}"}
+            return {"status": "PASS", "detail": detail}
         except Exception as e:
             return {"status": "FAIL", "detail": str(e)}
     cat.append(_check("Disk usage", chk_disk_usage))
