@@ -23,16 +23,24 @@ with realistic risk caps.
 ```
 USER (Mumbai) → Vercel (edge) → Render (Singapore) → Kite Connect WebSocket
                   ↓                ↓
-                  Sentry      AWS EC2 (auto-login daemon, 6:05 AM IST)
+                  Sentry           ↳ in-process auto-login daemon
+                                     (08:50 AM IST, weekdays)
 ```
 
 - Frontend: React 19 + Vite 7 (vanilla JS, mobile responsive)
 - Backend: FastAPI on Render Standard ($25/mo)
-- Database: 12 SQLite files on /data persistent disk
+- Database: 12 SQLite files on /data persistent disk (5 GB)
 - Cache: in-memory dict (api_cache.py) populated every 3s
-- Auth: AWS EC2 daemon (`kite-autologin.service`, IP `3.109.54.133`) — refreshes
-  Kite token at 6:05 AM IST and POSTs to /api/auto-login
+- Auth: in-process daemon thread spawned from main.py lifespan. Wakes
+  at 08:50-09:00 AM IST weekdays, runs full Kite login (creds + TOTP
+  via pyotp), refreshes /data/access_token.json, restarts engine with
+  fresh token. Requires env vars: KITE_USER_ID, KITE_PASSWORD,
+  KITE_TOTP_SECRET, KITE_API_KEY, KITE_API_SECRET on Render.
 - Errors: Sentry.io (org `kanishk-ck`) — frontend + backend projects active
+
+**Note (2026-05-12):** Old AWS EC2 daemon (Universe-Bot,
+i-0f2a83b79ca5b92a0 @ 3.109.54.133) terminated. All auto-login is now
+in-process on Render. No external dependency.
 
 ---
 
@@ -131,9 +139,17 @@ These are user's explicit business rules — locked in by tests:
 - BREAKOUT regime allowed unconditionally.
 
 ### Auto-login schedule
-- **6:05 AM IST daily** (NOT 8:55 AM — old config).
-- AWS EC2 daemon `kite-autologin.service` on instance `i-0f2a83b79ca5b92a0`.
-- Token cache: `/data/access_token.json` on Render.
+- **08:50-09:00 AM IST weekdays** — in-process daemon thread in
+  `backend/main.py::_autologin_daemon`. Spawned from FastAPI lifespan.
+- Window deliberately picked: fresh token ~15 min before 09:15 market
+  open, so engine warms up with full chain data in pre-market window.
+- Retries every 60s within window on failure, sleeps 30 min after success.
+- Requires 5 env vars on Render: KITE_USER_ID, KITE_PASSWORD,
+  KITE_TOTP_SECRET, KITE_API_KEY, KITE_API_SECRET. If any missing,
+  daemon logs DISABLED and exits cleanly (manual login still works).
+- Token cache: `/data/access_token.json` on Render persistent disk.
+- Old AWS EC2 daemon: TERMINATED 2026-05-12. Do NOT add back —
+  redundant + caused token race when both fired same morning.
 
 ---
 
