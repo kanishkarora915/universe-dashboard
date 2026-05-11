@@ -153,8 +153,16 @@ export function useMarketData() {
   // ── WebSocket connection ──────────────────────────────────────────────
 
   const connectWS = useCallback(() => {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws/ticks`;
+    // WS endpoint resolution:
+    //   On *.vercel.app  → connect directly to Render. Vercel's rewrites
+    //     are HTTP-only and silently strip the Upgrade header, so going
+    //     through Vercel returns 404 (the backend's @app.websocket route
+    //     refuses plain GET). Direct connection avoids that.
+    //   Elsewhere (localhost dev, same-origin Render) → same-host as page.
+    const isVercel = window.location.hostname.endsWith(".vercel.app");
+    const wsUrl = isVercel
+      ? "wss://universe-dashboard.onrender.com/ws/ticks"
+      : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws/ticks`;
 
     try {
       const ws = new WebSocket(wsUrl);
