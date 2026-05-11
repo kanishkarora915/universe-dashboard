@@ -237,15 +237,23 @@ def _start_engine_with_token(api_key: str, access_token: str, api_secret: str = 
 
 
 def _autologin_daemon():
-    """Background thread — refreshes Kite token at 6:05 AM IST daily.
+    """Background thread — refreshes Kite token at 8:50-9:00 AM IST weekdays.
 
     Runs in the Render web service container itself, so no external host
     (AWS EC2 etc) is needed. If the required env vars aren't set, the
     daemon logs a one-line note and exits cleanly — manual login still
     works as before.
 
-    Window: 06:05 - 06:59 IST weekdays. Retry every 2 min on failure
-    within the window. Sleeps 5 min after success.
+    Schedule:
+      Window:   08:50 - 09:00 IST, Mon-Fri (10-min window before 9:15 open)
+      Retry:    every 60s within window on failure
+      Success:  sleep 30 min to skip past window (re-arms next morning)
+
+    Why this window:
+      Kite tokens expire daily at 6 AM IST, but logging in at 6 AM means
+      the token sits unused for 3+ hours. Logging in 8:50-9:00 gives a
+      fresh token right before market open (9:15) — engine warms up
+      with full chain data in the 15-min pre-market window.
     """
     import time as _t
 
@@ -265,7 +273,15 @@ def _autologin_daemon():
         print(f"[AUTOLOGIN-DAEMON] DISABLED — import auto_login failed: {e}")
         return
 
-    print("[AUTOLOGIN-DAEMON] Started — will refresh Kite token at 6:05 AM IST daily")
+    # Window: 08:50-09:00 IST inclusive on both ends (≈10 attempts at 60s retry)
+    WIN_HOUR = 8
+    WIN_MIN_START = 50
+    WIN_MIN_END = 59  # 08:59:59 → will still attempt; 09:00 closes window
+
+    print(
+        f"[AUTOLOGIN-DAEMON] Started — will refresh Kite token at "
+        f"{WIN_HOUR:02d}:{WIN_MIN_START:02d}-09:00 IST, Mon-Fri"
+    )
     token_cache = _data_dir / "access_token.json"
 
     while True:
@@ -277,10 +293,13 @@ def _autologin_daemon():
                 _t.sleep(3600)
                 continue
 
-            # Outside login window — check again in 30s
-            in_window = (now.hour == 6 and 5 <= now.minute <= 59)
+            # Outside login window — short sleep, check again
+            in_window = (
+                now.hour == WIN_HOUR
+                and WIN_MIN_START <= now.minute <= WIN_MIN_END
+            )
             if not in_window:
-                _t.sleep(30)
+                _t.sleep(20)
                 continue
 
             # Already logged in today? Don't re-login.
@@ -295,7 +314,7 @@ def _autologin_daemon():
                     pass
 
             # Run the full Kite login flow (writes token_cache on success)
-            print(f"[AUTOLOGIN-DAEMON] Window hit at {now.strftime('%H:%M')} IST — attempting login")
+            print(f"[AUTOLOGIN-DAEMON] Window hit at {now.strftime('%H:%M:%S')} IST — attempting login")
             try:
                 access_token = al.kite_login()
                 api_key = os.environ["KITE_API_KEY"]
@@ -303,13 +322,13 @@ def _autologin_daemon():
                 ok, msg = _start_engine_with_token(api_key, access_token, api_secret)
                 if ok:
                     print(f"[AUTOLOGIN-DAEMON] SUCCESS — {msg}")
-                    _t.sleep(300)  # skip past window
+                    _t.sleep(1800)  # skip 30 min — past 9:00 close + warm-up
                 else:
-                    print(f"[AUTOLOGIN-DAEMON] Engine start failed: {msg} — retry in 2 min")
-                    _t.sleep(120)
+                    print(f"[AUTOLOGIN-DAEMON] Engine start failed: {msg} — retry in 60s")
+                    _t.sleep(60)
             except Exception as e:
-                print(f"[AUTOLOGIN-DAEMON] Login failed: {e} — retry in 2 min")
-                _t.sleep(120)
+                print(f"[AUTOLOGIN-DAEMON] Login failed: {e} — retry in 60s")
+                _t.sleep(60)
 
         except Exception as e:
             print(f"[AUTOLOGIN-DAEMON] Outer loop error: {e}")
