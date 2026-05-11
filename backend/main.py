@@ -164,9 +164,156 @@ async def lifespan(app: FastAPI):
         import traceback; traceback.print_exc()
         print(f"[STARTUP] Auto-resume failed (will need manual login): {e}")
 
+    # ── In-process auto-login daemon ──
+    # Kite tokens expire daily at 6 AM IST. This thread wakes at 6:05 AM,
+    # runs the full Kite login flow (credentials + TOTP), saves the fresh
+    # access_token, and restarts the engine — all from inside the Render
+    # container. Eliminates dependency on the external AWS EC2 daemon.
+    #
+    # To enable, set these env vars on Render:
+    #   KITE_USER_ID, KITE_PASSWORD, KITE_TOTP_SECRET,
+    #   KITE_API_KEY, KITE_API_SECRET
+    # If any are missing, the daemon logs and exits — falls back to the
+    # AWS daemon / manual login flow (no crash).
+    try:
+        import threading as _th
+        _th.Thread(
+            target=_autologin_daemon,
+            daemon=True,
+            name="autologin-daemon",
+        ).start()
+    except Exception as _e:
+        print(f"[STARTUP] autologin daemon spawn failed: {_e}")
+
     yield
     if engine:
         engine.stop()
+
+
+def _start_engine_with_token(api_key: str, access_token: str, api_secret: str = "") -> tuple:
+    """Start MarketEngine with given Kite credentials.
+
+    Shared by: lifespan auto-resume, /api/auto-login handler, /api/callback
+    handler, and the in-process auto-login daemon. Returns (ok, message).
+    Stops any existing engine first to avoid duplicate WS subscriptions.
+    """
+    global engine
+    try:
+        kite = KiteConnect(api_key=api_key)
+        kite.set_access_token(access_token)
+
+        session["api_key"] = api_key
+        session["api_secret"] = api_secret
+        session["access_token"] = access_token
+        session["kite"] = kite
+
+        try:
+            from trade_logger import save_nse_holidays_from_kite
+            save_nse_holidays_from_kite(kite)
+        except Exception:
+            pass
+
+        # Tear down old engine BEFORE creating a new one — without this,
+        # token-refresh on a running engine leaks the old WS thread + all
+        # background pulse threads (they keep running with stale auth).
+        if engine is not None:
+            try:
+                engine.stop()
+            except Exception as _e:
+                print(f"[ENGINE-RESTART] stop() of old engine failed: {_e}")
+
+        engine = MarketEngine(api_key=api_key, access_token=access_token, loop=event_loop)
+        engine.start()
+
+        try:
+            from trinity import api_routes as _tr
+            _tr.attach_engine(engine)
+        except Exception as _e:
+            print(f"[TRINITY] attach_engine failed: {_e}")
+
+        return True, f"Engine started with access_token {access_token[:8]}..."
+    except Exception as e:
+        return False, str(e)
+
+
+def _autologin_daemon():
+    """Background thread — refreshes Kite token at 6:05 AM IST daily.
+
+    Runs in the Render web service container itself, so no external host
+    (AWS EC2 etc) is needed. If the required env vars aren't set, the
+    daemon logs a one-line note and exits cleanly — manual login still
+    works as before.
+
+    Window: 06:05 - 06:59 IST weekdays. Retry every 2 min on failure
+    within the window. Sleeps 5 min after success.
+    """
+    import time as _t
+
+    required = [
+        "KITE_USER_ID", "KITE_PASSWORD", "KITE_TOTP_SECRET",
+        "KITE_API_KEY", "KITE_API_SECRET",
+    ]
+    missing = [k for k in required if not os.environ.get(k)]
+    if missing:
+        print(f"[AUTOLOGIN-DAEMON] DISABLED — missing env vars: {missing}")
+        print(f"[AUTOLOGIN-DAEMON] Set them on Render to enable in-process auto-login.")
+        return
+
+    try:
+        import auto_login as al
+    except Exception as e:
+        print(f"[AUTOLOGIN-DAEMON] DISABLED — import auto_login failed: {e}")
+        return
+
+    print("[AUTOLOGIN-DAEMON] Started — will refresh Kite token at 6:05 AM IST daily")
+    token_cache = _data_dir / "access_token.json"
+
+    while True:
+        try:
+            now = al.ist_now()
+
+            # Weekend — no markets, no need to refresh
+            if now.weekday() >= 5:
+                _t.sleep(3600)
+                continue
+
+            # Outside login window — check again in 30s
+            in_window = (now.hour == 6 and 5 <= now.minute <= 59)
+            if not in_window:
+                _t.sleep(30)
+                continue
+
+            # Already logged in today? Don't re-login.
+            today_str = now.strftime("%Y-%m-%d")
+            if token_cache.exists():
+                try:
+                    cached = json.loads(token_cache.read_text())
+                    if cached.get("date") == today_str:
+                        _t.sleep(60)
+                        continue
+                except Exception:
+                    pass
+
+            # Run the full Kite login flow (writes token_cache on success)
+            print(f"[AUTOLOGIN-DAEMON] Window hit at {now.strftime('%H:%M')} IST — attempting login")
+            try:
+                access_token = al.kite_login()
+                api_key = os.environ["KITE_API_KEY"]
+                api_secret = os.environ.get("KITE_API_SECRET", "")
+                ok, msg = _start_engine_with_token(api_key, access_token, api_secret)
+                if ok:
+                    print(f"[AUTOLOGIN-DAEMON] SUCCESS — {msg}")
+                    _t.sleep(300)  # skip past window
+                else:
+                    print(f"[AUTOLOGIN-DAEMON] Engine start failed: {msg} — retry in 2 min")
+                    _t.sleep(120)
+            except Exception as e:
+                print(f"[AUTOLOGIN-DAEMON] Login failed: {e} — retry in 2 min")
+                _t.sleep(120)
+
+        except Exception as e:
+            print(f"[AUTOLOGIN-DAEMON] Outer loop error: {e}")
+            _t.sleep(60)
 
 
 app = FastAPI(title="UNIVERSE Backend", lifespan=lifespan)
@@ -295,36 +442,12 @@ async def auto_login(request: Request):
     if not api_key or not access_token:
         return JSONResponse({"error": "No credentials provided (body or cache)"}, status_code=400)
 
-    try:
-
-        kite = KiteConnect(api_key=api_key)
-        kite.set_access_token(access_token)
-
-        session["api_key"] = api_key
-        session["api_secret"] = api_secret
-        session["access_token"] = access_token
-        session["kite"] = kite
-
-        # Fetch holidays
-        try:
-            from trade_logger import save_nse_holidays_from_kite
-            save_nse_holidays_from_kite(kite)
-        except Exception:
-            pass
-
-        engine = MarketEngine(api_key=api_key, access_token=access_token, loop=event_loop)
-        engine.start()
-        try:
-            from trinity import api_routes as _tr
-            _tr.attach_engine(engine)
-        except Exception as _e:
-            print(f"[TRINITY] attach_engine failed: {_e}")
-
-        print(f"[AUTO-LOGIN] Engine started with access_token {access_token[:8]}...")
+    ok, msg = _start_engine_with_token(api_key, access_token, api_secret)
+    if ok:
+        print(f"[AUTO-LOGIN] {msg}")
         return {"status": "success", "message": "Auto-login successful, engine started"}
-    except Exception as e:
-        print(f"[AUTO-LOGIN] Failed: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    print(f"[AUTO-LOGIN] Failed: {msg}")
+    return JSONResponse({"error": msg}, status_code=500)
 
 
 @app.get("/api/callback")
