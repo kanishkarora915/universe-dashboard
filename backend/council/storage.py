@@ -99,8 +99,14 @@ CREATE TABLE IF NOT EXISTS engine_accuracy (
 """
 
 
+_schema_applied = False
+_schema_lock = None  # lazy-import threading to avoid top-level dependency
+
+
 def _conn() -> sqlite3.Connection:
-    """Open a connection. Caller responsible for closing."""
+    """Open a connection. Caller responsible for closing.
+    Ensures schema is applied at least once per process."""
+    _ensure_schema_once()
     path = _resolve_db_path()
     conn = sqlite3.connect(str(path), timeout=10.0)
     conn.execute("PRAGMA journal_mode=WAL")  # better concurrent reads
@@ -108,16 +114,32 @@ def _conn() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_schema_once() -> None:
+    """Idempotent + thread-safe schema apply. Cheap on hot path."""
+    global _schema_applied, _schema_lock
+    if _schema_applied:
+        return
+    import threading
+    if _schema_lock is None:
+        _schema_lock = threading.Lock()
+    with _schema_lock:
+        if _schema_applied:
+            return
+        path = _resolve_db_path()
+        conn = sqlite3.connect(str(path), timeout=10.0)
+        try:
+            conn.executescript(SCHEMA)
+            conn.commit()
+        finally:
+            conn.close()
+        _schema_applied = True
+
+
 def init_db() -> Path:
-    """Create schema if not exists. Idempotent."""
-    path = _resolve_db_path()
-    conn = _conn()
-    try:
-        conn.executescript(SCHEMA)
-        conn.commit()
-    finally:
-        conn.close()
-    return path
+    """Create schema if not exists. Idempotent. Safe to call eagerly
+    (e.g. at FastAPI startup) — subsequent calls are no-ops."""
+    _ensure_schema_once()
+    return _resolve_db_path()
 
 
 # ── Vote / verdict persistence ───────────────────────────────────────

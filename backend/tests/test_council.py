@@ -45,7 +45,10 @@ def temp_db(monkeypatch):
     tmp.close()
     tmp_path = Path(tmp.name)
     monkeypatch.setattr(storage, "_resolve_db_path", lambda: tmp_path)
-    # Re-init observer's _db_initialized flag so it re-runs init
+    # Reset BOTH cached init flags — module-level _schema_applied in
+    # storage, AND _db_initialized in observer — so each test starts
+    # from a clean state.
+    monkeypatch.setattr(storage, "_schema_applied", False)
     import council.observer as obs_mod
     monkeypatch.setattr(obs_mod, "_db_initialized", False)
     storage.init_db()
