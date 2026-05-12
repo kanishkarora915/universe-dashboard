@@ -28,6 +28,29 @@ from council.engines_registry import (
     score_to_vote,
     votes_from_engine_dict,
 )
+from council import storage
+from council.observer import observe_verdict_cycle, get_observer_health
+
+
+# Helper to point storage at a temp DB for tests
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+
+@pytest.fixture
+def temp_db(monkeypatch):
+    """Each test gets a fresh isolated council.db."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    tmp_path = Path(tmp.name)
+    monkeypatch.setattr(storage, "_resolve_db_path", lambda: tmp_path)
+    # Re-init observer's _db_initialized flag so it re-runs init
+    import council.observer as obs_mod
+    monkeypatch.setattr(obs_mod, "_db_initialized", False)
+    storage.init_db()
+    yield tmp_path
+    tmp_path.unlink(missing_ok=True)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -337,3 +360,148 @@ class TestEngineRegistry:
         assert of.direction == Direction.BEARISH
         fii = next(v for v in votes if v.engine == "fii_dii")
         assert fii.direction == Direction.NEUTRAL  # net 0
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Storage (council.db)
+# ─────────────────────────────────────────────────────────────────────
+
+class TestStorage:
+    def test_init_db_creates_tables(self, temp_db):
+        # init_db is idempotent + creates all required tables
+        import sqlite3
+        conn = sqlite3.connect(str(temp_db))
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        conn.close()
+        assert "engine_votes" in tables
+        assert "council_verdicts" in tables
+        assert "daily_briefings" in tables
+        assert "engine_accuracy" in tables
+
+    def test_save_and_retrieve_verdict(self, temp_db):
+        council = Council()
+        votes = [
+            EngineVote(engine="oi_flow", direction=Direction.BEARISH, conviction=8),
+            EngineVote(engine="vwap",    direction=Direction.BEARISH, conviction=7),
+            EngineVote(engine="fii_dii", direction=Direction.BEARISH, conviction=6),
+            EngineVote(engine="global_cues", direction=Direction.BEARISH, conviction=5),
+        ]
+        verdict = council.aggregate(votes, pulse_id="test_pulse_001")
+        storage.save_verdict(verdict)
+
+        latest = storage.get_latest_verdict()
+        assert latest is not None
+        assert latest["pulse_id"] == "test_pulse_001"
+        assert latest["direction"] == "STRONG_BEARISH"
+        assert latest["confidence"] > 0
+        assert len(latest["votes"]) == 4
+
+    def test_get_recent_verdicts(self, temp_db):
+        council = Council()
+        for i in range(5):
+            votes = [
+                EngineVote(engine="e1", direction=Direction.BULLISH, conviction=5),
+                EngineVote(engine="e2", direction=Direction.BULLISH, conviction=5),
+            ]
+            v = council.aggregate(votes, pulse_id=f"pulse_{i:03d}")
+            storage.save_verdict(v)
+
+        recent = storage.get_recent_verdicts(limit=3)
+        assert len(recent) == 3
+        # Most recent first
+        assert recent[0]["pulse_id"] == "pulse_004"
+
+    def test_mark_trade_outcome(self, temp_db):
+        council = Council()
+        votes = [EngineVote(engine="e1", direction=Direction.BULLISH, conviction=10)]
+        v = council.aggregate(votes, pulse_id="outcome_test")
+        storage.save_verdict(v)
+
+        storage.mark_trade_outcome("outcome_test", trade_fired=True, pnl=1500.5)
+
+        # Verify update
+        records = storage.get_recent_verdicts(limit=1)
+        assert records[0]["actual_trade_fired"] == 1
+        assert records[0]["actual_outcome_pnl"] == 1500.5
+
+    def test_summary_stats(self, temp_db):
+        council = Council()
+        # Mix of verdicts
+        verdicts_data = [
+            [EngineVote(engine="e1", direction=Direction.BULLISH, conviction=10),
+             EngineVote(engine="e2", direction=Direction.BULLISH, conviction=10)],
+            [EngineVote(engine="e1", direction=Direction.BEARISH, conviction=10),
+             EngineVote(engine="e2", direction=Direction.BEARISH, conviction=10)],
+            [EngineVote(engine="e1", direction=Direction.BULLISH, conviction=5),
+             EngineVote(engine="e2", direction=Direction.BEARISH, conviction=5)],
+        ]
+        for i, votes in enumerate(verdicts_data):
+            v = council.aggregate(votes, pulse_id=f"sum_{i}")
+            storage.save_verdict(v)
+
+        summary = storage.summary_stats(days=1)
+        assert summary["total_verdicts"] == 3
+        # one STRONG_BULLISH, one STRONG_BEARISH, one MIXED
+        assert "STRONG_BULLISH" in summary["by_direction"]
+        assert "STRONG_BEARISH" in summary["by_direction"]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Observer (engine.py bridge)
+# ─────────────────────────────────────────────────────────────────────
+
+class TestObserver:
+    def test_observe_returns_verdict(self, temp_db):
+        eng_dict = {
+            "oi_flow": -12,
+            "vwap": -8,
+            "fii_dii": -6,
+            "global_cues": -5,
+            "seller_positioning": -10,
+        }
+        verdict = observe_verdict_cycle(
+            index="NIFTY",
+            eng_dict=eng_dict,
+            bull_score=2,
+            bear_score=35,
+            bull_reasons=[],
+            bear_reasons=["FII -1500Cr", "Below VWAP"],
+        )
+        assert verdict is not None
+        assert verdict.direction == Direction.STRONG_BEARISH
+
+    def test_observe_disabled_returns_none(self, temp_db, monkeypatch):
+        # Patch the COUNCIL_ENABLED flag IN the observer module (where it's imported)
+        import council.observer as obs_mod
+        monkeypatch.setattr(obs_mod, "COUNCIL_ENABLED", False)
+        result = observe_verdict_cycle(
+            index="NIFTY", eng_dict={}, bull_score=0, bear_score=0,
+        )
+        assert result is None
+
+    def test_observe_handles_empty_dict(self, temp_db):
+        # Edge case — no engine scores yet
+        verdict = observe_verdict_cycle(
+            index="NIFTY",
+            eng_dict={},
+            bull_score=0,
+            bear_score=0,
+        )
+        # Should still produce a verdict (MIXED with no votes)
+        assert verdict is not None
+        assert verdict.direction == Direction.MIXED
+
+    def test_observer_health(self, temp_db):
+        # Save one verdict first so health has something to report
+        eng_dict = {"vwap": -5, "fii_dii": -4}
+        observe_verdict_cycle(
+            index="NIFTY", eng_dict=eng_dict, bull_score=0, bear_score=9,
+        )
+        # Let the background save thread finish
+        import time
+        time.sleep(0.3)
+        health = get_observer_health()
+        assert health["enabled"] is True
+        assert "last_24h" in health

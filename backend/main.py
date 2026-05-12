@@ -598,6 +598,93 @@ async def cache_stats_endpoint():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Council API (Phase 1 — observe-only) ─────────────────────────────
+#
+# Read-only endpoints exposing the new "smart mind" decision layer.
+# In Phase 1, council observes but does NOT influence trades. These
+# endpoints let the operator + frontend inspect council reasoning.
+
+@app.get("/api/council/health")
+async def council_health():
+    """Council module health snapshot — is it enabled? DB initialized?
+    When was the last verdict?"""
+    try:
+        from council.observer import get_observer_health
+        return get_observer_health()
+    except Exception as e:
+        return JSONResponse({"error": str(e), "enabled": False}, status_code=500)
+
+
+@app.get("/api/council/current")
+async def council_current():
+    """Latest council verdict with full vote breakdown.
+
+    Response:
+      {
+        "pulse_id": "nifty_1715634000123",
+        "timestamp": "2026-05-13T09:15:23",
+        "direction": "STRONG_BEARISH",
+        "confidence": 0.78,
+        "action": "ALLOW_ENTRY",
+        "bull_strength": 8.0,
+        "bear_strength": 42.0,
+        "neutral_count": 1,
+        "dissent_pct": 0.11,
+        "reasoning": "Strong bearish — bear 42.0 vs bull 8.0 (5.2x dominance).",
+        "votes": [ {engine, direction, conviction, reasoning, ...}, ... ]
+      }
+    """
+    try:
+        from council import storage
+        latest = storage.get_latest_verdict()
+        if not latest:
+            return {"verdict": None, "message": "No council verdicts recorded yet"}
+        return {"verdict": latest}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/council/history")
+async def council_history(limit: int = 100):
+    """Recent N council verdicts (without vote details — use /current for that).
+
+    Limit clamped 1-500. Default 100.
+    """
+    try:
+        from council import storage
+        verdicts = storage.get_recent_verdicts(limit=limit)
+        return {"count": len(verdicts), "verdicts": verdicts}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/council/stats")
+async def council_stats(days: int = 1):
+    """Aggregated council stats over last N days.
+
+    Returns counts by direction (STRONG_BULLISH, LEANING_BEAR, MIXED, etc).
+    Useful for "today the council leaned mostly X" type observations.
+    """
+    try:
+        from council import storage
+        return storage.summary_stats(days=days)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/council/engines")
+async def council_engines(engine: Optional[str] = None):
+    """Per-engine vote distribution. If `engine` query param supplied,
+    returns just that engine's stats; else all engines.
+    """
+    try:
+        from council import storage
+        rows = storage.get_engine_stats(engine=engine)
+        return {"count": len(rows), "stats": rows}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.post("/api/cache/invalidate/{prefix}")
 async def cache_invalidate_endpoint(prefix: str):
     """Force-invalidate cache entries by prefix. Admin/debug only.

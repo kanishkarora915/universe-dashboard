@@ -52,8 +52,11 @@ LEARNING_LOOP_ENABLED = False
 
 # ── Public API ────────────────────────────────────────────────────────
 
-from .vote import EngineVote, CouncilVerdict, Direction
+from .vote import EngineVote, CouncilVerdict, Direction, Action
 from .aggregator import Council
+
+# Observer + storage are imported lazily by main.py to avoid circular
+# dependencies during package init.
 
 __all__ = [
     # Flags
@@ -68,5 +71,6 @@ __all__ = [
     "EngineVote",
     "CouncilVerdict",
     "Direction",
+    "Action",
     "Council",
 ]
