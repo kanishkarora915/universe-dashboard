@@ -31,6 +31,21 @@ from kiteconnect import KiteConnect, KiteTicker
 RISK_FREE_RATE = 0.07
 TRADING_DAYS = 252
 
+# ── Feature flags ────────────────────────────────────────────────────────
+# Reversal Zone Tracker — DISABLED 2026-05-12.
+# First production day fired 10/10 BUY CE on a -1.83% bearish NIFTY day.
+# Win rate 10%, net P&L ₹-48,624. Pattern detection on option premium had
+# no spot-trend / regime / OI / consecutive-loss context.
+# Re-enable only after P0 fixes:
+#   1) 30-min spot trend gate before entry
+#   2) Respect regime.recommend.main_pnl_allowed flag
+#   3) Consecutive-loss circuit breaker per (idx, side)
+#   4) OI confirmation on entry (not just exit)
+#   5) Fair CE/PE scan order (currently CE-first biased)
+# Verdict-based engine (54% winrate, +₹18,869 over 14 days, 126 trades)
+# remains the production trading path.
+REVERSAL_ZONE_ENABLED = False
+
 NIFTY_SPOT_SYMBOL = "NSE:NIFTY 50"
 BANKNIFTY_SPOT_SYMBOL = "NSE:NIFTY BANK"
 VIX_SYMBOL = "NSE:INDIA VIX"
@@ -5009,12 +5024,22 @@ class MarketEngine:
             # Fires entry when premium re-tests recent low + bullish confirmation.
             # Tagged source="reversal_zone" → custom exit logic in trade_logger
             # (-5% SL, trail SL activates at +25%, no fixed T1/T2).
+            #
+            # GATED 2026-05-12 — see REVERSAL_ZONE_ENABLED flag at top of file.
+            # First production day: 10/10 trades BUY CE on -1.83% bearish day,
+            # 10% win rate, ₹-48,624 net. Disabled till P0 fixes added.
             try:
-                if not hasattr(self, "_reversal_tracker") or self._reversal_tracker is None:
+                # Feature flag — skip entire reversal zone scan when disabled.
+                # Guards at both tracker init AND loop iteration so all the
+                # downstream body stays untouched (no re-indent of existing code).
+                if REVERSAL_ZONE_ENABLED and (
+                    not hasattr(self, "_reversal_tracker")
+                    or self._reversal_tracker is None
+                ):
                     from reversal_zone_tracker import ReversalZoneTracker
                     self._reversal_tracker = ReversalZoneTracker(self)
 
-                for rz_idx in ["NIFTY", "BANKNIFTY"]:
+                for rz_idx in (["NIFTY", "BANKNIFTY"] if REVERSAL_ZONE_ENABLED else []):
                     # Skip if we already have an open trade on this idx (any action)
                     try:
                         from trade_logger import _conn as _tl_conn
