@@ -338,31 +338,83 @@ class TestEngineRegistry:
         assert v.direction == Direction.NEUTRAL
         assert v.conviction == 0.0
 
-    def test_votes_from_engine_dict(self):
-        """The shape main.py / engine.py will pass."""
+    def test_votes_from_engine_dict_uses_reasons_for_direction(self):
+        """The _eng dict in engine.py stores MAGNITUDE only. Direction
+        must be inferred from which reasons list (bull/bear) the
+        engine's reasoning string lives in.
+
+        Real-world reasoning strings from engine.py have distinctive
+        prefixes per engine (FII, VWAP, Multi-TF, etc), so keyword
+        matching is reliable when reasoning is realistic. Generic
+        overlap (e.g. "writers" appears in multiple engines) falls
+        through to NEUTRAL as safe default.
+        """
         eng_dict = {
-            "seller_positioning": +12,
-            "oi_flow": -8,
-            "vwap": +3,
-            "fii_dii": 0,
-            "unknown_engine": +5,  # not in COUNCIL_ENGINES — should be skipped
+            "vwap": 3,
+            "fii_dii": 10,
+            "global_cues": 5,
+            "unknown_engine": 5,
         }
-        votes = votes_from_engine_dict(eng_dict, bull_score=15, bear_score=8)
-        # Should produce votes only for engines in COUNCIL_ENGINES
+        bull_reasons = [
+            "VWAP above + rising — bullish bias [3pts]",
+        ]
+        bear_reasons = [
+            "FII net: -1959Cr (STRONG_BEAR) [10pts]",
+            "Global BEARISH: Dow -1.2% [5pts]",
+        ]
+        votes = votes_from_engine_dict(
+            eng_dict, bull_score=3, bear_score=15,
+            bull_reasons=bull_reasons, bear_reasons=bear_reasons,
+        )
         engine_names = [v.engine for v in votes]
-        assert "seller_positioning" in engine_names
-        assert "oi_flow" in engine_names
-        assert "vwap" in engine_names
-        assert "fii_dii" in engine_names
         assert "unknown_engine" not in engine_names
 
-        # Directions correct
-        sp = next(v for v in votes if v.engine == "seller_positioning")
-        assert sp.direction == Direction.BULLISH
-        of = next(v for v in votes if v.engine == "oi_flow")
-        assert of.direction == Direction.BEARISH
+        # vwap: in bull_reasons → BULLISH
+        vw = next(v for v in votes if v.engine == "vwap")
+        assert vw.direction == Direction.BULLISH
+
+        # fii_dii: in bear_reasons → BEARISH (this is THE bug we fixed)
         fii = next(v for v in votes if v.engine == "fii_dii")
-        assert fii.direction == Direction.NEUTRAL  # net 0
+        assert fii.direction == Direction.BEARISH
+        assert fii.conviction == 10.0
+
+        # global_cues: in bear_reasons → BEARISH
+        gc = next(v for v in votes if v.engine == "global_cues")
+        assert gc.direction == Direction.BEARISH
+
+    def test_engine_with_positive_value_but_bear_reason_is_bearish(self):
+        """THIS is the bug we just fixed.
+
+        engine.py emits `_eng["fii_dii"] = +10` even when FII is BEARISH
+        (because the formula is `bull_delta + bear_delta`, always >=0).
+        Without checking reasons, we'd wrongly call this BULLISH.
+        """
+        eng_dict = {"fii_dii": 10}
+        bull_reasons = []
+        bear_reasons = [
+            "FII net: -1959Cr (STRONG_BEAR) [10pts]"
+        ]
+        votes = votes_from_engine_dict(
+            eng_dict, bull_score=0, bear_score=10,
+            bull_reasons=bull_reasons, bear_reasons=bear_reasons,
+        )
+        fii = next(v for v in votes if v.engine == "fii_dii")
+        # Bug fix: must read BEARISH, not BULLISH
+        assert fii.direction == Direction.BEARISH
+        assert fii.conviction == 10.0
+
+    def test_engine_with_no_matching_reason_defaults_neutral(self):
+        """If we can't determine direction from reasons, vote NEUTRAL
+        rather than guess wrong."""
+        eng_dict = {"oi_flow": 5}
+        votes = votes_from_engine_dict(
+            eng_dict, bull_score=5, bear_score=0,
+            bull_reasons=["something unrelated"],
+            bear_reasons=["something else unrelated"],
+        )
+        of = next(v for v in votes if v.engine == "oi_flow")
+        assert of.direction == Direction.NEUTRAL
+        assert of.conviction == 0.0
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -457,20 +509,29 @@ class TestStorage:
 
 class TestObserver:
     def test_observe_returns_verdict(self, temp_db):
+        # _eng dict in engine.py stores MAGNITUDE only (always >=0).
+        # Direction comes from which reasons list mentions the engine.
         eng_dict = {
-            "oi_flow": -12,
-            "vwap": -8,
-            "fii_dii": -6,
-            "global_cues": -5,
-            "seller_positioning": -10,
+            "oi_flow": 12,
+            "vwap": 8,
+            "fii_dii": 6,
+            "global_cues": 5,
+            "seller_positioning": 10,
         }
+        bear_reasons = [
+            "OI flow strongly bearish — CE writers add 5L [12pts]",
+            "VWAP below + falling, spot rejected from VWAP [8pts]",
+            "FII net -1500Cr (STRONG_BEAR) [6pts]",
+            "Global cues bearish: Dow -1.2% Asian red [5pts]",
+            "CE writers stacking 5L at 23500 (resistance) [10pts]",
+        ]
         verdict = observe_verdict_cycle(
             index="NIFTY",
             eng_dict=eng_dict,
-            bull_score=2,
-            bear_score=35,
+            bull_score=0,
+            bear_score=41,
             bull_reasons=[],
-            bear_reasons=["FII -1500Cr", "Below VWAP"],
+            bear_reasons=bear_reasons,
         )
         assert verdict is not None
         assert verdict.direction == Direction.STRONG_BEARISH

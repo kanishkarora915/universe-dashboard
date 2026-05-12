@@ -107,12 +107,18 @@ def votes_from_engine_dict(
 ) -> list:
     """Build council votes from engine.py's _eng dict + bull/bear reasons.
 
-    The _eng dict in engine.py looks like:
-        {"seller_positioning": +12, "trap_fingerprints": -5, ...}
-    where positive = bullish contribution, negative = bearish contribution.
+    IMPORTANT: The _eng dict in engine.py stores MAGNITUDE only:
+        _eng["fii_dii"] = (bull_score - _bs0) + (bear_score - _be0)
+                          ^ always >=0 regardless of direction
+    So we CANNOT determine direction from the value alone.
 
-    bull_reasons / bear_reasons are the strings logged for each engine's
-    contribution, used to extract per-engine reasoning.
+    Instead, we use bull_reasons / bear_reasons membership to determine
+    direction:
+      • If the engine's reasoning string is in bull_reasons → BULLISH
+      • If in bear_reasons → BEARISH
+      • If in both / neither → NEUTRAL (conflicted or no clear signal)
+
+    The _eng value gives us the conviction magnitude.
 
     Returns one EngineVote per engine in COUNCIL_ENGINES (where data
     is available). Missing engines are silently skipped.
@@ -125,28 +131,90 @@ def votes_from_engine_dict(
         if name not in eng_dict:
             continue
 
-        net = eng_dict[name]
-        if net >= 0:
-            engine_bull = net
-            engine_bear = 0
+        magnitude = abs(eng_dict[name])  # _eng value is always >=0
+
+        # Determine direction from which reasons list mentions this engine.
+        in_bull = _engine_mentioned_in(name, bull_reasons)
+        in_bear = _engine_mentioned_in(name, bear_reasons)
+
+        if magnitude < 1.0 or (in_bull and in_bear):
+            # No conviction OR conflicting signals → NEUTRAL
+            direction = Direction.NEUTRAL
+            conviction = 0.0
+            engine_bull = 0.0
+            engine_bear = 0.0
+        elif in_bull:
+            direction = Direction.BULLISH
+            conviction = min(10.0, magnitude)
+            engine_bull = magnitude
+            engine_bear = 0.0
+        elif in_bear:
+            direction = Direction.BEARISH
+            conviction = min(10.0, magnitude)
+            engine_bull = 0.0
+            engine_bear = magnitude
         else:
-            engine_bull = 0
-            engine_bear = abs(net)
+            # Engine contributed but no matching reasoning — direction
+            # unknown. Mark as NEUTRAL to avoid wrong-direction trades.
+            direction = Direction.NEUTRAL
+            conviction = 0.0
+            engine_bull = 0.0
+            engine_bear = 0.0
 
         # Best-effort reasoning extraction
         reasoning = _find_reasoning_for(name, bull_reasons, bear_reasons)
 
-        vote = score_to_vote(
-            engine_name=name,
-            bull_score=engine_bull,
-            bear_score=engine_bear,
+        # Build vote DIRECTLY (bypass score_to_vote so we can set
+        # direction explicitly — score_to_vote would re-infer from
+        # bull/bear scores which is what we're avoiding).
+        from datetime import datetime
+        vote = EngineVote(
+            engine=name,
+            direction=direction,
+            conviction=conviction,
             reasoning=reasoning,
+            timestamp=datetime.now(),
             horizon=Horizon.INTRADAY,
-            raw_score={"net": net, "bull_strength": engine_bull, "bear_strength": engine_bear},
+            raw_score={
+                "magnitude": magnitude,
+                "in_bull_reasons": in_bull,
+                "in_bear_reasons": in_bear,
+                "engine_bull": engine_bull,
+                "engine_bear": engine_bear,
+            },
         )
         votes.append(vote)
 
     return votes
+
+
+def _engine_mentioned_in(engine_name: str, reasons: list) -> bool:
+    """Return True if any reason string in the list contains a keyword
+    associated with this engine.
+    """
+    keyword_map = {
+        "seller_positioning": ("writ", "selling", "seller", "ce writ", "pe writ"),
+        "trap_fingerprints":  ("trap", "gex"),
+        "price_action":       ("price action", "lower close", "higher close",
+                               "support", "resistance", "lower high", "higher low"),
+        "oi_flow":            ("oi flow", "oi flip", "open interest", "unwind"),
+        "market_context":     ("context", "ma", "moving avg", "ce premium", "pe premium"),
+        "vwap":               ("vwap",),
+        "multi_timeframe":    ("multi-tf", "multi tf", "5m+15m", "timeframe"),
+        "fii_dii":            ("fii ", "fii:", "dii", "fii net"),
+        "global_cues":        ("dow", "sgx", "global", "asian"),
+        "predictive":         ("momentum", "velocity", "divergence", "exhaustion",
+                               "predictive"),
+        "smart_money":        ("smart money", "institutional", "iceberg", "block",
+                               "itm pe volume", "itm ce volume"),
+    }
+    keywords = keyword_map.get(engine_name, ())
+    for r in reasons:
+        rl = str(r).lower()
+        for kw in keywords:
+            if kw.lower() in rl:
+                return True
+    return False
 
 
 def _find_reasoning_for(
