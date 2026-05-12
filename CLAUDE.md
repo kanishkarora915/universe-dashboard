@@ -223,6 +223,28 @@ When user says these in a fresh chat, you should know what they mean:
 
 ---
 
+## Project North Star (2026-05-13)
+
+**The "smart mind" rebuild**: After the 2026-05-12 reversal_zone disaster
+(10 CE entries on a -1.83% bearish day, ₹-48k loss), we're building a
+Council-based decision layer that replaces "weighted-sum voting" with
+"multi-engine debate and agreement."
+
+**See `ARCHITECTURE.md`** for the full 6-component vision (Pre-Market
+Briefing, Council Aggregator, Pullback Detector, Scenario Tree, Learning
+Loop, Structure Reader) and phased rollout plan.
+
+**Current state (Phase 1 scaffold)**:
+- `backend/council/` package exists with Vote schema + Council class
+- 26 unit tests pass (test_council.py)
+- OBSERVE-ONLY — does not influence trade decisions yet
+- All 7 phase flags in `council/__init__.py` set to gradual enable
+
+**Verdict engine (the production trading path) remains unchanged.**
+54% winrate, +₹18,869 in 14 days. Council watches alongside, learns.
+
+---
+
 ## Last session summary
 
 Date: 2026-05-10
