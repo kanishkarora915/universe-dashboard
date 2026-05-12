@@ -3298,6 +3298,27 @@ class MarketEngine:
                 },
             }
 
+            # ── Council observer hook (Phase 1.5 — observe-only) ──────────
+            # Feeds the existing 9-11 engine scores to the council package
+            # for aggregate analysis + persistence. Does NOT influence the
+            # actual trade decision in Phase 1. See ARCHITECTURE.md.
+            #
+            # Try/except is intentionally broad — observer errors must
+            # NEVER affect the live verdict computation or trade flow.
+            try:
+                from council.observer import observe_verdict_cycle
+                observe_verdict_cycle(
+                    index=index,
+                    eng_dict=dict(_eng),
+                    bull_score=bull_score,
+                    bear_score=bear_score,
+                    bull_reasons=bull_reasons,
+                    bear_reasons=bear_reasons,
+                )
+            except Exception as _obs_err:
+                # Observer crashes must NEVER affect trading
+                print(f"[COUNCIL-OBSERVER] silent skip: {_obs_err}")
+
         return result
 
     # ── SIGNAL SCORING ENGINE (9-point) ────────────────────────────────
