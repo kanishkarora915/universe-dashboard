@@ -753,7 +753,11 @@ class MarketEngine:
                 except Exception as e:
                     print(f"[CACHE-POP] outer error: {e}")
 
-                _time.sleep(3.0)
+                # Real-time freshness: 3s → 1s (2026-05-14).
+                # If a cycle takes longer than 1s (chain rebuild can take
+                # 200-500ms), cycles naturally run back-to-back — no race,
+                # no overlap. Cache entries become at most 1s stale.
+                _time.sleep(1.0)
             print("[CACHE-POP] Stopped")
 
         t = threading.Thread(target=_populator_loop, daemon=True, name="cache-populator")

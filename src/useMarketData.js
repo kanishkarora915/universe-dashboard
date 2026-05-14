@@ -219,9 +219,11 @@ export function useMarketData() {
       } catch (err) {}
     };
     poll();
-    // Was 3s — too aggressive. 8s is plenty for live overview data
-    // (tab-specific high-frequency polls handle realtime where needed)
-    pollRef.current = setInterval(poll, 8000);
+    // 1s polling — user requested sec-to-sec real-time data across
+    // all tabs (2026-05-14). Backend cache populator now runs at 1s
+    // too, so most polls hit warm cache (<5ms) — no compute spike.
+    // visibility-guarded above, so off-screen tabs cost nothing.
+    pollRef.current = setInterval(poll, 1000);
   }, []);
 
   // ── Lifecycle ─────────────────────────────────────────────────────────
@@ -229,12 +231,15 @@ export function useMarketData() {
   useEffect(() => {
     connectWS();
     fetchAllTabData();
-    // Slow poll: 30s → 60s (fetches all tab data, only need fresh on demand)
+    // Slow poll: 60s → 5s (2026-05-14, real-time mode). Heavier tab
+    // data — predictions, OI summaries, seller flow. Still on-demand
+    // for tabs that have their own pollers; this is the background
+    // pre-warm so switching tabs is instant.
     slowPollRef.current = setInterval(() => {
       if (typeof document === "undefined" || document.visibilityState === "visible") {
         fetchAllTabData();
       }
-    }, 60000);
+    }, 5000);
 
     return () => {
       if (wsRef.current) wsRef.current.close();
