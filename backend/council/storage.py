@@ -22,7 +22,7 @@ LOCATION
 import json
 import sqlite3
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List
 
 from .vote import EngineVote, CouncilVerdict, Direction, Action
@@ -96,6 +96,24 @@ CREATE TABLE IF NOT EXISTS engine_accuracy (
     rolling_20d_accuracy REAL,
     last_updated TEXT
 );
+
+-- Auto-login attempts — every login attempt (daemon, external cron,
+-- manual) writes one row here. Lets us tell, without reading Render
+-- logs, whether the daemon fired on a given morning and what happened.
+CREATE TABLE IF NOT EXISTS auto_login_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    trigger_source TEXT NOT NULL,        -- daemon / external_cron / manual / self_heal
+    status TEXT NOT NULL,                -- success / failed / skipped
+    error TEXT,                          -- exception message if failed
+    access_token_preview TEXT,           -- first 8 chars for audit
+    duration_ms INTEGER,                 -- how long the attempt took
+    extra TEXT                           -- JSON extras (retry count, etc.)
+);
+
+CREATE INDEX IF NOT EXISTS idx_autologin_timestamp ON auto_login_attempts(timestamp);
+CREATE INDEX IF NOT EXISTS idx_autologin_source ON auto_login_attempts(trigger_source);
+CREATE INDEX IF NOT EXISTS idx_autologin_status ON auto_login_attempts(status);
 """
 
 
@@ -299,6 +317,123 @@ def mark_trade_outcome(pulse_id: str, trade_fired: bool, pnl: Optional[float] = 
             WHERE pulse_id = ?
         """, (1 if trade_fired else 0, pnl, pulse_id))
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ── Auto-login attempt persistence ──────────────────────────────────
+
+def log_autologin_attempt(
+    trigger_source: str,
+    status: str,
+    error: Optional[str] = None,
+    access_token_preview: Optional[str] = None,
+    duration_ms: Optional[int] = None,
+    extra: Optional[dict] = None,
+) -> None:
+    """Record one auto-login attempt. Safe to call from any thread.
+    NEVER raises — DB failures are swallowed + logged.
+
+    Args:
+        trigger_source: "daemon" / "external_cron" / "manual" / "self_heal"
+        status: "success" / "failed" / "skipped"
+        error: exception message if status==failed
+        access_token_preview: first 8 chars of token if success
+        duration_ms: how long the attempt took
+        extra: JSON-serializable extras (retry count, window info, etc.)
+    """
+    import json as _json
+    conn = None
+    try:
+        conn = _conn()
+        conn.execute("""
+            INSERT INTO auto_login_attempts (
+                timestamp, trigger_source, status, error,
+                access_token_preview, duration_ms, extra
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            datetime.now().isoformat(),
+            trigger_source,
+            status,
+            error,
+            access_token_preview,
+            duration_ms,
+            _json.dumps(extra) if extra else None,
+        ))
+        conn.commit()
+    except Exception as e:
+        # Never let logging failures propagate
+        print(f"[STORAGE] log_autologin_attempt failed: {e}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def get_recent_autologin_attempts(limit: int = 50) -> List[dict]:
+    """Most recent auto-login attempts across all triggers."""
+    conn = _conn()
+    try:
+        rows = conn.execute("""
+            SELECT id, timestamp, trigger_source, status, error,
+                   access_token_preview, duration_ms, extra
+            FROM auto_login_attempts
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """, (max(1, min(limit, 200)),)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_autologin_summary(days: int = 7) -> dict:
+    """Aggregated stats per day per source.
+
+    Returns:
+        {
+            "by_day": {
+                "2026-05-12": {
+                    "daemon": {"success": 1, "failed": 3, "total": 4},
+                    "external_cron": {"success": 0, "failed": 0, "total": 0},
+                    ...
+                },
+                ...
+            },
+            "totals": { "success": N, "failed": M, "skipped": K }
+        }
+    """
+    from collections import defaultdict
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    conn = _conn()
+    try:
+        rows = conn.execute("""
+            SELECT timestamp, trigger_source, status
+            FROM auto_login_attempts
+            WHERE timestamp > ?
+            ORDER BY timestamp DESC
+        """, (cutoff,)).fetchall()
+
+        by_day: dict = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+        totals = defaultdict(int)
+        for r in rows:
+            day = r["timestamp"][:10]
+            src = r["trigger_source"]
+            status = r["status"]
+            by_day[day][src][status] += 1
+            by_day[day][src]["total"] += 1
+            totals[status] += 1
+
+        # Convert defaultdicts → plain dicts for JSON
+        return {
+            "days": days,
+            "by_day": {
+                day: {src: dict(stats) for src, stats in sources.items()}
+                for day, sources in by_day.items()
+            },
+            "totals": dict(totals),
+        }
     finally:
         conn.close()
 

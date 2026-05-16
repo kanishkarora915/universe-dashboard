@@ -237,23 +237,27 @@ def _start_engine_with_token(api_key: str, access_token: str, api_secret: str = 
 
 
 def _autologin_daemon():
-    """Background thread — refreshes Kite token at 8:50-9:00 AM IST weekdays.
+    """Background thread — refreshes Kite token at 06:10-09:25 IST weekdays.
 
-    Runs in the Render web service container itself, so no external host
-    (AWS EC2 etc) is needed. If the required env vars aren't set, the
-    daemon logs a one-line note and exits cleanly — manual login still
-    works as before.
+    DESIGN (hardened version — 2026-05-17):
+      Wide window: 06:10 - 09:25 IST. Tokens expire at 6 AM, so we attempt
+      immediately at 06:10. Market opens 09:15 — we give up at 09:25 to
+      give the user 5 min to manual-login if every retry failed.
 
-    Schedule:
-      Window:   08:50 - 09:00 IST, Mon-Fri (10-min window before 9:15 open)
-      Retry:    every 60s within window on failure
-      Success:  sleep 30 min to skip past window (re-arms next morning)
+      Retry interval: 30s within window (was 60s). Total attempts per
+      window: ~390. At least ONE has to succeed eventually.
 
-    Why this window:
-      Kite tokens expire daily at 6 AM IST, but logging in at 6 AM means
-      the token sits unused for 3+ hours. Logging in 8:50-9:00 gives a
-      fresh token right before market open (9:15) — engine warms up
-      with full chain data in the 15-min pre-market window.
+      Success: log to DB + Telegram alert + sleep 30 min past window.
+
+      Failure mode escalation:
+        attempt 1-3 failures → silent (transient blip likely)
+        attempt 4-10 failures → Telegram WARN
+        attempt > 10 failures → Telegram CRITICAL ("manual login needed")
+
+      EVERY attempt logged to council.db `auto_login_attempts` table so
+      we can audit success rates without reading Render logs.
+
+      Crash safety: outer try/except never lets the loop die.
     """
     import time as _t
 
@@ -273,20 +277,50 @@ def _autologin_daemon():
         print(f"[AUTOLOGIN-DAEMON] DISABLED — import auto_login failed: {e}")
         return
 
-    # Window: 08:50-09:00 IST inclusive on both ends (≈10 attempts at 60s retry)
-    WIN_HOUR = 8
-    WIN_MIN_START = 50
-    WIN_MIN_END = 59  # 08:59:59 → will still attempt; 09:00 closes window
+    # Lazy imports — keep daemon importable even if these aren't installed
+    try:
+        from council import storage as council_storage
+    except Exception:
+        council_storage = None
+    try:
+        import telegram_alerts
+    except Exception:
+        telegram_alerts = None
+
+    # Wide window: 06:10 - 09:25 IST.
+    WIN_START_HOUR_MIN = (6, 10)   # 06:10 IST inclusive
+    WIN_END_HOUR_MIN = (9, 25)     # 09:25 IST inclusive
+
+    RETRY_INTERVAL_SEC = 30        # within-window retry cadence
+    CRITICAL_AFTER_ATTEMPTS = 10   # send 🆘 alert after this many fails
+
+    def _in_window(now) -> bool:
+        n = now.hour * 60 + now.minute
+        a = WIN_START_HOUR_MIN[0] * 60 + WIN_START_HOUR_MIN[1]
+        b = WIN_END_HOUR_MIN[0] * 60 + WIN_END_HOUR_MIN[1]
+        return a <= n <= b
 
     print(
-        f"[AUTOLOGIN-DAEMON] Started — will refresh Kite token at "
-        f"{WIN_HOUR:02d}:{WIN_MIN_START:02d}-09:00 IST, Mon-Fri"
+        f"[AUTOLOGIN-DAEMON] Started — will refresh Kite token "
+        f"{WIN_START_HOUR_MIN[0]:02d}:{WIN_START_HOUR_MIN[1]:02d}-"
+        f"{WIN_END_HOUR_MIN[0]:02d}:{WIN_END_HOUR_MIN[1]:02d} IST, Mon-Fri. "
+        f"Retry every {RETRY_INTERVAL_SEC}s."
     )
     token_cache = _data_dir / "access_token.json"
+
+    # Per-day attempt counter — resets when we successfully log in
+    daily_attempt_count = 0
+    last_attempt_date = None
 
     while True:
         try:
             now = al.ist_now()
+            today_str = now.strftime("%Y-%m-%d")
+
+            # New day → reset attempt counter
+            if last_attempt_date != today_str:
+                daily_attempt_count = 0
+                last_attempt_date = today_str
 
             # Weekend — no markets, no need to refresh
             if now.weekday() >= 5:
@@ -294,16 +328,11 @@ def _autologin_daemon():
                 continue
 
             # Outside login window — short sleep, check again
-            in_window = (
-                now.hour == WIN_HOUR
-                and WIN_MIN_START <= now.minute <= WIN_MIN_END
-            )
-            if not in_window:
+            if not _in_window(now):
                 _t.sleep(20)
                 continue
 
             # Already logged in today? Don't re-login.
-            today_str = now.strftime("%Y-%m-%d")
             if token_cache.exists():
                 try:
                     cached = json.loads(token_cache.read_text())
@@ -313,22 +342,93 @@ def _autologin_daemon():
                 except Exception:
                     pass
 
-            # Run the full Kite login flow (writes token_cache on success)
-            print(f"[AUTOLOGIN-DAEMON] Window hit at {now.strftime('%H:%M:%S')} IST — attempting login")
+            # ── Attempt ──
+            daily_attempt_count += 1
+            attempt_start = time.time()
+            print(
+                f"[AUTOLOGIN-DAEMON] Attempt #{daily_attempt_count} at "
+                f"{now.strftime('%H:%M:%S')} IST"
+            )
+
             try:
                 access_token = al.kite_login()
                 api_key = os.environ["KITE_API_KEY"]
                 api_secret = os.environ.get("KITE_API_SECRET", "")
                 ok, msg = _start_engine_with_token(api_key, access_token, api_secret)
+                duration_ms = int((time.time() - attempt_start) * 1000)
+
                 if ok:
-                    print(f"[AUTOLOGIN-DAEMON] SUCCESS — {msg}")
-                    _t.sleep(1800)  # skip 30 min — past 9:00 close + warm-up
+                    print(f"[AUTOLOGIN-DAEMON] SUCCESS — {msg} ({duration_ms}ms)")
+                    if council_storage:
+                        try:
+                            council_storage.log_autologin_attempt(
+                                trigger_source="daemon",
+                                status="success",
+                                access_token_preview=access_token[:8] if access_token else "",
+                                duration_ms=duration_ms,
+                                extra={"attempt": daily_attempt_count},
+                            )
+                        except Exception as e:
+                            print(f"[AUTOLOGIN-DAEMON] status log failed: {e}")
+                    if telegram_alerts:
+                        try:
+                            telegram_alerts.alert_engine_started(
+                                source="daemon",
+                                token_preview=access_token[:8] if access_token else "",
+                            )
+                        except Exception as e:
+                            print(f"[AUTOLOGIN-DAEMON] telegram alert failed: {e}")
+                    _t.sleep(1800)  # 30 min — skip past window + warm-up
                 else:
-                    print(f"[AUTOLOGIN-DAEMON] Engine start failed: {msg} — retry in 60s")
-                    _t.sleep(60)
+                    print(f"[AUTOLOGIN-DAEMON] Engine start failed: {msg}")
+                    if council_storage:
+                        try:
+                            council_storage.log_autologin_attempt(
+                                trigger_source="daemon",
+                                status="failed",
+                                error=f"engine_start_failed: {msg}",
+                                duration_ms=duration_ms,
+                                extra={"attempt": daily_attempt_count},
+                            )
+                        except Exception:
+                            pass
+                    if telegram_alerts and daily_attempt_count >= 4:
+                        try:
+                            telegram_alerts.alert_autologin_failed(
+                                error=f"engine_start: {msg}",
+                                attempt=daily_attempt_count,
+                            )
+                        except Exception:
+                            pass
+                    _t.sleep(RETRY_INTERVAL_SEC)
             except Exception as e:
-                print(f"[AUTOLOGIN-DAEMON] Login failed: {e} — retry in 60s")
-                _t.sleep(60)
+                err_str = str(e)
+                duration_ms = int((time.time() - attempt_start) * 1000)
+                print(f"[AUTOLOGIN-DAEMON] Login failed: {err_str} ({duration_ms}ms)")
+                if council_storage:
+                    try:
+                        council_storage.log_autologin_attempt(
+                            trigger_source="daemon",
+                            status="failed",
+                            error=err_str[:500],
+                            duration_ms=duration_ms,
+                            extra={"attempt": daily_attempt_count},
+                        )
+                    except Exception:
+                        pass
+                # Telegram escalation
+                if telegram_alerts:
+                    try:
+                        if daily_attempt_count == CRITICAL_AFTER_ATTEMPTS:
+                            telegram_alerts.alert_autologin_critical()
+                        elif 4 <= daily_attempt_count < CRITICAL_AFTER_ATTEMPTS:
+                            telegram_alerts.alert_autologin_failed(
+                                error=err_str,
+                                attempt=daily_attempt_count,
+                            )
+                    except Exception:
+                        pass
+                _t.sleep(RETRY_INTERVAL_SEC)
 
         except Exception as e:
             print(f"[AUTOLOGIN-DAEMON] Outer loop error: {e}")
@@ -681,6 +781,72 @@ async def council_engines(engine: Optional[str] = None):
         from council import storage
         rows = storage.get_engine_stats(engine=engine)
         return {"count": len(rows), "stats": rows}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── Auto-login status + diagnostics ──────────────────────────────────
+
+@app.get("/api/auto-login/status")
+async def autologin_status(limit: int = 50):
+    """Recent auto-login attempts (daemon + manual + cron + self-heal).
+
+    Use this to see, without reading Render logs, exactly when each
+    morning's auto-login fired, which source succeeded, and what
+    failed.
+    """
+    try:
+        from council import storage
+        attempts = storage.get_recent_autologin_attempts(limit=limit)
+        return {"count": len(attempts), "attempts": attempts}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/auto-login/summary")
+async def autologin_summary(days: int = 7):
+    """Aggregated auto-login stats per day per source over last N days.
+
+    Returns a clear picture of:
+      - Which days had auto-login attempts at all
+      - Which trigger succeeded (daemon / external_cron / manual)
+      - Failure counts per day
+    """
+    try:
+        from council import storage
+        return storage.get_autologin_summary(days=days)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/auto-login/test-alert")
+async def autologin_test_alert():
+    """Trigger a Telegram test alert. Use to verify env vars are set
+    correctly and the bot can reach you.
+    """
+    try:
+        import telegram_alerts
+        if not telegram_alerts.is_enabled():
+            return JSONResponse({
+                "ok": False,
+                "error": "Telegram disabled — TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID env var missing",
+            }, status_code=400)
+        ok = telegram_alerts.test_alert()
+        return {"ok": ok, "message": "Test alert sent" if ok else "Send failed (see logs)"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/auto-login/telegram-health")
+async def telegram_health():
+    """Is Telegram alerts wired up? Useful for diagnostics."""
+    try:
+        import telegram_alerts
+        return {
+            "enabled": telegram_alerts.is_enabled(),
+            "bot_token_set": bool(os.getenv("TELEGRAM_BOT_TOKEN")),
+            "chat_id_set": bool(os.getenv("TELEGRAM_CHAT_ID")),
+        }
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
