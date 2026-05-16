@@ -185,6 +185,23 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         print(f"[STARTUP] autologin daemon spawn failed: {_e}")
 
+    # ── Engine self-heal monitor (Layer 3 of bulletproof auto-login) ──
+    # During market hours (09:15-15:30 IST), if engine is detected
+    # dead (None or running=False), attempt automatic recovery:
+    #   1. Try cached token from /data/access_token.json (fast path)
+    #   2. If cached token dead → full Kite login via auto_login.py
+    #   3. Either succeeds → engine alive, Telegram alert
+    #      Both fail → Telegram CRITICAL, manual login needed
+    try:
+        import threading as _th
+        _th.Thread(
+            target=_engine_selfheal_monitor,
+            daemon=True,
+            name="engine-selfheal",
+        ).start()
+    except Exception as _e:
+        print(f"[STARTUP] engine self-heal monitor spawn failed: {_e}")
+
     yield
     if engine:
         engine.stop()
@@ -234,6 +251,169 @@ def _start_engine_with_token(api_key: str, access_token: str, api_secret: str = 
         return True, f"Engine started with access_token {access_token[:8]}..."
     except Exception as e:
         return False, str(e)
+
+
+def _engine_selfheal_monitor():
+    """Background thread — auto-recover engine during market hours.
+
+    Layer 3 of the bulletproof auto-login system. Catches the case
+    where the engine dies AFTER the morning auto-login window has
+    passed (mid-day container crash, OOM, etc).
+
+    Cycle (every 5 minutes):
+      1. Only act between 09:15 - 15:30 IST weekdays
+      2. Check if engine is None OR engine.running is False
+      3. If yes, attempt recovery:
+         a. Try resuming from cached /data/access_token.json
+         b. If that fails (token expired), do full Kite login
+         c. Either way, call _start_engine_with_token(...)
+      4. Telegram alerts:
+         - Success → "💚 Engine Recovered"
+         - All paths failed → "🚨 Engine Down"
+      5. Cooldown 5 min between recovery attempts to avoid hammer
+
+    Crash safety: outer try/except, never propagates errors.
+    """
+    import time as _t
+
+    # Lazy imports — daemon-style robust
+    try:
+        from council import storage as council_storage
+    except Exception:
+        council_storage = None
+    try:
+        import telegram_alerts
+    except Exception:
+        telegram_alerts = None
+
+    def _ist_now():
+        try:
+            import pytz
+            from datetime import datetime
+            return datetime.now(pytz.timezone("Asia/Kolkata"))
+        except Exception:
+            from datetime import datetime
+            return datetime.now()
+
+    def _is_market_hours(now) -> bool:
+        if now.weekday() >= 5:  # Sat/Sun
+            return False
+        t = now.hour * 60 + now.minute
+        return 9 * 60 + 15 <= t <= 15 * 60 + 30
+
+    SELFHEAL_INTERVAL = 300  # 5 min between checks
+    print("[SELFHEAL] Started — will check engine every 5 min during market hours")
+
+    last_recovery_attempt = 0
+    last_alert_for_engine_down = 0
+
+    while True:
+        try:
+            now = _ist_now()
+            if not _is_market_hours(now):
+                _t.sleep(SELFHEAL_INTERVAL)
+                continue
+
+            # Engine state check
+            engine_alive = (
+                engine is not None
+                and getattr(engine, "running", False)
+            )
+            if engine_alive:
+                _t.sleep(SELFHEAL_INTERVAL)
+                continue
+
+            # Engine DOWN during market hours — attempt recovery
+            now_ts = time.time()
+            if (now_ts - last_recovery_attempt) < SELFHEAL_INTERVAL:
+                _t.sleep(30)  # short sleep, cooldown not elapsed
+                continue
+            last_recovery_attempt = now_ts
+
+            print(f"[SELFHEAL] Engine DOWN at {now.strftime('%H:%M:%S')} IST — attempting recovery")
+
+            # First Telegram WARN (throttled by alerts module)
+            if telegram_alerts and (now_ts - last_alert_for_engine_down) > 600:
+                last_alert_for_engine_down = now_ts
+                try:
+                    telegram_alerts.alert_engine_down(
+                        "Detected during market hours — attempting auto-recovery"
+                    )
+                except Exception:
+                    pass
+
+            recovered = False
+            recovery_method = None
+            attempt_start = time.time()
+
+            # ── Path 1: Try cached token ──
+            try:
+                token_file = _data_dir / "access_token.json"
+                if token_file.exists():
+                    token_data = json.loads(token_file.read_text())
+                    api_key = token_data.get("api_key", "")
+                    access_token = token_data.get("access_token", "")
+                    api_secret = token_data.get("api_secret", "")
+                    if api_key and access_token:
+                        ok, msg = _start_engine_with_token(api_key, access_token, api_secret)
+                        if ok:
+                            recovered = True
+                            recovery_method = "cached_token"
+                            print(f"[SELFHEAL] Recovered via cached token: {msg}")
+            except Exception as e:
+                print(f"[SELFHEAL] cached-token path failed: {e}")
+
+            # ── Path 2: Full Kite login (if cached failed) ──
+            if not recovered:
+                try:
+                    import auto_login as al
+                    required = ["KITE_USER_ID", "KITE_PASSWORD", "KITE_TOTP_SECRET",
+                                "KITE_API_KEY", "KITE_API_SECRET"]
+                    if all(os.environ.get(k) for k in required):
+                        access_token = al.kite_login()
+                        api_key = os.environ["KITE_API_KEY"]
+                        api_secret = os.environ.get("KITE_API_SECRET", "")
+                        ok, msg = _start_engine_with_token(api_key, access_token, api_secret)
+                        if ok:
+                            recovered = True
+                            recovery_method = "fresh_kite_login"
+                            print(f"[SELFHEAL] Recovered via fresh login: {msg}")
+                    else:
+                        print("[SELFHEAL] fresh-login skipped — Kite creds env vars not set")
+                except Exception as e:
+                    print(f"[SELFHEAL] fresh-login path failed: {e}")
+
+            duration_ms = int((time.time() - attempt_start) * 1000)
+
+            # ── Log + notify ──
+            if council_storage:
+                try:
+                    council_storage.log_autologin_attempt(
+                        trigger_source="self_heal",
+                        status="success" if recovered else "failed",
+                        error=None if recovered else "Both cached + fresh paths failed",
+                        duration_ms=duration_ms,
+                        extra={"method": recovery_method} if recovered else None,
+                    )
+                except Exception:
+                    pass
+
+            if telegram_alerts:
+                try:
+                    if recovered:
+                        telegram_alerts.alert_engine_recovered()
+                    else:
+                        telegram_alerts.alert_engine_down(
+                            f"Self-heal FAILED — cached + fresh both failed. Manual login required."
+                        )
+                except Exception:
+                    pass
+
+            _t.sleep(SELFHEAL_INTERVAL)
+
+        except Exception as e:
+            print(f"[SELFHEAL] Outer loop error: {e}")
+            _t.sleep(60)
 
 
 def _autologin_daemon():
@@ -849,6 +1029,110 @@ async def telegram_health():
         }
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/auto-login/emergency")
+async def emergency_login():
+    """ONE-CLICK EMERGENCY LOGIN (Layer 6 of bulletproof auto-login).
+
+    Trigger the full Kite login flow server-side using env vars.
+    Used when auto-login daemon has failed and user needs the engine
+    UP as fast as possible (e.g. market opening in 2 min).
+
+    Returns within 10-30 seconds. No browser OAuth dance needed.
+
+    Logs the attempt with trigger_source="manual" so it shows up in
+    /api/auto-login/status alongside daemon attempts.
+    """
+    import time as _t
+
+    required = ["KITE_USER_ID", "KITE_PASSWORD", "KITE_TOTP_SECRET",
+                "KITE_API_KEY", "KITE_API_SECRET"]
+    missing = [k for k in required if not os.environ.get(k)]
+    if missing:
+        return JSONResponse({
+            "ok": False,
+            "error": f"Missing env vars: {missing}",
+        }, status_code=400)
+
+    started = _t.time()
+    try:
+        import auto_login as al
+        access_token = al.kite_login()
+        api_key = os.environ["KITE_API_KEY"]
+        api_secret = os.environ.get("KITE_API_SECRET", "")
+        ok, msg = _start_engine_with_token(api_key, access_token, api_secret)
+        duration_ms = int((_t.time() - started) * 1000)
+
+        # Log to council DB
+        try:
+            from council import storage as council_storage
+            council_storage.log_autologin_attempt(
+                trigger_source="manual",
+                status="success" if ok else "failed",
+                error=None if ok else f"engine_start: {msg}",
+                access_token_preview=access_token[:8] if (ok and access_token) else None,
+                duration_ms=duration_ms,
+                extra={"path": "emergency_button"},
+            )
+        except Exception:
+            pass
+
+        # Telegram alert
+        try:
+            import telegram_alerts
+            if ok:
+                telegram_alerts.alert_engine_started(
+                    source="emergency_button",
+                    token_preview=access_token[:8] if access_token else "",
+                )
+            else:
+                telegram_alerts.alert_autologin_failed(
+                    error=f"emergency button: {msg}", attempt=1,
+                )
+        except Exception:
+            pass
+
+        if ok:
+            return {
+                "ok": True,
+                "message": "Engine started",
+                "duration_ms": duration_ms,
+                "token_preview": access_token[:8] if access_token else "",
+            }
+        return JSONResponse({
+            "ok": False,
+            "error": msg,
+            "duration_ms": duration_ms,
+        }, status_code=500)
+
+    except Exception as e:
+        duration_ms = int((_t.time() - started) * 1000)
+        err_str = str(e)
+        # Log failure
+        try:
+            from council import storage as council_storage
+            council_storage.log_autologin_attempt(
+                trigger_source="manual",
+                status="failed",
+                error=err_str[:500],
+                duration_ms=duration_ms,
+                extra={"path": "emergency_button"},
+            )
+        except Exception:
+            pass
+        try:
+            import telegram_alerts
+            telegram_alerts.alert_autologin_failed(
+                error=f"emergency button: {err_str}", attempt=1,
+            )
+        except Exception:
+            pass
+        return JSONResponse({
+            "ok": False,
+            "error": err_str,
+            "duration_ms": duration_ms,
+        }, status_code=500)
 
 
 @app.post("/api/cache/invalidate/{prefix}")
