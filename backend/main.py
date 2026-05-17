@@ -417,27 +417,33 @@ def _engine_selfheal_monitor():
 
 
 def _autologin_daemon():
-    """Background thread — refreshes Kite token at 06:10-09:25 IST weekdays.
+    """Background thread — refreshes Kite token at 08:50-09:00 IST weekdays.
 
-    DESIGN (hardened version — 2026-05-17):
-      Wide window: 06:10 - 09:25 IST. Tokens expire at 6 AM, so we attempt
-      immediately at 06:10. Market opens 09:15 — we give up at 09:25 to
-      give the user 5 min to manual-login if every retry failed.
-
-      Retry interval: 30s within window (was 60s). Total attempts per
-      window: ~390. At least ONE has to succeed eventually.
+    DESIGN (hardened — 2026-05-17 final):
+      Window: 08:50 - 09:00 IST (10 min). 30s retry = ~20 attempts.
+      Tight window chosen over wide because:
+        • 20 attempts is plenty for transient Kite blip recovery.
+        • TOTP rotates every 30s — wider window doesn't add value.
+        • Excessive login attempts risk Kite anti-bot detection.
+        • Fail-fast + Telegram alert + manual login is better than
+          spamming Kite for hours.
 
       Success: log to DB + Telegram alert + sleep 30 min past window.
 
       Failure mode escalation:
-        attempt 1-3 failures → silent (transient blip likely)
-        attempt 4-10 failures → Telegram WARN
-        attempt > 10 failures → Telegram CRITICAL ("manual login needed")
+        attempt 1-2 failures → silent (transient blip likely)
+        attempt 3-6 failures → Telegram WARN per attempt
+        attempt = 7         → Telegram CRITICAL ("manual login NOW")
 
-      EVERY attempt logged to council.db `auto_login_attempts` table so
-      we can audit success rates without reading Render logs.
+      EVERY attempt logged to council.db `auto_login_attempts` table
+      so we can audit success rates without reading Render logs.
 
       Crash safety: outer try/except never lets the loop die.
+
+      Defense in depth — this is just ONE of 6 reliability layers:
+        Layer 2: GitHub Actions cron fires independently
+        Layer 3: Self-heal monitor during market hours
+        Layer 6: Emergency endpoint for one-click recovery
     """
     import time as _t
 
@@ -467,12 +473,17 @@ def _autologin_daemon():
     except Exception:
         telegram_alerts = None
 
-    # Wide window: 06:10 - 09:25 IST.
-    WIN_START_HOUR_MIN = (6, 10)   # 06:10 IST inclusive
-    WIN_END_HOUR_MIN = (9, 25)     # 09:25 IST inclusive
+    # Tight window: 08:50 - 09:00 IST. 10 min is enough — at 30s
+    # retry that's ~20 attempts, plenty for transient blip recovery.
+    # Wider window doesn't add reliability if all retries hit the
+    # same broken path, AND too many Kite logins risks anti-bot
+    # detection. Better to fail fast + Telegram alert + manual login
+    # than to spam Kite for hours.
+    WIN_START_HOUR_MIN = (8, 50)   # 08:50 IST inclusive
+    WIN_END_HOUR_MIN = (9, 0)      # 09:00 IST inclusive
 
     RETRY_INTERVAL_SEC = 30        # within-window retry cadence
-    CRITICAL_AFTER_ATTEMPTS = 10   # send 🆘 alert after this many fails
+    CRITICAL_AFTER_ATTEMPTS = 7    # send 🆘 alert after this many fails
 
     def _in_window(now) -> bool:
         n = now.hour * 60 + now.minute
@@ -572,7 +583,7 @@ def _autologin_daemon():
                             )
                         except Exception:
                             pass
-                    if telegram_alerts and daily_attempt_count >= 4:
+                    if telegram_alerts and daily_attempt_count >= 3:
                         try:
                             telegram_alerts.alert_autologin_failed(
                                 error=f"engine_start: {msg}",
@@ -596,12 +607,15 @@ def _autologin_daemon():
                         )
                     except Exception:
                         pass
-                # Telegram escalation
+                # Telegram escalation (tuned for 10-min window with 30s retry):
+                #   1-2 fails: silent (transient blip)
+                #   3-6 fails: WARN per attempt
+                #   7+ fails:  CRITICAL once ("manual login needed NOW")
                 if telegram_alerts:
                     try:
                         if daily_attempt_count == CRITICAL_AFTER_ATTEMPTS:
                             telegram_alerts.alert_autologin_critical()
-                        elif 4 <= daily_attempt_count < CRITICAL_AFTER_ATTEMPTS:
+                        elif 3 <= daily_attempt_count < CRITICAL_AFTER_ATTEMPTS:
                             telegram_alerts.alert_autologin_failed(
                                 error=err_str,
                                 attempt=daily_attempt_count,

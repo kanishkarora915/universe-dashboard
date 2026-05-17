@@ -22,8 +22,11 @@ name: Auto-Login Trigger
 
 on:
   schedule:
-    # min hour day_of_month month day_of_week
-    - cron: '20 3 * * 1-5'   # 08:50 IST weekdays
+    # min hour day_of_month month day_of_week (UTC)
+    # 08:52 IST = 03:22 UTC — fires 2 min after daemon's window opens.
+    # GitHub cron is best-effort (can lag 5-15 min), so this hits
+    # within the daemon's 08:50-09:00 window most days.
+    - cron: '22 3 * * 1-5'   # 08:52 IST weekdays
   workflow_dispatch:          # allow manual trigger from GitHub UI
 
 jobs:
