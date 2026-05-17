@@ -44,7 +44,12 @@ function useChainData(index) {
   return { chain, loading };
 }
 
-function HeatmapRow({ row, maxCE, maxPE, spot, atm, maxPain, bigCEWall, bigPEWall, strikeGap }) {
+// React.memo with custom comparator — prevents row re-render when its
+// own data hasn't changed. Parent re-renders every 1-5s with live data;
+// without memo, all 17 rows reconcile on every tick. With memo, only
+// rows whose specific OI/strike data changed will re-render.
+// Expected impact: ~10-15% fewer React reconciliations during market.
+const HeatmapRow = React.memo(function HeatmapRow({ row, maxCE, maxPE, spot, atm, maxPain, bigCEWall, bigPEWall, strikeGap }) {
   const isATM = Math.abs(row.strike - atm) < strikeGap / 2;
   const isMaxPain = Math.abs(row.strike - maxPain) < strikeGap / 2;
   const isBigCE = row.strike === bigCEWall;
@@ -172,7 +177,27 @@ function HeatmapRow({ row, maxCE, maxPE, spot, atm, maxPain, bigCEWall, bigPEWal
       </div>
     </div>
   );
-}
+}, (prev, next) => {
+  // Custom comparator — return true to SKIP re-render.
+  // Strike never changes for a given row (it's the React key).
+  // Only re-render if numeric inputs change or row's relative
+  // position to spot/walls/maxPain shifts.
+  return (
+    prev.row.strike === next.row.strike &&
+    prev.row.ce_oi === next.row.ce_oi &&
+    prev.row.pe_oi === next.row.pe_oi &&
+    prev.row.ce_oi_change === next.row.ce_oi_change &&
+    prev.row.pe_oi_change === next.row.pe_oi_change &&
+    prev.maxCE === next.maxCE &&
+    prev.maxPE === next.maxPE &&
+    prev.spot === next.spot &&
+    prev.atm === next.atm &&
+    prev.maxPain === next.maxPain &&
+    prev.bigCEWall === next.bigCEWall &&
+    prev.bigPEWall === next.bigPEWall &&
+    prev.strikeGap === next.strikeGap
+  );
+});
 
 function IndexHeatmap({ index, live }) {
   const { chain, loading } = useChainData(index);
