@@ -1065,6 +1065,43 @@ async def telegram_health():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/trinity/db-stats")
+async def trinity_db_stats():
+    """Trinity DB stats — file size, row counts per table, oldest/newest data.
+    Use to verify pruning is keeping the DB lean.
+    """
+    try:
+        from trinity.prune import get_trinity_db_stats
+        return get_trinity_db_stats()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/trinity/prune-now")
+async def trinity_prune_now(
+    raw_ticks_keep_days: int = 7,
+    strike_data_keep_days: int = 14,
+):
+    """Manually run trinity.db prune. Useful for emergency disk cleanup
+    OR for first-time run to reclaim space immediately.
+
+    Query params:
+      raw_ticks_keep_days     (default 7) — older trinity_ticks deleted
+      strike_data_keep_days   (default 14) — older trinity_strike_data deleted
+
+    Returns size before/after, rows deleted, duration.
+    """
+    try:
+        from trinity.prune import prune_trinity_db
+        result = prune_trinity_db(
+            raw_ticks_keep_days=raw_ticks_keep_days,
+            strike_data_keep_days=strike_data_keep_days,
+        )
+        return result
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.post("/api/health/send-report")
 async def health_send_report():
     """Trigger the health monitor's 30-min report immediately.

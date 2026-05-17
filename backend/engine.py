@@ -4557,7 +4557,14 @@ class MarketEngine:
         except Exception:
             pass
 
-        # ── Trinity DB nightly prune at 23:55 IST (keep 30 days only) ──
+        # ── Trinity DB nightly prune (2026-05-17 — properly fixed) ──
+        # NOTE: previous version of this block tried to DELETE FROM
+        # tables named verdict_history, stream_history, trinity_log,
+        # regime_log — NONE of which exist in trinity.db. Real tables
+        # are trinity_ticks, trinity_signals, trinity_strike_data.
+        # So no pruning was actually happening — DB silently grew to
+        # 111 MB. Now using trinity.prune module which targets the
+        # right tables and uses ms-since-epoch ts comparison correctly.
         if not hasattr(self, "_trinity_pruned_date"):
             self._trinity_pruned_date = ""
         try:
@@ -4565,29 +4572,25 @@ class MarketEngine:
             _IST3 = _tz3(_td3(hours=5, minutes=30))
             now_ist3 = _dt3.now(_IST3)
             today3 = now_ist3.strftime("%Y-%m-%d")
+            # Run at 01:00 IST (off-hours, engine usually idle).
+            # Window 01:00-01:05 to give some retry margin.
             if (self._trinity_pruned_date != today3
-                    and now_ist3.hour == 23 and now_ist3.minute >= 55):
+                    and now_ist3.hour == 1 and now_ist3.minute < 5):
                 def _prune_run():
                     try:
-                        from pathlib import Path as _P
-                        import sqlite3 as _sql
-                        td = _P("/data") if _P("/data").is_dir() else _P(__file__).parent
-                        # Prune trinity.db
-                        trinity_db = str(td / "trinity.db")
-                        if _P(trinity_db).exists():
-                            conn = _sql.connect(trinity_db, timeout=30)
-                            cutoff = (now_ist3 - _td3(days=30)).strftime("%Y-%m-%d")
-                            for table in ("verdict_history", "stream_history",
-                                           "trinity_log", "regime_log"):
-                                try:
-                                    conn.execute(f"DELETE FROM {table} WHERE date(ts, 'unixepoch') < ?",
-                                                 (cutoff,))
-                                except Exception:
-                                    pass
-                            conn.execute("VACUUM")
-                            conn.commit()
-                            conn.close()
-                            print(f"[PRUNE] Trinity DB pruned (cutoff {cutoff})")
+                        from trinity.prune import prune_trinity_db
+                        result = prune_trinity_db()
+                        print(
+                            f"[PRUNE] Trinity: "
+                            f"{result['size_before_mb']:.1f}MB → "
+                            f"{result['size_after_mb']:.1f}MB "
+                            f"(freed {result['freed_mb']:.1f}MB, "
+                            f"deleted {result['ticks_deleted']} ticks + "
+                            f"{result['strike_rows_deleted']} strike rows in "
+                            f"{result['duration_sec']}s)"
+                        )
+                        if result.get("error"):
+                            print(f"[PRUNE] Note: {result['error']}")
                     except Exception as e:
                         print(f"[PRUNE] err: {e}")
                 threading.Thread(target=_prune_run, daemon=True, name="trinity-prune").start()
