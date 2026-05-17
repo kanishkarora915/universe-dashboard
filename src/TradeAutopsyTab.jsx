@@ -616,7 +616,8 @@ export default function TradeAutopsyTab() {
 
   useEffect(() => {
     loadData();
-    const iv = setInterval(loadData, 15_000); // live refresh every 15s
+    // Polling pauses when tab hidden (saves backend CPU).
+    const iv = setInterval(() => { if (document.visibilityState === "visible") loadData(); }, 15_000);
     return () => clearInterval(iv);
   }, [loadData]);
 

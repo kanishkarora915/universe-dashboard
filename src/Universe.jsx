@@ -409,7 +409,8 @@ function LiveDataTab({ liveData }) {
       fetch("/api/backtest-stats").then(r => r.ok ? r.json() : null).then(d => d && setBacktest(d)).catch(() => {});
     };
     load();
-    const iv = setInterval(load, 60000);
+    // Polling pauses when tab hidden (saves backend CPU).
+    const iv = setInterval(() => { if (document.visibilityState === "visible") load(); }, 60000);
     return () => clearInterval(iv);
   }, []);
 
@@ -2040,7 +2041,7 @@ function TrapFinderTab() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { runScan(); const iv = setInterval(runScan, 300000); return () => clearInterval(iv); }, [runScan]);
+  useEffect(() => { runScan(); const iv = setInterval(() => { if (document.visibilityState === "visible") runScan(); }, 300000); return () => clearInterval(iv); }, [runScan]);
 
   if (!data && !loading) return (
     <div style={{ textAlign: "center", padding: 60, color: "#555" }}>
@@ -2816,7 +2817,8 @@ export default function Universe({ onLogout }) {
         .catch(() => {});
     };
     fetchVerdict();
-    const iv = setInterval(fetchVerdict, 15000);
+    // Polling pauses when tab hidden (saves backend CPU).
+    const iv = setInterval(() => { if (document.visibilityState === "visible") fetchVerdict(); }, 15000);
     return () => {
       mounted = false;
       clearInterval(iv);

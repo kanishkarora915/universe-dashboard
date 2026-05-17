@@ -360,7 +360,8 @@ export default function ZonesTab() {
 
   useEffect(() => {
     load();
-    const iv = setInterval(load, 30_000);
+    // Polling pauses when tab hidden (saves backend CPU).
+    const iv = setInterval(() => { if (document.visibilityState === "visible") load(); }, 30_000);
     return () => clearInterval(iv);
   }, [load]);
 

@@ -45,7 +45,8 @@ export default function CapitulationAlert() {
       } catch (e) { /* silent */ }
     };
     tick();
-    const t = setInterval(tick, 15000);
+    // Polling pauses when tab hidden (saves backend CPU + battery).
+    const t = setInterval(() => { if (document.visibilityState === "visible") tick(); }, 15000);
     return () => { alive = false; clearInterval(t); };
   }, []);
 

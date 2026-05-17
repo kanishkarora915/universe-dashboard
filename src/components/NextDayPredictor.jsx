@@ -39,7 +39,8 @@ function useNextDayData(index) {
       if (!cancelled) setLoading(false);
     };
     load();
-    const iv = setInterval(load, 60000); // Refresh every minute
+    // Polling pauses when tab hidden (saves backend CPU).
+    const iv = setInterval(() => { if (document.visibilityState === "visible") load(); }, 60000);
     return () => { cancelled = true; clearInterval(iv); };
   }, [index]);
 

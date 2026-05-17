@@ -73,7 +73,8 @@ export default function OIChangeTab({ oiData }) {
   useEffect(() => {
     const load = () => fetch("/api/oi-timeline").then(r => r.ok ? r.json() : null).then(d => d && setTimeline(d)).catch(() => {});
     load();
-    const iv = setInterval(load, 30000);
+    // Polling pauses when tab hidden (saves backend CPU).
+    const iv = setInterval(() => { if (document.visibilityState === "visible") load(); }, 30000);
     return () => clearInterval(iv);
   }, []);
 
