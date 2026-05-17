@@ -222,6 +222,26 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         print(f"[STARTUP] health monitor spawn failed: {_e}")
 
+    # ── Performance monitor (5-min sampling for crash post-mortems) ──
+    # Samples CPU/memory/threads/disk/engine state every 5 min and
+    # writes to council.db perf_samples. When engine dies unexpectedly,
+    # query this table to see exactly what was happening.
+    try:
+        import threading as _th
+        from perf_monitor import run_sampler as _pm_run
+
+        def _engine_getter_pm():
+            return engine
+
+        _th.Thread(
+            target=_pm_run,
+            args=(_engine_getter_pm,),
+            daemon=True,
+            name="perf-monitor",
+        ).start()
+    except Exception as _e:
+        print(f"[STARTUP] perf monitor spawn failed: {_e}")
+
     yield
     if engine:
         engine.stop()
@@ -1061,6 +1081,42 @@ async def telegram_health():
             "bot_token_set": bool(os.getenv("TELEGRAM_BOT_TOKEN")),
             "chat_id_set": bool(os.getenv("TELEGRAM_CHAT_ID")),
         }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/perf-stats")
+async def perf_stats():
+    """Latest performance sample. Useful for live monitoring."""
+    try:
+        from perf_monitor import get_latest_sample
+        return get_latest_sample()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/perf-history")
+async def perf_history(hours: int = 24, limit: int = 500):
+    """Recent perf samples in last N hours.
+
+    Use this when investigating a crash: query the time range around
+    the failure to see CPU/memory/threads/disk trends.
+    """
+    try:
+        from perf_monitor import get_history
+        rows = get_history(hours=hours, limit=limit)
+        return {"count": len(rows), "samples": rows}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/perf-sample-now")
+async def perf_sample_now():
+    """Force an immediate perf sample (don't wait for 5-min cycle).
+    Useful for debugging."""
+    try:
+        from perf_monitor import take_sample
+        return take_sample(lambda: engine)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
