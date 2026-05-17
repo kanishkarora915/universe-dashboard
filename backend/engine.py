@@ -4414,7 +4414,11 @@ class MarketEngine:
         # ── Trinity Engine — 500ms tick (2GB RAM upgrade — was 1s) ──
         if not hasattr(self, "_trinity_last_step"):
             self._trinity_last_step = 0
-        if market_active and now - self._trinity_last_step >= 0.5:
+        # Trinity cadence: 1s (was 500ms — 2026-05-17 perf pass).
+        # Regime classification needs ~30s context, premium delta uses
+        # 3-5min EMAs — 500ms cadence was over-sampling and creating
+        # 1.8M DB writes/day. 1s halves that with no accuracy impact.
+        if market_active and now - self._trinity_last_step >= 1.0:
             self._trinity_last_step = now
             def _trinity_step():
                 try:
