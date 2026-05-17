@@ -202,6 +202,26 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         print(f"[STARTUP] engine self-heal monitor spawn failed: {_e}")
 
+    # ── Health monitor (periodic Telegram status + trade reports) ──
+    # Every 30 min during market hours (09:15-15:30 IST), sends a
+    # health snapshot + today's trade activity to Telegram. Plus an
+    # EOD summary at 15:35 IST every weekday.
+    try:
+        import threading as _th
+        from health_monitor import run_monitor as _hm_run
+
+        def _engine_getter():
+            return engine  # closure over the module-level engine ref
+
+        _th.Thread(
+            target=_hm_run,
+            args=(_engine_getter,),
+            daemon=True,
+            name="health-monitor",
+        ).start()
+    except Exception as _e:
+        print(f"[STARTUP] health monitor spawn failed: {_e}")
+
     yield
     if engine:
         engine.stop()
@@ -473,17 +493,17 @@ def _autologin_daemon():
     except Exception:
         telegram_alerts = None
 
-    # Tight window: 08:50 - 09:00 IST. 10 min is enough — at 30s
-    # retry that's ~20 attempts, plenty for transient blip recovery.
-    # Wider window doesn't add reliability if all retries hit the
-    # same broken path, AND too many Kite logins risks anti-bot
-    # detection. Better to fail fast + Telegram alert + manual login
-    # than to spam Kite for hours.
+    # Window: 08:50 - 09:15 IST. 25 min covers daemon retries + buffer
+    # before market open (09:15). At 30s retry = ~50 attempts max,
+    # which gives the system extra room to recover from transient
+    # Kite blips while still being short enough to avoid anti-bot
+    # detection. Last attempt fires right at market open as final
+    # chance for engine to come up before user actually needs to trade.
     WIN_START_HOUR_MIN = (8, 50)   # 08:50 IST inclusive
-    WIN_END_HOUR_MIN = (9, 0)      # 09:00 IST inclusive
+    WIN_END_HOUR_MIN = (9, 15)     # 09:15 IST inclusive (market open)
 
     RETRY_INTERVAL_SEC = 30        # within-window retry cadence
-    CRITICAL_AFTER_ATTEMPTS = 7    # send 🆘 alert after this many fails
+    CRITICAL_AFTER_ATTEMPTS = 10   # send 🆘 alert after this many fails
 
     def _in_window(now) -> bool:
         n = now.hour * 60 + now.minute
@@ -1041,6 +1061,41 @@ async def telegram_health():
             "bot_token_set": bool(os.getenv("TELEGRAM_BOT_TOKEN")),
             "chat_id_set": bool(os.getenv("TELEGRAM_CHAT_ID")),
         }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/health/send-report")
+async def health_send_report():
+    """Trigger the health monitor's 30-min report immediately.
+    Useful for testing the Telegram message format without waiting.
+    Returns the message text + Telegram send result.
+    """
+    try:
+        from health_monitor import build_health_report
+        import telegram_alerts
+        msg = build_health_report(engine)
+        ok = False
+        if telegram_alerts.is_enabled():
+            ok = telegram_alerts._send_sync(msg)
+        return {"ok": ok, "telegram_enabled": telegram_alerts.is_enabled(),
+                "message_preview": msg[:1000]}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/health/send-eod")
+async def health_send_eod():
+    """Trigger the EOD summary right now (instead of waiting for 15:35 IST)."""
+    try:
+        from health_monitor import build_eod_summary
+        import telegram_alerts
+        msg = build_eod_summary(engine)
+        ok = False
+        if telegram_alerts.is_enabled():
+            ok = telegram_alerts._send_sync(msg)
+        return {"ok": ok, "telegram_enabled": telegram_alerts.is_enabled(),
+                "message_preview": msg[:1000]}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
