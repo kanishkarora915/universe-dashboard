@@ -26,26 +26,16 @@ _data_dir = Path("/data") if Path("/data").is_dir() else Path(__file__).parent
 SCALPER_DB = _data_dir / "scalper_trades.db"
 
 # ── KILL SWITCH ────────────────────────────────────────────────────
-# Pause scalper auto-trading without affecting signal generation,
-# analytics, monitoring. Disabled 2026-05-18 after 4-session audit:
-#   May 12 — +₹14,660 (lucky)
-#   May 13 — -₹20,354
-#   May 14 — -₹81,078 (DISASTER — 12.5% winrate)
-#   May 18 — -₹32,274
-#   Total: -₹119,046 in 4 sessions
+# Scalper auto-trading flag. User chose 2026-05-18 to keep scalper
+# active while Phase 2 smart improvements are built in parallel.
 #
-# Root cause: 82% PE bias (37/45 trades), counter-trend in trending
-# market. 10/45 trades killed by theta decay. Probability scoring
-# uncalibrated (70-79% bucket = -₹103k losses, the worst).
+# Audit context retained (4-session loss reference):
+#   May 12: +₹14,660  · May 13: -₹20,354
+#   May 14: -₹81,078  · May 18: -₹32,274  → net -₹119k
+#   Root: 82% PE bias, theta-decay killed 10/45 trades.
 #
-# Re-enable only after:
-#   1. Directional alignment gate added (block PE in upper range)
-#   2. Theta protection check
-#   3. Consecutive loss circuit breaker
-#   4. Daily loss hard cap
-#
-# Override via env var SCALPER_AUTO_TRADE=on if needed urgently.
-SCALPER_AUTO_TRADE_ENABLED = os.environ.get("SCALPER_AUTO_TRADE", "off").lower() == "on"
+# Default ON — set SCALPER_AUTO_TRADE=off to pause without code change.
+SCALPER_AUTO_TRADE_ENABLED = os.environ.get("SCALPER_AUTO_TRADE", "on").lower() != "off"
 
 # SCALPER CONFIG (tuned after 2026-05-04 -₹1.37L bleed)
 SCALPER_THRESHOLD = 55         # Raised 45→55 (avoid weak signals)

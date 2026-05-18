@@ -41,25 +41,27 @@ def reload_scalper(monkeypatch):
 
 
 class TestKillSwitchFlag:
-    def test_default_off_when_env_unset(self, reload_scalper):
+    def test_default_on_when_env_unset(self, reload_scalper):
+        """Default ON — user keeps scalper active while Phase 2 built."""
         sm = reload_scalper(None)
-        assert sm.SCALPER_AUTO_TRADE_ENABLED is False
+        assert sm.SCALPER_AUTO_TRADE_ENABLED is True
 
     def test_off_when_env_explicitly_off(self, reload_scalper):
         sm = reload_scalper("off")
         assert sm.SCALPER_AUTO_TRADE_ENABLED is False
 
-    def test_off_when_env_some_random_value(self, reload_scalper):
+    def test_on_when_env_some_random_value(self, reload_scalper):
+        """Default ON; only literal 'off' disables — random values keep ON."""
         sm = reload_scalper("nope")
-        assert sm.SCALPER_AUTO_TRADE_ENABLED is False
+        assert sm.SCALPER_AUTO_TRADE_ENABLED is True
 
     def test_on_when_env_set_to_on(self, reload_scalper):
         sm = reload_scalper("on")
         assert sm.SCALPER_AUTO_TRADE_ENABLED is True
 
-    def test_case_insensitive_on(self, reload_scalper):
-        sm = reload_scalper("ON")
-        assert sm.SCALPER_AUTO_TRADE_ENABLED is True
+    def test_case_insensitive_off(self, reload_scalper):
+        sm = reload_scalper("OFF")
+        assert sm.SCALPER_AUTO_TRADE_ENABLED is False
 
 
 class TestLogScalpTradeBlocked:
