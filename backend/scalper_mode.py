@@ -16,6 +16,7 @@ Win rate target: 50-55%, R:R 1:1.5
 """
 
 import sqlite3
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 import pytz
@@ -23,6 +24,28 @@ import pytz
 IST = pytz.timezone("Asia/Kolkata")
 _data_dir = Path("/data") if Path("/data").is_dir() else Path(__file__).parent
 SCALPER_DB = _data_dir / "scalper_trades.db"
+
+# ── KILL SWITCH ────────────────────────────────────────────────────
+# Pause scalper auto-trading without affecting signal generation,
+# analytics, monitoring. Disabled 2026-05-18 after 4-session audit:
+#   May 12 — +₹14,660 (lucky)
+#   May 13 — -₹20,354
+#   May 14 — -₹81,078 (DISASTER — 12.5% winrate)
+#   May 18 — -₹32,274
+#   Total: -₹119,046 in 4 sessions
+#
+# Root cause: 82% PE bias (37/45 trades), counter-trend in trending
+# market. 10/45 trades killed by theta decay. Probability scoring
+# uncalibrated (70-79% bucket = -₹103k losses, the worst).
+#
+# Re-enable only after:
+#   1. Directional alignment gate added (block PE in upper range)
+#   2. Theta protection check
+#   3. Consecutive loss circuit breaker
+#   4. Daily loss hard cap
+#
+# Override via env var SCALPER_AUTO_TRADE=on if needed urgently.
+SCALPER_AUTO_TRADE_ENABLED = os.environ.get("SCALPER_AUTO_TRADE", "off").lower() == "on"
 
 # SCALPER CONFIG (tuned after 2026-05-04 -₹1.37L bleed)
 SCALPER_THRESHOLD = 55         # Raised 45→55 (avoid weak signals)
@@ -705,7 +728,54 @@ def calc_scalper_size(entry_price, sl_price, running_capital=1000000):
 def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
                     entry_reasoning=None, entry_bull_pct=None, entry_bear_pct=None,
                     entry_spot=None):
-    """Create new scalper trade with RUNNING capital (auto-adjusts after profit/loss)."""
+    """Create new scalper trade with RUNNING capital (auto-adjusts after profit/loss).
+
+    Returns trade_id on success, None if skipped/rejected.
+    """
+    # ── KILL SWITCH: auto-trading disabled? ──
+    # When SCALPER_AUTO_TRADE_ENABLED is False, all entry-firing is
+    # suppressed but signal generation + analytics keep working.
+    # See module-level comment for rationale (2026-05-18 pause).
+    if not SCALPER_AUTO_TRADE_ENABLED:
+        try:
+            now_iso = ist_now().isoformat() if 'ist_now' in globals() else datetime.now().isoformat()
+        except Exception:
+            now_iso = ""
+        print(
+            f"[SCALPER] SKIPPED entry — auto-trade DISABLED (kill switch on). "
+            f"Would have fired: {idx} {action} {strike} @ ₹{entry_price} prob={probability}%. "
+            f"Set SCALPER_AUTO_TRADE=on env var to re-enable."
+        )
+        # Best-effort: log the suppressed entry to council.db audit so
+        # we can later compare "what would have fired" vs "what we saved".
+        try:
+            from council import storage as _council_storage
+            _council_storage.log_autologin_attempt(
+                trigger_source="scalper_suppressed",
+                status="skipped",
+                error=f"scalper auto-trade disabled (would have fired {idx} {action} {strike})",
+                duration_ms=0,
+                extra={
+                    "idx": idx, "action": action, "strike": strike,
+                    "entry_price": entry_price, "probability": probability,
+                    "entry_bull_pct": entry_bull_pct, "entry_bear_pct": entry_bear_pct,
+                },
+            )
+        except Exception:
+            pass
+        # Telegram alert (throttled, so we don't spam) — informational
+        try:
+            import telegram_alerts as _tg
+            if _tg.is_enabled():
+                _tg.send(
+                    f"⏸️ Scalper suppressed: {idx} {action} {strike} @ ₹{entry_price} "
+                    f"prob={probability}%",
+                    key="scalper_suppressed",  # throttled to 1/min
+                )
+        except Exception:
+            pass
+        return None
+
     if entry_price <= 0:
         return None
 

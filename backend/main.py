@@ -2102,6 +2102,15 @@ async def scalper_status():
         import scalper_mode
         return {
             "enabled": scalper_mode.is_scalper_enabled(),
+            # Auto-trade kill switch (2026-05-18 Phase 1 audit fix).
+            # When False: signals computed but trades NOT fired.
+            # Set env var SCALPER_AUTO_TRADE=on to re-enable.
+            "auto_trade_enabled": scalper_mode.SCALPER_AUTO_TRADE_ENABLED,
+            "auto_trade_pause_reason": (
+                None if scalper_mode.SCALPER_AUTO_TRADE_ENABLED
+                else "Paused 2026-05-18 — 4-session audit: 38% winrate, -₹119k loss. "
+                     "Re-enable after directional-gate + theta-protect fixes."
+            ),
             "config": {
                 "threshold": scalper_mode.SCALPER_THRESHOLD,
                 "dailyCap": scalper_mode.SCALPER_DAILY_CAP,
