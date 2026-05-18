@@ -1,0 +1,13 @@
+{
+  "seller_positioning": 30,
+  "trap_fingerprints": 20,
+  "price_action": 20,
+  "oi_flow": 15,
+  "market_context": 15,
+  "vwap": 5,
+  "multi_timeframe": 15,
+  "fii_dii": 10,
+  "global_cues": 10,
+  "last_updated": "2026-04-09",
+  "auto_adjusted": false
+}

@@ -1,0 +1,1722 @@
+"""
+Smart Trade Logger — Auto-logs trades from verdict engine.
+Tracks SL/target hits. Detects institutional stop hunts.
+SQLite-backed persistence.
+
+Lot sizes: NIFTY = 65 qty, BANKNIFTY = 30 qty, ALWAYS 20 lots
+Max SL = 15% of entry premium
+"""
+
+import sqlite3
+import time
+from datetime import datetime, timedelta
+import pytz
+
+IST = pytz.timezone("Asia/Kolkata")
+DB_PATH = None
+
+INITIAL_CAPITAL = 1000000  # ₹10 lakh starting capital
+MAX_RISK_PER_TRADE_PCT = 3.0  # Risk 3% of capital per trade (₹30k on ₹10L) — was 1.5%
+MAX_RISK_WHALE_ALIGNED_PCT = 5.0  # 5% on whale-aligned trades (₹50k risk) — was 2.5%
+MAX_DAILY_LOSS_PCT = 8  # Stop trading after 8% daily loss (was 5% — let trades breathe)
+MAX_SIMULTANEOUS_TRADES = 10  # No practical limit
+MAX_DAILY_TRADES = 15  # Real trades per day (raised from 6 per user request)
+
+# NSE Holidays — Auto-fetched from Kite API, fallback to hardcoded
+_NSE_HOLIDAYS_CACHE = None
+_NSE_HOLIDAYS_FALLBACK = {
+    "2026-01-15", "2026-01-26", "2026-03-03", "2026-03-26", "2026-03-31",
+    "2026-04-03", "2026-04-14", "2026-05-01", "2026-05-28", "2026-06-26",
+    "2026-09-14", "2026-10-02", "2026-10-20", "2026-11-10", "2026-11-24", "2026-12-25",
+}
+
+
+def _fetch_nse_holidays():
+    """Fetch NSE trading holidays from Kite Connect API. Cached for entire session."""
+    global _NSE_HOLIDAYS_CACHE
+    if _NSE_HOLIDAYS_CACHE is not None:
+        return _NSE_HOLIDAYS_CACHE
+    try:
+        # Try fetching from Kite API (kite.trading_holidays())
+        # This requires an authenticated kite instance
+        # Fallback: try NSE website or use hardcoded
+        import json
+        from pathlib import Path
+        cache_file = Path(__file__).parent / "nse_holidays_cache.json"
+        if cache_file.exists():
+            data = json.loads(cache_file.read_text())
+            year = ist_now().year
+            if data.get("year") == year:
+                _NSE_HOLIDAYS_CACHE = set(data.get("dates", []))
+                return _NSE_HOLIDAYS_CACHE
+    except Exception:
+        pass
+    _NSE_HOLIDAYS_CACHE = _NSE_HOLIDAYS_FALLBACK
+    return _NSE_HOLIDAYS_CACHE
+
+
+def save_nse_holidays_from_kite(kite):
+    """Call this after Kite login to fetch and cache real holidays."""
+    global _NSE_HOLIDAYS_CACHE
+    try:
+        holidays = kite.trading_holidays()
+        dates = set()
+        for h in holidays:
+            # Kite returns list of dicts with 'date' and 'description'
+            if isinstance(h, dict):
+                d = h.get("date", "")
+                if isinstance(d, str) and len(d) >= 10:
+                    dates.add(d[:10])
+                elif hasattr(d, "strftime"):
+                    dates.add(d.strftime("%Y-%m-%d"))
+            # Also handle list-of-lists format
+            elif isinstance(h, (list, tuple)) and len(h) >= 1:
+                d = str(h[0])[:10]
+                dates.add(d)
+        if dates:
+            _NSE_HOLIDAYS_CACHE = dates
+            # Save to cache file
+            import json
+            from pathlib import Path
+            cache_file = Path(__file__).parent / "nse_holidays_cache.json"
+            cache_file.write_text(json.dumps({
+                "year": ist_now().year,
+                "dates": sorted(dates),
+                "fetched": ist_now().isoformat(),
+            }))
+            print(f"[TRADES] Fetched {len(dates)} NSE holidays from Kite API")
+            return dates
+    except Exception as e:
+        print(f"[TRADES] Could not fetch holidays from Kite: {e}")
+    return _NSE_HOLIDAYS_FALLBACK
+
+LOT_CONFIG = {
+    "NIFTY": {"lot_size": 75},      # updated Jan 2025 (was 25 → 50 → 75)
+    "BANKNIFTY": {"lot_size": 35},  # updated Apr 2025 (was 15 → 25 → 35)
+}
+
+
+def _is_trading_day():
+    """Check if today is a valid trading day (not weekend/holiday)."""
+    now = ist_now()
+    if now.weekday() >= 5:  # Saturday=5, Sunday=6
+        return False
+    holidays = _fetch_nse_holidays()
+    if now.strftime("%Y-%m-%d") in holidays:
+        return False
+    return True
+
+
+def _get_running_capital():
+    """Get current running capital from capital tracker (MAIN system).
+    Falls back to legacy calc if tracker unavailable."""
+    try:
+        from capital_tracker import get_running_capital
+        cap = get_running_capital("MAIN")
+        if cap and cap > 0:
+            return cap
+    except Exception:
+        pass
+    # Legacy fallback
+    if not DB_PATH:
+        return INITIAL_CAPITAL
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        total_pnl = conn.execute(
+            "SELECT COALESCE(SUM(pnl_rupees), 0) FROM trades WHERE status != 'OPEN'"
+        ).fetchone()[0] or 0
+        conn.close()
+        running = INITIAL_CAPITAL + total_pnl
+        return max(running, INITIAL_CAPITAL * 0.2)
+    except Exception:
+        return INITIAL_CAPITAL
+
+
+def calc_position_size(idx, entry_price, sl_price=0, conviction=70, whale_aligned=False):
+    """Risk-based position sizing SCALED by conviction + whale alignment.
+
+    Conviction scaling:
+      90%+ → full size (100% of max_risk)
+      80-89% → 75% of max_risk
+      70-79% → 50% of max_risk
+      55-69% → 25% of max_risk
+
+    Whale alignment bonus (smart money agrees with direction):
+      Uses MAX_RISK_WHALE_ALIGNED_PCT (2.5%) instead of 1.5% base → +67% size
+
+    Result: 90%+ conviction + whale aligned = 2.5% risk (beast mode)
+    Result: 55% conviction + no whale = 0.375% risk (protect capital)
+    """
+    cfg = LOT_CONFIG.get(idx, LOT_CONFIG["NIFTY"])
+    lot_size = cfg["lot_size"]
+
+    if entry_price <= 0:
+        return 1, lot_size, lot_size
+
+    # Conviction multiplier — AGGRESSIVE for ₹10L capital
+    # Goal: deploy 30-60% of capital per trade on high conviction
+    if conviction >= 90:
+        conv_mult = 2.0    # MAX — beast mode (₹60k risk = 6%)
+    elif conviction >= 80:
+        conv_mult = 1.5    # Aggressive (₹45k risk = 4.5%)
+    elif conviction >= 70:
+        conv_mult = 1.2    # Full (₹36k risk = 3.6%)
+    elif conviction >= 60:
+        conv_mult = 1.0    # Standard (₹30k risk = 3%)
+    else:
+        conv_mult = 0.7    # Smaller (₹21k risk = 2.1%)
+
+    running_capital = _get_running_capital()
+    base_risk_pct = MAX_RISK_WHALE_ALIGNED_PCT if whale_aligned else MAX_RISK_PER_TRADE_PCT
+    max_risk = running_capital * base_risk_pct / 100 * conv_mult
+
+    # Risk per unit = entry - SL
+    if sl_price > 0 and sl_price < entry_price:
+        risk_per_unit = entry_price - sl_price
+    else:
+        risk_per_unit = entry_price * 0.15
+
+    risk_per_unit = max(risk_per_unit, 1)
+
+    max_qty_by_risk = int(max_risk / risk_per_unit)
+    # Capital deployment cap: 80% (was 50%) — allows bigger positions
+    max_qty_by_capital = int(running_capital * 0.8 / max(entry_price, 1))
+    max_qty = min(max_qty_by_risk, max_qty_by_capital)
+
+    # Max lots cap: 30 (was 20) — for high conviction trades
+    lots = max(1, min(max_qty // lot_size, 30))
+    qty = lots * lot_size
+
+    return lots, lot_size, qty
+
+
+def ist_now():
+    return datetime.now(IST)
+
+
+def _cleanup_invalid_trades():
+    """Remove trades from weekends/holidays — they should never have existed."""
+    if not DB_PATH:
+        return
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        all_trades = conn.execute("SELECT id, entry_time FROM trades").fetchall()
+        invalid_ids = []
+        for t in all_trades:
+            try:
+                dt = datetime.fromisoformat(t["entry_time"])
+                trade_date = dt.strftime("%Y-%m-%d")
+                holidays = _fetch_nse_holidays()
+                if dt.weekday() >= 5 or trade_date in holidays:
+                    invalid_ids.append(t["id"])
+            except Exception:
+                pass
+        if invalid_ids:
+            placeholders = ",".join(str(i) for i in invalid_ids)
+            conn.execute(f"DELETE FROM trades WHERE id IN ({placeholders})")
+            conn.commit()
+            print(f"[TRADES] Cleaned {len(invalid_ids)} invalid trades (weekends/holidays)")
+        conn.close()
+    except Exception as e:
+        print(f"[TRADES] Cleanup error: {e}")
+
+
+def init_trades_db(db_path):
+    global DB_PATH
+    DB_PATH = db_path
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_time TEXT NOT NULL,
+            exit_time TEXT,
+            idx TEXT NOT NULL,
+            action TEXT NOT NULL,
+            strike INTEGER NOT NULL,
+            expiry TEXT,
+            entry_price REAL NOT NULL,
+            sl_price REAL NOT NULL,
+            original_sl REAL NOT NULL,
+            t1_price REAL NOT NULL,
+            t2_price REAL NOT NULL,
+            current_ltp REAL DEFAULT 0,
+            peak_ltp REAL DEFAULT 0,
+            exit_price REAL DEFAULT 0,
+            lots INTEGER DEFAULT 20,
+            lot_size INTEGER,
+            qty INTEGER,
+            pnl_pts REAL DEFAULT 0,
+            pnl_rupees REAL DEFAULT 0,
+            status TEXT DEFAULT 'OPEN',
+            exit_reason TEXT,
+            probability INTEGER DEFAULT 0,
+            source TEXT,
+            breakeven_active INTEGER DEFAULT 0,
+            trailing_active INTEGER DEFAULT 0,
+            trail_level TEXT DEFAULT '',
+            alerts TEXT DEFAULT '',
+            sl_hit_time TEXT,
+            reversal_price REAL DEFAULT 0,
+            reversal_detected INTEGER DEFAULT 0,
+            oi_at_sl_hit INTEGER DEFAULT 0
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON trades(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_time ON trades(entry_time)")
+
+    # Migrate: add new columns if missing (for old DBs)
+    existing_cols = [row[1] for row in conn.execute("PRAGMA table_info(trades)").fetchall()]
+    migrations = {
+        "original_sl": "REAL DEFAULT 0",
+        "peak_ltp": "REAL DEFAULT 0",
+        "breakeven_active": "INTEGER DEFAULT 0",
+        "trailing_active": "INTEGER DEFAULT 0",
+        "trail_level": "TEXT DEFAULT ''",
+        "alerts": "TEXT DEFAULT ''",
+    }
+    for col, col_type in migrations.items():
+        if col not in existing_cols:
+            try:
+                conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_type}")
+                print(f"[TRADES] Migrated: added column {col}")
+            except Exception:
+                pass
+
+    conn.commit()
+    conn.close()
+    # NOTE: Auto-pruning of old trades DISABLED per user request.
+    # All trade data persists forever — only user can manually delete.
+    print(f"[TRADES] Database initialized at {db_path}")
+    _cleanup_invalid_trades()
+
+
+_wal_enabled = False
+
+def _conn():
+    """SQLite connection with WAL mode (concurrent reads + writes)."""
+    global _wal_enabled
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    if not _wal_enabled:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA cache_size=-256000")  # 256MB cache (2GB RAM upgrade)
+            conn.execute("PRAGMA mmap_size=536870912")  # 512MB memory-mapped I/O
+            conn.execute("PRAGMA busy_timeout=30000")  # 30s lock wait
+            _wal_enabled = True
+        except Exception as e:
+            print(f"[DB] WAL mode init: {e}")
+    return conn
+
+
+class TradeManager:
+    def __init__(self):
+        self._last_verdict_check = 0
+        self._last_sl_check = 0
+        self._cached_verdict = {}
+        self._sl_override_count = {}
+        self._trade_alerts = []
+        # Per-index pending entries (was single slot — caused cross-contamination bug)
+        self._pending_entry = {}          # {idx: {action, strike, entry_price, probability}}
+        self._pending_entry_time = {}     # {idx: timestamp}
+        self._engine_ref = None  # Set by engine for autopsy snapshots
+        self._closed_trade_ids = set()  # Track recently closed to trigger exit snapshot
+
+    def update_verdict_cache(self, verdict):
+        """Called by engine every 30s with latest verdict data."""
+        self._cached_verdict = verdict or {}
+
+    def _handle_reversal_trade(self, t, current_ltp):
+        """Custom exit logic for source='reversal_zone' trades.
+
+        Rules (per user spec):
+          - SL: entry × 0.95 (-5% hard, never overridden)
+          - No fixed T1/T2 — winners ride freely
+          - Trail SL activates at +25% profit
+          - At activation: trail SL = entry × 1.20 (lock +20%)
+          - After activation: trail SL = max(prev_trail, peak × 0.95)
+          - Hits trail SL → TRAIL_EXIT (locked profit)
+          - Hits hard SL → REV_ZONE_SL_HIT (-5% loss)
+        """
+        try:
+            entry = t["entry_price"]
+            sl = t["sl_price"] or round(entry * 0.95, 1)
+            peak = max(t.get("peak_ltp", entry) or entry, current_ltp)
+            trailing_active = bool(t.get("trailing_active", 0))
+
+            if entry <= 0:
+                return
+
+            profit_pct = ((current_ltp - entry) / entry) * 100
+            pnl_pts = round(current_ltp - entry, 2)
+            pnl_rupees = round(pnl_pts * (t.get("qty") or 0), 2)
+
+            # Hard floor: -5% from entry (never moves DOWN)
+            hard_sl = round(entry * 0.95, 1)
+            new_sl = max(sl, hard_sl)
+
+            # Activate trail at +25%
+            if not trailing_active and profit_pct >= 25.0:
+                trailing_active = True
+                # Initial trail floor = entry × 1.20 (lock +20%)
+                init_trail_sl = round(entry * 1.20, 1)
+                if init_trail_sl > new_sl:
+                    new_sl = init_trail_sl
+                print(f"[REV-TRADE] #{t['id']} TRAIL ACTIVATED at +{profit_pct:.1f}% — SL ₹{new_sl} (locked +20%)")
+
+            # Once active, trail at peak × 0.95
+            if trailing_active:
+                peak_trail_sl = round(peak * 0.95, 1)
+                if peak_trail_sl > new_sl:
+                    new_sl = peak_trail_sl
+
+            # Decide exit
+            new_status = "OPEN"
+            exit_price = 0
+            exit_reason = None
+
+            if current_ltp <= new_sl:
+                if trailing_active and new_sl > entry:
+                    new_status = "TRAIL_EXIT"
+                    exit_price = new_sl
+                    locked_pct = round((new_sl / entry - 1) * 100, 1)
+                    exit_reason = (f"REV-ZONE trail exit at ₹{new_sl} — locked +{locked_pct}% "
+                                   f"(peak ₹{peak:.1f}, +{round((peak/entry-1)*100, 1)}%)")
+                else:
+                    new_status = "REV_ZONE_SL_HIT"
+                    exit_price = new_sl
+                    exit_reason = (f"REV-ZONE hard SL hit at ₹{new_sl} ({profit_pct:.1f}%) — "
+                                   f"-5% capital preservation. Entry ₹{entry}.")
+
+            # Persist
+            conn = _conn()
+            try:
+                if new_status != "OPEN":
+                    final_pnl = round((exit_price - entry) * (t.get("qty") or 0), 2)
+                    conn.execute("""
+                        UPDATE trades SET
+                            status=?, exit_price=?, exit_time=?, exit_reason=?,
+                            pnl_pts=?, pnl_rupees=?, peak_ltp=?, sl_price=?,
+                            trailing_active=?, breakeven_active=?
+                        WHERE id=? AND status='OPEN'
+                    """, (
+                        new_status, exit_price, ist_now().isoformat(), exit_reason,
+                        round(exit_price - entry, 2), final_pnl, peak, new_sl,
+                        1 if trailing_active else 0,
+                        1 if (trailing_active or new_sl >= entry) else 0,
+                        t["id"]
+                    ))
+                    conn.commit()
+                    print(f"[REV-TRADE] CLOSED #{t['id']} {t['idx']} {t['action']} {t['strike']}: "
+                          f"₹{final_pnl:+,.0f} ({new_status})")
+                    # Capital tracker
+                    try:
+                        from capital_tracker import record_trade_pnl
+                        desc = f"{t['idx']} {t['action']} {t['strike']} @ ₹{exit_price} ({new_status})"
+                        record_trade_pnl("MAIN", final_pnl, trade_id=t["id"], description=desc)
+                    except Exception:
+                        pass
+                else:
+                    # Still open — update SL, peak, current
+                    conn.execute("""
+                        UPDATE trades SET
+                            current_ltp=?, peak_ltp=?, pnl_pts=?, pnl_rupees=?,
+                            sl_price=?, trailing_active=?
+                        WHERE id=?
+                    """, (
+                        current_ltp, peak, pnl_pts, pnl_rupees,
+                        new_sl, 1 if trailing_active else 0, t["id"]
+                    ))
+                    conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[REV-TRADE] handler error trade={t.get('id')}: {e}")
+
+    def _get_strike_30min_trend(self, idx, strike, opt, current_ltp):
+        """Analyze last 30 minutes of LTP for this strike's option type.
+
+        Used to decide early exit on a fresh negative position: if strike
+        is clearly trending DOWN, no point holding to -5%; cut at -3%.
+
+        Returns: 'DOWN_HARD' | 'DOWN' | 'FLAT' | 'UP' | 'UNKNOWN'
+        """
+        try:
+            if not self._engine_ref or not hasattr(self._engine_ref, "ltp_history"):
+                return "UNKNOWN"
+
+            opt_upper = opt.upper()  # 'CE' or 'PE'
+            history = self._engine_ref.ltp_history.get((idx, strike, opt_upper), [])
+            if len(history) < 6:
+                return "UNKNOWN"  # Need at least 6 ticks for trend
+
+            # Filter to last 30 minutes
+            from datetime import datetime as _dt
+            cutoff = ist_now() - timedelta(minutes=30)
+            recent = [
+                h for h in history
+                if h.get("ltp", 0) > 0
+                and _dt.fromisoformat(h["t"]) >= cutoff
+            ]
+            if len(recent) < 6:
+                return "UNKNOWN"
+
+            ltps = [h["ltp"] for h in recent]
+            first_third = sum(ltps[: len(ltps) // 3]) / max(1, len(ltps) // 3)
+            last_third = sum(ltps[-len(ltps) // 3 :]) / max(1, len(ltps) // 3)
+
+            if first_third <= 0:
+                return "UNKNOWN"
+
+            change_pct = ((last_third - first_third) / first_third) * 100
+
+            if change_pct <= -3.0:
+                return "DOWN_HARD"  # Strong drop in last 30 min
+            elif change_pct <= -0.8:
+                return "DOWN"
+            elif change_pct >= 0.8:
+                return "UP"
+            else:
+                return "FLAT"
+        except Exception as e:
+            print(f"[TREND] {idx} {strike} {opt}: {e}")
+            return "UNKNOWN"
+
+    def _engines_favor_hold(self, trade, idx, action):
+        """Check if engines still support the trade direction.
+        Returns True if engines say HOLD (don't exit at SL)."""
+        v = self._cached_verdict.get(idx.lower(), {})
+        if not v:
+            return False  # No data = don't override, let SL hit
+
+        # Max 3 SL overrides per trade (safety)
+        trade_id = trade.get("id", 0)
+        override_count = self._sl_override_count.get(trade_id, 0)
+        if override_count >= 3:
+            return False  # Already overridden 3 times, let SL hit now
+
+        v_action = v.get("action", "")
+        win_pct = v.get("winProbability", 0)
+
+        # Engines must strongly agree with our trade direction
+        # AND probability must be >55% (not just barely above 50%)
+        if v_action == action and win_pct >= 55:
+            self._sl_override_count[trade_id] = override_count + 1
+            return True
+
+        return False
+
+    def _detect_trade_context(self, trade, idx, action, chain, current_ltp):
+        """Detect if trade is in 'reversal zone' (OI against us) or 'stop hunt' (price dipped+bouncing).
+        Returns: 'REVERSAL' | 'STOP_HUNT' | 'NORMAL'
+
+        REVERSAL → tighten SL to 10% (OI says we're wrong, exit fast)
+        STOP_HUNT → widen SL to 20% (temporary dip, give room to recover)
+        NORMAL → default 15% SL
+        """
+        strike = trade["strike"]
+        entry = trade["entry_price"]
+        sd = chain.get(strike, {})
+
+        # ── STOP HUNT: price dipped 10%+ then recovered 5%+ ──
+        peak = max(trade.get("peak_ltp", entry), current_ltp)
+        price_dip_pct = (entry - current_ltp) / entry * 100 if entry > 0 else 0
+
+        # Track min price in memory
+        if not hasattr(self, '_trade_min_ltp'):
+            self._trade_min_ltp = {}
+        tid = trade["id"]
+        prev_min = self._trade_min_ltp.get(tid, current_ltp)
+        if current_ltp < prev_min:
+            self._trade_min_ltp[tid] = current_ltp
+            prev_min = current_ltp
+
+        # Stop hunt: went down 10%+ from entry, then recovered 5%+ from bottom
+        if prev_min < entry * 0.90 and current_ltp > prev_min * 1.05:
+            return "STOP_HUNT"
+
+        # ── REVERSAL: OI building against our direction ──
+        if "CE" in action:
+            # CE trade → watch for PE premium rising, CE falling, PE OI surging
+            ce_oi = sd.get("ce_oi", 0)
+            pe_oi = sd.get("pe_oi", 0)
+            pe_ltp = sd.get("pe_ltp", 0)
+            # PE premium > CE premium (bears winning at this strike)
+            if pe_ltp > current_ltp * 1.15 and pe_oi > ce_oi * 1.2:
+                return "REVERSAL"
+        elif "PE" in action:
+            # PE trade → watch for CE premium rising, PE falling
+            ce_oi = sd.get("ce_oi", 0)
+            pe_oi = sd.get("pe_oi", 0)
+            ce_ltp = sd.get("ce_ltp", 0)
+            if ce_ltp > current_ltp * 1.15 and ce_oi > pe_oi * 1.2:
+                return "REVERSAL"
+
+        return "NORMAL"
+
+    def log_trade(self, idx, action, strike, entry_price, probability, source="verdict", expiry="",
+                  straddle=0, big_wall=0, whale_aligned=False, engine=None):
+        """Log a new trade entry with ATR-based realistic SL/targets (A6).
+        whale_aligned=True → uses larger position (smart money agrees with direction).
+
+        Reversal-zone trades (source='reversal_zone') skip ATR — use hard -5% SL.
+        Their T1/T2 are placeholders only; exit logic is handled by
+        _handle_reversal_trade (trail-only at +25%).
+        """
+        if entry_price <= 0:
+            return None
+
+        # ── REVERSAL ZONE: skip ATR, use hard -5% SL + placeholder T1/T2 ──
+        if source == "reversal_zone":
+            sl_price = round(entry_price * 0.95, 1)        # -5% hard
+            t1_price = round(entry_price * 1.25, 1)        # +25% (trail activation marker)
+            t2_price = round(entry_price * 1.50, 1)        # +50% placeholder (no fixed exit)
+            print(f"[TRADE] REVERSAL ZONE entry: SL ₹{sl_price} (-5%) "
+                  f"T1 ₹{t1_price} (trail-activate) T2 ₹{t2_price} (placeholder)")
+            # Skip rest of ATR computation; jump directly to position sizing logic.
+            # Set targets to mimic ATR result so downstream code doesn't break.
+            targets = {
+                "sl": sl_price, "t1": t1_price, "t2": t2_price,
+                "sl_pct": 5.0, "t1_pct": 25.0, "t2_pct": 50.0,
+                "method": "reversal_zone", "vol_multiplier": 1.0,
+            }
+            # Continue to position sizing below
+        else:
+            # ── ATR-based targets (A6) — replaces fixed +30%/+60% ──
+            targets = None
+
+        side = "CE" if "CE" in (action or "") else "PE"
+        if source != "reversal_zone" and engine is not None:
+            try:
+                from atr_targets import get_realistic_targets
+                targets = get_realistic_targets(engine, idx, strike, side, entry_price)
+            except Exception as _e:
+                print(f"[TRADE] ATR target calc failed, using fallback: {_e}")
+
+        if targets and targets.get("method") in ("atr", "reversal_zone"):
+            sl_price = targets["sl"]
+            t1_price = targets["t1"]
+            t2_price = targets["t2"]
+            method_label = "ATR" if targets["method"] == "atr" else "REVERSAL_ZONE"
+            print(f"[TRADE] {method_label} targets: SL ₹{sl_price} (-{targets['sl_pct']}%) "
+                  f"T1 ₹{t1_price} (+{targets['t1_pct']}%) T2 ₹{t2_price} (+{targets['t2_pct']}%)")
+        else:
+            # Fallback when ATR-targets unavailable. Aligned with user spec:
+            #   SL  = -5% max loss
+            #   T1  = +5% (achievable, locks profit)
+            #   T2  = +12% (mid 10-15% target range)
+            sl_price = round(entry_price * 0.95, 1)   # -5% (was -15% to -20%)
+            t1_price = round(entry_price * 1.05, 1)   # +5% (was +20%)
+            t2_price = round(entry_price * 1.12, 1)   # +12% (was +40%)
+            print(f"[TRADE] Fallback targets (no ATR): SL ₹{sl_price} (-5%) "
+                  f"T1 ₹{t1_price} (+5%) T2 ₹{t2_price} (+12%)")
+
+        # Position size SCALED by conviction + whale alignment + ADAPTIVE TIER (A5)
+        try:
+            from risk_tier_manager import get_tier_qty_multiplier
+            tier_mult = get_tier_qty_multiplier()
+        except Exception:
+            tier_mult = 1.0
+
+        lots, lot_size, qty = calc_position_size(
+            idx, entry_price, sl_price,
+            conviction=probability,
+            whale_aligned=whale_aligned,
+        )
+        if tier_mult != 1.0:
+            qty = max(lot_size, int(qty * tier_mult))
+            lots = qty // lot_size
+
+        now = ist_now()
+        conn = _conn()
+        cursor = conn.execute("""
+            INSERT INTO trades (entry_time, idx, action, strike, expiry,
+                entry_price, sl_price, original_sl, t1_price, t2_price,
+                current_ltp, peak_ltp,
+                lots, lot_size, qty, status, probability, source,
+                breakeven_active, trailing_active, trail_level, alerts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, 0, 0, '', '')
+        """, (
+            now.isoformat(), idx, action, strike, expiry,
+            entry_price, sl_price, sl_price, t1_price, t2_price,
+            entry_price, entry_price,
+            lots, lot_size, qty,
+            probability, source,
+        ))
+        trade_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        capital_used = round(entry_price * qty)
+        risk_amount = round((entry_price - sl_price) * qty)
+        print(f"[TRADE] NEW: {action} {idx} {strike} @ {entry_price} | SL: {sl_price} | T1: {t1_price} | T2: {t2_price} | {lots}L x {lot_size} = {qty} qty | Capital: ₹{capital_used:,} | Risk: ₹{risk_amount:,} | Prob: {probability}%")
+
+        # Store alert for frontend notification
+        alert = {
+            "type": "TRADE_ENTRY",
+            "time": now.strftime("%I:%M:%S %p"),
+            "message": f"🚀 NEW TRADE: {action} {idx} {strike} @ ₹{entry_price}",
+            "details": f"SL: ₹{sl_price} | T1: ₹{t1_price} | T2: ₹{t2_price} | {lots} lots ({qty} qty) | Risk: ₹{risk_amount:,}",
+            "tradeId": trade_id,
+            "idx": idx,
+            "action": action,
+            "strike": strike,
+            "entry": entry_price,
+            "probability": probability,
+        }
+        self._trade_alerts.append(alert)
+        self._trade_alerts = self._trade_alerts[-50:]  # Keep last 50
+
+        # Auto-capture ENTRY snapshot (ensures no trade missed)
+        # Previously capture was called by engine in specific paths — some
+        # paths missed it → 27% of trades had no snapshots. Now centralized.
+        if self._engine_ref and trade_id:
+            try:
+                from trade_autopsy import capture_trade_snapshot
+                capture_trade_snapshot(self._engine_ref, trade_id, idx, "ENTRY")
+            except Exception as e:
+                print(f"[AUTOPSY] ENTRY snapshot failed for trade #{trade_id}: {e}")
+
+        # Invalidate cache so new trade appears instantly in /api/trades/open
+        try:
+            from api_cache import cache_invalidate_prefix
+            cache_invalidate_prefix("trades_")
+        except Exception:
+            pass
+
+        # Structured log for observability (alerting, analytics)
+        try:
+            from structured_logger import log
+            log.info(
+                "trade_opened",
+                trade_id=trade_id,
+                idx=idx,
+                action=action,
+                strike=int(strike),
+                entry_price=float(entry_price),
+                sl_price=float(sl_price),
+                t1_price=float(t1_price),
+                t2_price=float(t2_price),
+                qty=int(qty),
+                lots=int(lots),
+                probability=int(probability),
+                source=source,
+                whale_aligned=bool(whale_aligned),
+                capital_used=float(round(capital_used, 2)) if capital_used else None,
+            )
+        except Exception:
+            pass
+
+        return trade_id
+
+    def check_and_update(self, chains, prices, spot_tokens, token_to_info):
+        """Smart trade management: breakeven, trailing SL, alerts, early exit."""
+        now = ist_now()
+
+        # ── EOD AUTO-CLOSE: Close ALL open trades at 3:25 PM ──
+        if now.hour == 15 and now.minute >= 25:
+            self._close_all_open("EOD_CLOSE", "Market closing — auto-closed at 3:25 PM. Options are intraday only.")
+            return
+
+        # ── STALE TRADE CLEANUP: Close trades from previous days ──
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        open_trades = conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
+        conn.close()
+
+        today = now.strftime("%Y-%m-%d")
+        for trade in open_trades:
+            t = dict(trade)
+            entry_date = t["entry_time"][:10] if t.get("entry_time") else ""
+            if entry_date and entry_date != today:
+                # Trade from previous day — should not be open
+                conn2 = _conn()
+                current_ltp = 0
+                chain = chains.get(t["idx"], {})
+                strike_data = chain.get(t["strike"], {})
+                opt = "ce" if "CE" in t["action"] else "pe"
+                current_ltp = strike_data.get(f"{opt}_ltp", 0)
+
+                exit_price = current_ltp if current_ltp > 0 else t["entry_price"]
+                pnl_pts = round(exit_price - t["entry_price"], 2)
+                pnl_rupees = round(pnl_pts * t["qty"], 2) + (t.get("pnl_rupees", 0) or 0)
+
+                conn2.execute("""
+                    UPDATE trades SET status='STALE_CLOSE', exit_price=?, exit_time=?,
+                        pnl_pts=?, pnl_rupees=?, exit_reason=?
+                    WHERE id=? AND status='OPEN'
+                """, (exit_price, now.isoformat(), pnl_pts, pnl_rupees,
+                      f"Stale trade from {entry_date} — auto-closed. Options must close same day.",
+                      t["id"]))
+                conn2.commit()
+                conn2.close()
+                print(f"[TRADE] STALE CLOSE: {t['action']} {t['idx']} {t['strike']} from {entry_date} — PnL: ₹{pnl_rupees:+,.0f}")
+                continue
+
+        # Reload after cleanup
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        open_trades = conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
+        conn.close()
+
+        for trade in open_trades:
+            t = dict(trade)
+
+            # Idempotent: re-check status before processing
+            conn_check = _conn()
+            current_status = conn_check.execute("SELECT status FROM trades WHERE id=?", (t["id"],)).fetchone()
+            conn_check.close()
+            if not current_status or current_status[0] != "OPEN":
+                continue  # Already closed by another thread
+            idx = t["idx"]
+            strike = t["strike"]
+            action = t["action"]
+
+            chain = chains.get(idx, {})
+            strike_data = chain.get(strike, {})
+            opt = "ce" if "CE" in action else "pe"
+            current_ltp = strike_data.get(f"{opt}_ltp", 0)
+
+            # ── REVERSAL ZONE TRADES: custom exit logic, skip standard stack ──
+            # Per user spec for source='reversal_zone' trades:
+            #   • Hard SL at entry × 0.95 (-5%, no overrides ever)
+            #   • No fixed T1/T2 — let winners run
+            #   • Trail SL activates at +25% profit (locks +20% baseline)
+            #   • After activation, trail SL = peak × 0.95 (5% give-back from peak)
+            if t.get("source") == "reversal_zone" and current_ltp > 0:
+                self._handle_reversal_trade(t, current_ltp)
+                continue
+
+            if current_ltp <= 0:
+                continue
+
+            entry = t["entry_price"]
+            sl = t["sl_price"]
+            t1 = t["t1_price"]
+            t2 = t["t2_price"]
+            peak = max(t.get("peak_ltp", entry), current_ltp)
+            breakeven_active = t.get("breakeven_active", 0)
+            trailing_active = t.get("trailing_active", 0)
+
+            pnl_pts = round(current_ltp - entry, 2)
+            pnl_rupees = round(pnl_pts * t["qty"], 2)
+            profit_pct = round((current_ltp - entry) / entry * 100, 1) if entry > 0 else 0
+
+            new_status = "OPEN"
+            exit_reason = None
+            exit_price = 0
+            new_sl = sl
+            alerts_list = []
+            trail_level = t.get("trail_level", "")
+
+            # ── BUYER MODE thresholds (loaded EARLY — used by adaptive SL below) ──
+            # BUG FIX 2026-05-08: _bm was used at line 836 before being defined at
+            # line 864, causing NameError → silent check_and_update failure → trade
+            # current_ltp/peak/pnl frozen at entry. Moved load up here.
+            try:
+                from buyer_mode import get_thresholds
+                _bm = get_thresholds()
+            except Exception:
+                _bm = {
+                    "mode": "HEDGER", "breakeven_pct": 2.0, "trail_giveback_pct": 50.0,
+                    "tight_trail_giveback_pct": 25.0, "tight_trail_trigger_pct": 35.0,
+                    "reversal_exit_pct": -5.0, "reversal_exit_min_hold_sec": 600,
+                    "early_neg_exit_pct": -3.0,
+                    "conviction_exit_enabled": True, "conviction_exit_threshold": 50,
+                    "conviction_exit_min_profit": 5,
+                    "post_t2_lock_t2": False,
+                }
+
+            # ══════════════════════════════════════════════
+            # PROFIT-LOCK TRAILING SL — locks gains as profit grows.
+            # Only fires when trade is in profit (≥+3%).
+            # ══════════════════════════════════════════════
+            try:
+                from profit_trailing_sl import update_main_trail
+                trail_result = update_main_trail(t, current_ltp)
+                if trail_result and trail_result.get("new_sl", 0) > new_sl:
+                    new_sl = trail_result["new_sl"]
+                    alerts_list.append(
+                        f"PROFIT_TRAIL: profit {trail_result['profit_pct']:+.1f}% "
+                        f"→ stage +{trail_result['stage_threshold']}% "
+                        f"→ SL ₹{new_sl} (locked {trail_result['locked_pct']:+.1f}%)"
+                    )
+                    if new_sl >= entry and not breakeven_active:
+                        breakeven_active = 1
+                        trail_level = "PROFIT_TRAIL_BE"
+            except Exception as _e:
+                pass
+
+            # ══════════════════════════════════════════════
+            # TIME-DECAY SL — caps further loss based on hold time.
+            # Cuts losers fast: 0-5min -10%, 5-15min -8%, 15-30min -5%,
+            # 30+min -3%. Solves "loser drifts to -12% before SL hits".
+            # Works alongside Profit-Trail (max() merge).
+            # ══════════════════════════════════════════════
+            try:
+                from time_decay_sl import update_main_decay
+                decay_result = update_main_decay(t, current_ltp)
+                if decay_result and decay_result.get("new_sl", 0) > new_sl:
+                    new_sl = decay_result["new_sl"]
+                    alerts_list.append(
+                        f"TIME_DECAY: hold {decay_result['hold_minutes']:.1f}m "
+                        f"→ stage ≤{decay_result['stage_minutes']}m "
+                        f"→ SL ₹{new_sl} (cap {decay_result['cap_pct']:+.1f}%)"
+                    )
+            except Exception as _e:
+                pass
+
+            # ══════════════════════════════════════════════
+            # ADAPTIVE SL: tighten on reversal, widen on stop-hunt
+            # Only adjusts BEFORE breakeven (once in profit, trailing takes over)
+            #
+            # ⚠ CLASH GUARD: Profit-Trail / Time-Decay may have already raised
+            # `new_sl` above the original DB sl. If so, STOP_HUNT widening would
+            # NULLIFY their protection. So skip widening when new systems active.
+            # ══════════════════════════════════════════════
+            sl_raised_by_new_system = (new_sl > sl)  # sl = original DB value
+            if not breakeven_active:
+                context = self._detect_trade_context(t, idx, action, chain, current_ltp)
+                original_sl = t.get("original_sl", sl) or sl
+                # MAX-LOSS FLOOR: SL never looser than -5% (BUYER) / -3% (HEDGER).
+                # Both REVERSAL tightening and STOP_HUNT widening must respect this.
+                max_loss_pct = abs(_bm.get("reversal_exit_pct", -5.0)) / 100.0
+                max_loss_floor = round(entry * (1 - max_loss_pct), 1)  # e.g., 95.0 for 100 entry
+
+                if context == "REVERSAL":
+                    # OI flipped against us → tight SL = max(entry-5%, current logic).
+                    # Was entry*0.90 (-10%); now respects max_loss cap.
+                    tight_sl = max_loss_floor  # never looser than -5%
+                    if tight_sl > new_sl:  # Only tighten
+                        new_sl = tight_sl
+                        trail_level = "OI_REVERSAL_TIGHT"
+                        alerts_list.append(f"OI REVERSAL — SL tightened to max-loss floor ₹{new_sl}.")
+                elif context == "STOP_HUNT" and not sl_raised_by_new_system:
+                    # Price hunted — widen SL slightly but NEVER past max-loss cap.
+                    # Was entry*0.80 (-20%); now capped at max_loss_floor.
+                    wide_sl = max_loss_floor  # never looser than -5%
+                    if wide_sl < new_sl and current_ltp > wide_sl:
+                        new_sl = wide_sl
+                        trail_level = "STOP_HUNT_CAPPED"
+                        alerts_list.append(f"STOP HUNT detected — SL set to max-loss floor ₹{new_sl} (was wider, capped).")
+                elif context == "STOP_HUNT" and sl_raised_by_new_system:
+                    print(f"[TRADE] STOP_HUNT detected but skipping — Profit-Trail/Time-Decay raised SL to ₹{new_sl}")
+
+            # ══════════════════════════════════════════════
+            # SMART SL MANAGEMENT
+            # ══════════════════════════════════════════════
+            # _bm already loaded at top of trade-loop iteration (post bugfix 2026-05-08).
+
+            # STAGE 0: CONVICTION DROP + PROFIT → Early breakeven
+            # (BUYER MODE disables this — pure price-based management)
+            cached_verdict = self._cached_verdict.get(idx.lower(), {})
+            our_side = "bullPct" if "CE" in action else "bearPct"
+            current_conviction = cached_verdict.get(our_side, 50)
+
+            if (_bm.get("conviction_exit_enabled", True)
+                    and not breakeven_active
+                    and profit_pct > _bm.get("conviction_exit_min_profit", 5)
+                    and current_conviction < _bm.get("conviction_exit_threshold", 50)):
+                breakeven_active = 1
+                new_sl = entry
+                trail_level = "CONVICTION_BE"
+                alerts_list.append(f"EARLY BREAKEVEN [{_bm['mode']}]: Conviction dropped to {current_conviction}% but profit +{profit_pct:.0f}%. SL moved to entry ₹{entry}.")
+                print(f"[TRADE] EARLY BREAKEVEN (conviction): {action} {idx} {strike} — conviction {current_conviction}%, profit +{profit_pct:.0f}%")
+
+            # STAGE 1: BREAKEVEN — HEDGER: +2% / BUYER: +20%
+            be_threshold = _bm.get("breakeven_pct", 2.0)
+            if not breakeven_active and profit_pct >= be_threshold:
+                breakeven_active = 1
+                new_sl = entry
+                trail_level = "BREAKEVEN"
+                alerts_list.append(f"BREAKEVEN [{_bm['mode']}] activated at +{profit_pct:.1f}% (threshold {be_threshold}%) — SL moved to entry ₹{entry}")
+                print(f"[TRADE] BREAKEVEN [{_bm['mode']}]: {action} {idx} {strike} — SL moved to entry ₹{entry} (was ₹{sl})")
+
+            # STAGE 1.5: REVERSAL EXIT — MAX LOSS CAP at -5% (BUYER mode default)
+            #
+            # Two-tier protection:
+            #  (a) EARLY NEGATIVE EXIT: position negative + 30-min strike trend is
+            #      DOWN → don't wait for full -5%, exit at -3% (early_neg_exit_pct).
+            #      Saves 2% on bad-direction entries.
+            #  (b) HARD CAP: regardless of trend, never exceed reversal_exit_pct
+            #      (-5% in BUYER mode). User's explicit requirement: max loss 5%.
+            try:
+                entry_time = datetime.fromisoformat(t["entry_time"])
+                hold_sec = (ist_now() - entry_time).total_seconds()
+            except Exception:
+                hold_sec = 0
+
+            rev_pct = _bm.get("reversal_exit_pct", -3.0)              # Hard max loss
+            early_neg_pct = _bm.get("early_neg_exit_pct", -3.0)        # Early exit when trend confirms
+            rev_min_hold = _bm.get("reversal_exit_min_hold_sec", 600)
+
+            if not breakeven_active:
+                # Tier (b) FIRST: HARD MAX-LOSS CAP — fires IMMEDIATELY (no min hold).
+                # Capital preservation: in fast-moving markets, position could blow
+                # through -5% to -15% in <2 min. Must fire on first tick at -5%.
+                # This OVERRIDES every other system (engines-hold, STOP_HUNT, etc.).
+                if profit_pct <= rev_pct:
+                    new_status = "REVERSAL_EXIT"
+                    exit_price = current_ltp
+                    exit_reason = f"HARD MAX-LOSS CAP [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — capital preservation, no overrides."
+                    print(f"[TRADE] MAX-LOSS EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}% after {int(hold_sec/60)}min)")
+
+                # Tier (a): early exit on confirmed downtrend (saves 2%, requires hold)
+                # Only checks if hard cap didn't already fire AND we've held >= rev_min_hold.
+                elif hold_sec >= rev_min_hold and profit_pct <= early_neg_pct and profit_pct > rev_pct:
+                    trend = self._get_strike_30min_trend(idx, strike, opt, current_ltp)
+                    if trend in ("DOWN", "DOWN_HARD"):
+                        new_status = "REVERSAL_EXIT"
+                        exit_price = current_ltp
+                        exit_reason = (
+                            f"Early neg exit [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — "
+                            f"30-min trend {trend}, no recovery likely. Held {int(hold_sec/60)}min."
+                        )
+                        print(f"[TRADE] EARLY-NEG EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}%, trend={trend})")
+
+            # STAGE 2: TRAILING SL — HEDGER: 50%/25% give-back / BUYER: 25%/15% give-back
+            if breakeven_active and new_status == "OPEN":
+                base_trail_pct = _bm.get("trail_giveback_pct", 50.0) / 100.0
+                tight_trail_pct = _bm.get("tight_trail_giveback_pct", 25.0) / 100.0
+                tight_trigger = _bm.get("tight_trail_trigger_pct", 35.0)
+
+                # Base trail
+                trail_from_peak = round(peak - (peak - entry) * base_trail_pct)
+                if trail_from_peak > new_sl and trail_from_peak > entry:
+                    new_sl = trail_from_peak
+                    trailing_active = 1
+
+                # Tight trail (when in big profit)
+                if profit_pct >= tight_trigger:
+                    tight_trail = round(peak - (peak - entry) * tight_trail_pct)
+                    if tight_trail > new_sl:
+                        new_sl = tight_trail
+                        lock_pct = round((1 - tight_trail_pct) * 100)
+                        trail_level = f"TRAIL_{lock_pct}"
+                        alerts_list.append(f"Tight trail [{_bm['mode']}]: locking {lock_pct}% profit, SL at ₹{new_sl}")
+                elif profit_pct >= 25:
+                    trail_level = "TRAIL_BASE"
+
+            # ══════════════════════════════════════════════
+            # POST-T2 TRAILING — once T2 crossed, lock T2 as new floor SL.
+            # User's spec: "T2 cross karne ke baad agar position plus mein
+            # chalri hai toh trailing max SL will be T2 plus trailing".
+            #
+            # Logic:
+            #   1. Peak reached T2 → SL minimum = T2 (lock 10-15% gain)
+            #   2. Each additional +2% above T2 in peak → SL ratchets +2%
+            #   Example: T2=1240, peak=1290 (+4% over T2) → SL = 1240+2% = 1265
+            #
+            # This replaces the % give-back trail above for post-T2 territory
+            # because we want to RIDE winners, not give back 25-30% to the trail.
+            # ══════════════════════════════════════════════
+            if (_bm.get("post_t2_lock_t2", False)
+                    and t2 > entry
+                    and peak >= t2
+                    and new_status == "OPEN"):
+                # Lock T2 as floor
+                if t2 > new_sl:
+                    new_sl = t2
+                    if not breakeven_active:
+                        breakeven_active = 1  # T2 is automatic BE+
+                    trail_level = "POST_T2_LOCK"
+                    alerts_list.append(
+                        f"POST-T2 LOCK: Peak hit T2 ₹{t2:.1f} — SL floor locked at T2. "
+                        f"Position now risk-free with +{round((t2/entry-1)*100, 1)}% guaranteed."
+                    )
+
+                # Ratchet: each +2% above T2 (in peak) → SL raised +2%
+                over_t2_pct = ((peak - t2) / entry) * 100
+                if over_t2_pct >= 2.0:
+                    ratchet_steps = int(over_t2_pct / 2.0)
+                    ratcheted_sl = round(t2 + (entry * 0.02 * ratchet_steps), 1)
+                    if ratcheted_sl > new_sl:
+                        new_sl = ratcheted_sl
+                        locked_above_t2 = ratchet_steps * 2
+                        trail_level = f"POST_T2_RATCHET_+{locked_above_t2}"
+                        alerts_list.append(
+                            f"POST-T2 RATCHET: Peak +{round(over_t2_pct,1)}% above T2 → "
+                            f"SL ₹{new_sl:.1f} (locked T2+{locked_above_t2}%)."
+                        )
+
+            # ══════════════════════════════════════════════
+            # EXIT CONDITIONS (with engine override)
+            # ══════════════════════════════════════════════
+
+            # Check SL zone (within 3% of SL)
+            sl_zone = current_ltp <= new_sl * 1.03
+            sl_breached = current_ltp <= new_sl
+
+            if sl_breached:
+                if breakeven_active and new_sl >= entry:
+                    exit_price = new_sl
+                    final_pnl = round((exit_price - entry) * t["qty"], 2)
+                    if exit_price > entry:
+                        new_status = "TRAIL_EXIT"
+                        exit_reason = f"Trailing SL hit at ₹{new_sl} — locked profit ₹{final_pnl:+,.0f} ({round((new_sl/entry-1)*100)}% gain). Peak was ₹{peak:.1f}"
+                    else:
+                        new_status = "BREAKEVEN_EXIT"
+                        exit_reason = f"Breakeven exit at ₹{entry} — no loss. Price reached ₹{peak:.1f} (+{round((peak/entry-1)*100)}%) then reversed"
+                elif self._engines_favor_hold(t, idx, action) and not sl_raised_by_new_system:
+                    # ENGINES SAY HOLD + SL still at original (un-tightened).
+                    # OLD behavior: extend to -15% hard stop ← REMOVED (violated max-loss cap).
+                    # NEW behavior: hard cap is REVERSAL_EXIT block (fires at -5%
+                    # IMMEDIATELY, no min-hold). By the time we get here, max loss
+                    # has already been enforced upstream — so just exit at SL now,
+                    # no hard_stop extension allowed.
+                    max_loss_floor_pct = abs(_bm.get("reversal_exit_pct", -5.0))
+                    new_status = "SL_HIT"
+                    exit_price = new_sl
+                    exit_reason = (
+                        f"SL hit at ₹{new_sl} (loss {round((1-new_sl/entry)*100, 1)}%). "
+                        f"Engines favor hold but max-loss cap ({max_loss_floor_pct}%) "
+                        f"prevents extension. Entry: ₹{entry}."
+                    )
+                    print(f"[TRADE] SL_HIT (engines-hold respected, no extension): {action} {idx} {strike} @ ₹{new_sl}")
+                elif self._engines_favor_hold(t, idx, action) and sl_raised_by_new_system:
+                    # SL was tightened by Profit-Trail or Time-Decay — RESPECT it.
+                    # Don't extend to -15%. Exit at the tightened SL right now.
+                    new_status = "SL_HIT"
+                    exit_price = new_sl
+                    exit_reason = (f"Stoploss hit at ₹{new_sl} (entry ₹{entry}, "
+                                   f"loss {round((1-new_sl/entry)*100, 1)}%). "
+                                   f"Tightened by Profit-Trail/Time-Decay — engines-favor-hold "
+                                   f"override skipped to respect tighter SL.")
+                    print(f"[TRADE] SL hit at tightened ₹{new_sl} — engines-hold override "
+                          f"skipped (new SL systems active)")
+                else:
+                    new_status = "SL_HIT"
+                    exit_price = new_sl
+                    exit_reason = f"Stoploss hit at ₹{new_sl} (entry ₹{entry}, loss {round((1-new_sl/entry)*100)}%). Original SL was ₹{t.get('original_sl', sl)}"
+
+            elif sl_zone and not breakeven_active:
+                # Near SL zone — check if engines say hold
+                if self._engines_favor_hold(t, idx, action):
+                    alerts_list.append(f"NEAR SL (₹{current_ltp:.1f} vs SL ₹{new_sl}) but engines still favor {action}. HOLDING. Will exit at entry if reversal fails.")
+                else:
+                    alerts_list.append(f"WARNING: Price ₹{current_ltp:.1f} approaching SL ₹{new_sl}. Engines NOT supporting — prepare for SL exit.")
+
+            # Check T1 — PARTIAL PROFIT BOOKING (HEDGER only)
+            # BUYER MODE: skip partial book, just activate BE and ride full position to T2
+            elif current_ltp >= t1 and not breakeven_active:
+                breakeven_active = 1
+                new_sl = entry  # Move SL to entry (zero loss on remaining)
+
+                if _bm.get("t1_partial_booking", True):
+                    # HEDGER: book 50% qty at T1
+                    partial_pct = _bm.get("t1_partial_pct", 50) / 100.0
+                    booked_qty = int(t["qty"] * partial_pct)
+                    booked_pnl = round((t1 - entry) * booked_qty, 2)
+                    remaining_qty = t["qty"] - booked_qty
+
+                    trail_level = "T1_PARTIAL"
+                    alerts_list.append(f"T1 HIT [{_bm['mode']}] ₹{t1} — BOOKED {int(partial_pct*100)}% ({booked_qty} qty) profit ₹{booked_pnl:+,.0f}. Trailing {remaining_qty} qty to T2.")
+                    print(f"[TRADE] T1 PARTIAL [{_bm['mode']}]: {action} {idx} {strike} — booked {booked_qty} qty @ ₹{t1}, trailing {remaining_qty}")
+
+                    conn2 = _conn()
+                    conn2.execute("UPDATE trades SET qty=?, pnl_rupees=pnl_rupees+? WHERE id=?",
+                                  (remaining_qty, booked_pnl, t["id"]))
+                    conn2.commit()
+                    conn2.close()
+
+                    self._trade_alerts.append({
+                        "type": "PARTIAL_BOOK",
+                        "time": ist_now().strftime("%I:%M:%S %p"),
+                        "message": f"💰 T1 HIT [{_bm['mode']}]: Booked {int(partial_pct*100)}% profit on {action} {idx} {strike}",
+                        "details": f"Booked ₹{booked_pnl:+,.0f} ({booked_qty} qty @ ₹{t1}). Trailing {remaining_qty} qty to T2 ₹{t2}",
+                    })
+                    self._trade_alerts = self._trade_alerts[-50:]
+                else:
+                    # BUYER MODE: NO partial booking — full ride to T2
+                    trail_level = "T1_RIDE"
+                    alerts_list.append(f"T1 HIT [{_bm['mode']}] ₹{t1} (+{round((t1/entry-1)*100)}%) — RIDING FULL POSITION to T2 ₹{t2}. SL at entry. No partial book.")
+                    print(f"[TRADE] T1 RIDE [BUYER]: {action} {idx} {strike} — at T1 ₹{t1}, full {t['qty']} qty riding to T2 ₹{t2}")
+                    self._trade_alerts.append({
+                        "type": "T1_RIDE",
+                        "time": ist_now().strftime("%I:%M:%S %p"),
+                        "message": f"🚀 T1 HIT [BUYER]: {action} {idx} {strike} riding full position to T2",
+                        "details": f"At ₹{t1} (+{round((t1/entry-1)*100)}%). Full {t['qty']} qty trailing. T2 = ₹{t2}",
+                    })
+                    self._trade_alerts = self._trade_alerts[-50:]
+
+            # Check T2 (full target on remaining qty)
+            elif current_ltp >= t2:
+                new_status = "T2_HIT"
+                exit_price = t2
+                exit_reason = f"TARGET 2 HIT at ₹{t2} — full profit +{round((t2/entry-1)*100)}% from entry ₹{entry}. PnL: ₹{round((t2-entry)*t['qty']):+,}"
+
+            # ══════════════════════════════════════════════
+            # UPDATE DATABASE
+            # ══════════════════════════════════════════════
+            conn = _conn()
+            alerts_str = " | ".join(alerts_list) if alerts_list else t.get("alerts", "")
+
+            if new_status != "OPEN":
+                # Idempotent close: re-check status with lock
+                conn_recheck = _conn()
+                still_open = conn_recheck.execute("SELECT status, pnl_rupees, qty FROM trades WHERE id=?", (t["id"],)).fetchone()
+                conn_recheck.close()
+                if not still_open or still_open[0] != "OPEN":
+                    continue  # Already closed
+
+                # Detect if T1 partial booking happened (qty < original lots*lot_size)
+                current_qty = still_open[2] or t["qty"]
+                original_qty = t.get("lots", 1) * t.get("lot_size", current_qty)
+                t1_price = t.get("t1_price", 0) or 0
+                partial_booked = current_qty < original_qty
+
+                final_pnl_pts = round(exit_price - entry, 2)
+
+                if partial_booked and t1_price > 0:
+                    # T1 partial hit earlier — recompute actual booked amount
+                    booked_qty = original_qty - current_qty
+                    booked_pnl_realized = round((t1_price - entry) * booked_qty, 2)
+                    remaining_pnl = round(final_pnl_pts * current_qty, 2)
+                    total_pnl = round(booked_pnl_realized + remaining_pnl, 2)
+                    already_booked_pnl = booked_pnl_realized  # For log
+                    remaining_pnl_for_log = remaining_pnl
+                else:
+                    # No partial — simple close: full qty × (exit - entry)
+                    total_pnl = round(final_pnl_pts * current_qty, 2)
+                    already_booked_pnl = 0
+                    remaining_pnl_for_log = total_pnl
+
+                conn.execute("""
+                    UPDATE trades SET current_ltp=?, peak_ltp=?, pnl_pts=?, pnl_rupees=?,
+                        sl_price=?, breakeven_active=?, trailing_active=?, trail_level=?,
+                        status=?, exit_price=?, exit_time=?, exit_reason=?, alerts=?
+                    WHERE id=? AND status='OPEN'
+                """, (current_ltp, peak, final_pnl_pts, total_pnl,
+                      new_sl, breakeven_active, trailing_active, trail_level,
+                      new_status, exit_price, ist_now().isoformat(), exit_reason, alerts_str, t["id"]))
+                print(f"[TRADE] CLOSED: {action} {idx} {strike} — {new_status} — PnL: ₹{total_pnl:+,.0f} (partial: ₹{already_booked_pnl:+,.0f} + exit: ₹{remaining_pnl_for_log:+,.0f})")
+                try:
+                    from structured_logger import log
+                    _hold_min = round(hold_sec / 60, 1) if hold_sec else None
+                    log.info(
+                        "trade_closed",
+                        trade_id=t["id"],
+                        idx=idx, action=action, strike=int(strike),
+                        entry_price=float(entry),
+                        exit_price=float(exit_price),
+                        status=new_status,
+                        pnl_rupees=float(total_pnl),
+                        pnl_pct=round((exit_price/entry - 1) * 100, 2) if entry > 0 else 0,
+                        peak_ltp=float(peak),
+                        hold_minutes=_hold_min,
+                        source=t.get("source", "verdict_momentum"),
+                        exit_reason=str(exit_reason)[:200] if exit_reason else None,
+                    )
+                except Exception:
+                    pass
+                # ── Record P&L in capital tracker (auto-adjust running capital + profit bank) ──
+                try:
+                    from capital_tracker import record_trade_pnl
+                    record_trade_pnl(
+                        "MAIN",
+                        total_pnl,
+                        trade_id=t["id"],
+                        description=f"{idx} {action} {strike} @ ₹{exit_price} ({new_status})"
+                    )
+                except Exception as _e:
+                    print(f"[CAPITAL] main close record error: {_e}")
+
+                # ── Update Adaptive Risk Tier (A5) — auto-adjust qty/threshold/SL ──
+                try:
+                    from risk_tier_manager import record_trade_outcome
+                    record_trade_outcome(new_status, total_pnl, capital=INITIAL_CAPITAL)
+                except Exception as _e:
+                    print(f"[RISK-TIER] record error: {_e}")
+
+                # ── Truth/Lie Detector (A3) — record pattern outcome for future filtering ──
+                try:
+                    from truth_lie_detector import record_trade_outcome as record_pattern
+                    record_pattern({
+                        "action": action,
+                        "status": new_status,
+                        "pnl_rupees": total_pnl,
+                        "probability": t.get("probability", 0),
+                        "vix": 18,  # could fetch live, but defaults OK
+                        "engine_scores": {},  # not currently stored on trade
+                        "trade_id": t["id"],
+                    })
+                except Exception as _e:
+                    print(f"[TRUTH-LIE] record error: {_e}")
+
+                # Autopsy: capture exit snapshot
+                if self._engine_ref:
+                    try:
+                        from trade_autopsy import capture_trade_snapshot
+                        capture_trade_snapshot(self._engine_ref, t["id"], idx, "EXIT")
+                    except Exception as e:
+                        print(f"[AUTOPSY] EXIT capture failed for trade #{t['id']}: {e}")
+
+                emoji = "✅" if total_pnl > 0 else "❌"
+                self._trade_alerts.append({
+                    "type": "TRADE_EXIT",
+                    "time": ist_now().strftime("%I:%M:%S %p"),
+                    "message": f"{emoji} CLOSED: {action} {idx} {strike} — {new_status}",
+                    "details": f"Exit ₹{exit_price} | PnL: ₹{total_pnl:+,.0f} | {exit_reason[:100]}",
+                })
+                self._trade_alerts = self._trade_alerts[-50:]
+
+                if new_status == "SL_HIT":
+                    oi_at_sl = strike_data.get(f"{opt}_oi", 0)
+                    conn.execute("UPDATE trades SET sl_hit_time=?, oi_at_sl_hit=? WHERE id=?",
+                                 (ist_now().isoformat(), oi_at_sl, t["id"]))
+            else:
+                conn.execute("""
+                    UPDATE trades SET current_ltp=?, peak_ltp=?, pnl_pts=?, pnl_rupees=?,
+                        sl_price=?, breakeven_active=?, trailing_active=?, trail_level=?, alerts=?
+                    WHERE id=?
+                """, (current_ltp, peak, pnl_pts, pnl_rupees,
+                      new_sl, breakeven_active, trailing_active, trail_level, alerts_str, t["id"]))
+            conn.commit()
+            conn.close()
+
+    def _close_all_open(self, status, reason):
+        """Force-close all open trades (EOD or emergency)."""
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        open_trades = conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
+        now = ist_now()
+        for t in open_trades:
+            t = dict(t)
+            # Use current pnl (already tracked) or calculate from entry
+            pnl = t.get("pnl_rupees", 0) or 0
+            exit_price = t.get("current_ltp", t["entry_price"])
+            conn.execute("""
+                UPDATE trades SET status=?, exit_price=?, exit_time=?, exit_reason=?,
+                    pnl_pts=?, pnl_rupees=?
+                WHERE id=? AND status='OPEN'
+            """, (status, exit_price, now.isoformat(), reason,
+                  round(exit_price - t["entry_price"], 2), pnl, t["id"]))
+            print(f"[TRADE] {status}: {t['action']} {t['idx']} {t['strike']} — PnL: ₹{pnl:+,.0f}")
+
+            self._trade_alerts.append({
+                "type": "TRADE_EXIT",
+                "time": now.strftime("%I:%M:%S %p"),
+                "message": f"{'⏰' if status == 'EOD_CLOSE' else '🔒'} {status}: {t['action']} {t['idx']} {t['strike']}",
+                "details": f"PnL: ₹{pnl:+,.0f} | {reason}",
+            })
+            self._trade_alerts = self._trade_alerts[-50:]
+        conn.commit()
+        conn.close()
+
+    def check_position_alerts(self, chains, verdict_data):
+        """Check if running positions need alerts based on new market data."""
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        open_trades = conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
+        conn.close()
+
+        position_alerts = []
+        for trade in open_trades:
+            t = dict(trade)
+            idx = t["idx"]
+            key = idx.lower()
+            action = t["action"]
+
+            v = verdict_data.get(key, {}) if verdict_data else {}
+            if not v:
+                continue
+
+            # Check if verdict REVERSED direction
+            v_action = v.get("action", "")
+            if v_action and v_action != "NO TRADE" and v_action != action:
+                # Opposite signal! Alert!
+                position_alerts.append({
+                    "tradeId": t["id"],
+                    "idx": idx,
+                    "action": action,
+                    "strike": t["strike"],
+                    "type": "REVERSAL_WARNING",
+                    "severity": "CRITICAL",
+                    "message": f"REVERSAL DETECTED: Your {action} {idx} {t['strike']} is OPEN but verdict now says {v_action} ({v.get('winProbability',0)}%). Consider early exit!",
+                    "currentPnl": t["pnl_rupees"],
+                    "suggestedAction": "EXIT" if t["pnl_pts"] < 0 else "TIGHTEN_SL",
+                })
+
+            # Check if probability dropped below 50%
+            win_pct = v.get("winProbability", 0)
+            if win_pct > 0:
+                our_side = "bullPct" if "CE" in action else "bearPct"
+                our_pct = v.get(our_side, 0)
+                if our_pct < 45:
+                    position_alerts.append({
+                        "tradeId": t["id"],
+                        "idx": idx,
+                        "action": action,
+                        "strike": t["strike"],
+                        "type": "CONVICTION_DROP",
+                        "severity": "HIGH",
+                        "message": f"Conviction dropped: {action} probability now {our_pct}% (was {t['probability']}% at entry). Edge weakening.",
+                        "currentPnl": t["pnl_rupees"],
+                        "suggestedAction": "TIGHTEN_SL",
+                    })
+
+        # Store alerts
+        if position_alerts:
+            conn = _conn()
+            for alert in position_alerts:
+                conn.execute("UPDATE trades SET alerts=? WHERE id=?",
+                             (alert["message"][:500], alert["tradeId"]))
+            conn.commit()
+            conn.close()
+
+        return position_alerts
+
+    def check_stop_hunts(self, chains):
+        """Check SL_HIT trades for reversal (stop hunt detection)."""
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        sl_trades = conn.execute("""
+            SELECT * FROM trades WHERE status='SL_HIT' AND reversal_detected=0
+            AND sl_hit_time > ?
+        """, ((ist_now() - timedelta(minutes=20)).isoformat(),)).fetchall()
+        conn.close()
+
+        for trade in sl_trades:
+            t = dict(trade)
+            idx = t["idx"]
+            strike = t["strike"]
+            action = t["action"]
+
+            chain = chains.get(idx, {})
+            strike_data = chain.get(strike, {})
+            opt = "ce" if "CE" in action else "pe"
+            current_ltp = strike_data.get(f"{opt}_ltp", 0)
+            entry = t["entry_price"]
+            sl = t["sl_price"]
+
+            if current_ltp <= 0:
+                continue
+
+            # Stop hunt check: did price recover past entry after hitting SL?
+            sl_move = entry - sl  # How far SL was from entry
+            recovery = current_ltp - sl  # How much recovered from SL
+
+            if recovery > sl_move * 0.5:
+                # Price recovered >50% of the SL distance = stop hunt
+                conn = _conn()
+                conn.execute("""
+                    UPDATE trades SET status='STOP_HUNTED', reversal_detected=1,
+                        reversal_price=?, exit_reason=?
+                    WHERE id=?
+                """, (
+                    current_ltp,
+                    f"STOP HUNT: SL hit at {sl}, then reversed to {current_ltp:.1f} (recovered {recovery:.1f} pts). Institutional flush detected.",
+                    t["id"]
+                ))
+                conn.commit()
+                conn.close()
+                print(f"[TRADE] STOP HUNT DETECTED: {action} {idx} {strike} — SL at {sl}, now at {current_ltp:.1f}")
+
+    def should_enter_trade(self, idx, verdict_data):
+        """SIMPLE entry logic. Trust the engines.
+        Only 4 hard rules:
+          1. Market hours (9:20-15:15)
+          2. Probability >= 50% (engines voted yes — take the trade)
+          3. Daily cap (6 trades max)
+          4. No duplicate same direction (1 NIFTY CE at a time)
+
+        NO MORE:
+          - Spread requirements (engines already aggregate this)
+          - Cooldown after loss (let SL handle losses, take next signal)
+          - Profit guard (don't get scared after winning)
+          - Loss streak pause (each trade independent)
+          - Conviction bumps (trust the threshold)
+        """
+        if not verdict_data or verdict_data.get("action") == "NO TRADE":
+            return False
+
+        now = ist_now()
+
+        # Rule 1: Market hours
+        if not _is_trading_day():
+            return False
+        market_open = (now.hour == 9 and now.minute >= 20) or (10 <= now.hour <= 14) or (now.hour == 15 and now.minute <= 15)
+        if not market_open:
+            return False
+
+        # Rule 2: Probability threshold — adaptive based on capitulation signal
+        # Default: 50% (engines already filter quality)
+        # If capitulation engine confirms reversal in our direction, lower
+        # threshold to 45% — V-bottom CE entries / inverted-V PE entries
+        # have higher win rates than raw probability suggests.
+        win_pct = verdict_data.get("winProbability", 0)
+        action = verdict_data.get("action", "")
+        min_prob = 50
+        try:
+            from capitulation_engine import get_live_state
+            cap_state = get_live_state() or {}
+            cap_idx = (cap_state.get("results") or {}).get(idx, {})
+            cap_bull = (cap_idx.get("bullish") or {}).get("score", 0)
+            cap_bear = (cap_idx.get("bearish") or {}).get("score", 0)
+            # If capit confirms our direction, allow 45%
+            if "CE" in action and cap_bull >= 4:
+                min_prob = 45
+            elif "PE" in action and cap_bear >= 4:
+                min_prob = 45
+        except Exception:
+            pass
+        if win_pct < min_prob:
+            return False
+
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        conn = _conn()
+
+        # Rule 3: Daily trade cap
+        today_count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE entry_time > ?",
+            (today_start,)
+        ).fetchone()[0]
+        if today_count >= MAX_DAILY_TRADES:
+            conn.close()
+            return False
+
+        # Concurrent trade cap (high — basically never blocks)
+        total_open = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE status='OPEN'"
+        ).fetchone()[0]
+        if total_open >= MAX_SIMULTANEOUS_TRADES:
+            conn.close()
+            return False
+
+        # Rule 4: No duplicate same idx+action open
+        action_str = verdict_data.get("action", "")
+        dup_open = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE status='OPEN' AND idx=? AND action=?",
+            (idx, action_str)
+        ).fetchone()[0]
+        conn.close()
+        if dup_open > 0:
+            return False
+
+        # All checks passed — TAKE THE TRADE
+        return True
+
+    # ── PUBLIC API METHODS ──
+
+    def get_position_alerts(self):
+        """Get alerts for open positions."""
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, idx, action, strike, alerts, pnl_rupees, status FROM trades WHERE status='OPEN' AND alerts != '' AND alerts IS NOT NULL"
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows if r["alerts"]]
+
+    def get_open_trades(self):
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM trades WHERE status='OPEN' ORDER BY entry_time DESC").fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def get_closed_trades(self, days=7):
+        cutoff = (ist_now() - timedelta(days=days)).isoformat()
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE status!='OPEN' AND entry_time > ? ORDER BY exit_time DESC",
+            (cutoff,)
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def get_trades_by_date(self, date_str):
+        """Get all trades for a specific date (YYYY-MM-DD)."""
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE entry_time LIKE ? ORDER BY entry_time DESC",
+            (f"{date_str}%",)
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def get_monthly_report(self, year, month):
+        """Get monthly stats + all trades for a given month."""
+        prefix = f"{year}-{str(month).zfill(2)}"
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE entry_time LIKE ? ORDER BY entry_time DESC",
+            (f"{prefix}%",)
+        ).fetchall()
+        conn.close()
+
+        trades = [dict(r) for r in rows]
+        if not trades:
+            return {"month": prefix, "trades": [], "stats": {"total": 0}}
+
+        closed = [t for t in trades if t["status"] != "OPEN"]
+        wins = [t for t in trades if t["status"] in ("T1_HIT", "T2_HIT")]
+        losses = [t for t in trades if t["status"] == "SL_HIT"]
+        hunts = [t for t in trades if t["status"] == "STOP_HUNTED"]
+        total_pnl = sum(t["pnl_rupees"] for t in closed)
+        win_pnls = [(t["pnl_rupees"] or 0) for t in wins]
+        loss_pnls = [(t["pnl_rupees"] or 0) for t in losses]
+
+        # Daily breakdown
+        daily = {}
+        for t in trades:
+            day = t["entry_time"][:10]
+            if day not in daily:
+                daily[day] = {"trades": 0, "wins": 0, "losses": 0, "pnl": 0}
+            daily[day]["trades"] += 1
+            if t["status"] in ("T1_HIT", "T2_HIT"):
+                daily[day]["wins"] += 1
+            elif t["status"] == "SL_HIT":
+                daily[day]["losses"] += 1
+            if t["status"] != "OPEN":
+                daily[day]["pnl"] += t["pnl_rupees"]
+
+        return {
+            "month": prefix,
+            "trades": trades,
+            "daily": daily,
+            "stats": {
+                "total": len(trades),
+                "wins": len(wins),
+                "losses": len(losses),
+                "stopHunts": len(hunts),
+                "winRate": round(len(wins) / len(closed) * 100) if closed else 0,
+                "totalPnl": round(total_pnl),
+                "avgWin": round(sum(win_pnls) / len(win_pnls)) if win_pnls else 0,
+                "avgLoss": round(sum(loss_pnls) / len(loss_pnls)) if loss_pnls else 0,
+                "bestDay": max(daily.values(), key=lambda x: x["pnl"])["pnl"] if daily else 0,
+                "worstDay": min(daily.values(), key=lambda x: x["pnl"])["pnl"] if daily else 0,
+            },
+        }
+
+    def get_all_dates(self):
+        """Get list of all dates that have trades."""
+        conn = _conn()
+        rows = conn.execute(
+            "SELECT DISTINCT substr(entry_time, 1, 10) as d FROM trades ORDER BY d DESC"
+        ).fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+
+    def get_stats(self, days=30):
+        try:
+            return self._get_stats_inner(days)
+        except Exception as e:
+            print(f"[TRADES] Stats error: {e}")
+            return {"total": 0, "open": 0, "wins": 0, "losses": 0, "stopHunts": 0, "breakevens": 0,
+                    "winRate": 0, "totalPnl": 0, "closedPnl": 0, "openPnl": 0, "totalProfit": 0,
+                    "totalLoss": 0, "avgWin": 0, "avgLoss": 0, "bestTrade": 0, "worstTrade": 0,
+                    "totalInvested": 0, "openInvested": 0, "openCurrentValue": 0,
+                    "currentStreak": 0, "streakType": "",
+                    "initialCapital": INITIAL_CAPITAL, "runningCapital": _get_running_capital(),
+                    "capitalUsedPct": 0, "availableCapital": _get_running_capital(), "error": str(e)}
+
+    def _get_stats_inner(self, days=30):
+        cutoff = (ist_now() - timedelta(days=days)).isoformat()
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE entry_time > ?", (cutoff,)
+        ).fetchall()
+        conn.close()
+        all_trades = [dict(r) for r in rows]
+
+        total = len(all_trades)
+        if total == 0:
+            return {"total": 0, "open": 0, "wins": 0, "losses": 0, "stopHunts": 0, "breakevens": 0,
+                    "winRate": 0, "totalPnl": 0, "closedPnl": 0, "openPnl": 0,
+                    "totalProfit": 0, "totalLoss": 0, "avgWin": 0, "avgLoss": 0,
+                    "bestTrade": 0, "worstTrade": 0, "totalInvested": 0, "openInvested": 0,
+                    "openCurrentValue": 0, "currentStreak": 0, "streakType": "",
+                    "initialCapital": INITIAL_CAPITAL, "runningCapital": _get_running_capital(),
+                    "capitalUsedPct": 0, "availableCapital": _get_running_capital()}
+
+        open_trades = [t for t in all_trades if t["status"] == "OPEN"]
+        wins = [t for t in all_trades if t["status"] in ("T1_HIT", "T2_HIT", "TRAIL_EXIT")]
+        losses = [t for t in all_trades if t["status"] in ("SL_HIT",)]
+        breakevens = [t for t in all_trades if t["status"] == "BREAKEVEN_EXIT"]
+        hunts = [t for t in all_trades if t["status"] == "STOP_HUNTED"]
+        closed = [t for t in all_trades if t["status"] != "OPEN"]
+
+        # Capital calculations — safe with None/0 values
+        total_invested = sum((t["entry_price"] or 0) * (t["qty"] or 0) for t in all_trades)
+        open_invested = sum((t["entry_price"] or 0) * (t["qty"] or 0) for t in open_trades)
+        open_current_value = sum((t["current_ltp"] or t["entry_price"] or 0) * (t["qty"] or 0) for t in open_trades)
+        open_pnl = round(open_current_value - open_invested)
+
+        # Closed PnL
+        closed_pnl = sum((t["pnl_rupees"] or 0) for t in closed)
+        total_pnl = round(closed_pnl + open_pnl)
+
+        # Loss tracking
+        total_loss = sum((t["pnl_rupees"] or 0) for t in closed if (t["pnl_rupees"] or 0) < 0)
+        total_profit = sum((t["pnl_rupees"] or 0) for t in closed if (t["pnl_rupees"] or 0) > 0)
+
+        win_pnls = [(t["pnl_rupees"] or 0) for t in wins]
+        loss_pnls = [(t["pnl_rupees"] or 0) for t in losses]
+
+        closed_count = len(closed)
+        win_rate = round(len(wins) / closed_count * 100) if closed_count > 0 else 0
+
+        # Streak
+        streak = 0
+        streak_type = ""
+        for t in sorted(closed, key=lambda x: x.get("exit_time") or "", reverse=True):
+            is_win = t["status"] in ("T1_HIT", "T2_HIT", "TRAIL_EXIT")
+            if streak == 0:
+                streak_type = "WIN" if is_win else "LOSS"
+                streak = 1
+            elif (streak_type == "WIN" and is_win) or (streak_type == "LOSS" and not is_win):
+                streak += 1
+            else:
+                break
+
+        return {
+            "total": total,
+            "open": len(open_trades),
+            "wins": len(wins),
+            "losses": len(losses),
+            "breakevens": len(breakevens),
+            "stopHunts": len(hunts),
+            "winRate": win_rate,
+            # Capital
+            "totalInvested": round(total_invested),
+            "openInvested": round(open_invested),
+            "openCurrentValue": round(open_current_value),
+            "openPnl": open_pnl,
+            # PnL
+            "closedPnl": round(closed_pnl),
+            "totalPnl": total_pnl,
+            "totalProfit": round(total_profit),
+            "totalLoss": round(total_loss),
+            "avgWin": round(sum(win_pnls) / len(win_pnls)) if win_pnls else 0,
+            "avgLoss": round(sum(loss_pnls) / len(loss_pnls)) if loss_pnls else 0,
+            "bestTrade": round(max(win_pnls)) if win_pnls else 0,
+            "worstTrade": round(min(loss_pnls)) if loss_pnls else 0,
+            # Streak
+            "currentStreak": streak,
+            "streakType": streak_type,
+            # Capital (running = initial + realized P&L)
+            "initialCapital": INITIAL_CAPITAL,
+            "runningCapital": round(_get_running_capital()),
+            "capitalUsedPct": round(open_invested / max(_get_running_capital(), 1) * 100),
+            "availableCapital": round(_get_running_capital() - open_invested),
+        }
+
+    def get_trade_alerts(self):
+        """Get recent trade entry/exit alerts for frontend notifications."""
+        return list(reversed(self._trade_alerts))
+
+    def get_stop_hunts(self):
+        conn = _conn()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE status='STOP_HUNTED' ORDER BY exit_time DESC LIMIT 50"
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]

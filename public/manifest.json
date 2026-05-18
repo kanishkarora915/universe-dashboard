@@ -1,0 +1,42 @@
+{
+  "name": "Universe Pro — by Kanishk Arora",
+  "short_name": "Universe",
+  "description": "Institutional options trading terminal — live signals, OI flow, trade autopsy, strike deep-dive",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0A0A0F",
+  "theme_color": "#0A84FF",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Dashboard",
+      "url": "/?tab=dashboard",
+      "description": "Main trading dashboard"
+    },
+    {
+      "name": "OI Chain",
+      "url": "/?tab=oi",
+      "description": "Live option chain"
+    },
+    {
+      "name": "P&L Tracker",
+      "url": "/?tab=pnl",
+      "description": "Your trades and performance"
+    }
+  ]
+}
