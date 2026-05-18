@@ -3060,48 +3060,124 @@ class MarketEngine:
                 # Move from open
                 from_open_pct = ((ltp - open_price) / open_price * 100) if open_price > 0 else 0
 
+                # ── TREND-AWARENESS GATE (added 2026-05-18 Phase 2) ──
+                # Compute 30-min spot trend from _spot_history. If trend is
+                # strongly directional, the rally/drop is REAL (not exhausted)
+                # and smartBias penalties below would be wrong-direction bets.
+                #
+                # ROOT CAUSE: pre-2026-05-18, smartBias halved bull score on
+                # EVERY rally day (range_pos > 75 + from_open > 0.4 = TRUE on
+                # ~30% of days). On real trend days, this flipped bullish →
+                # bearish PE entries → losses or zero trades.
+                # After 2026-05-08, main engine took 0 trades for 10+ days.
+                #
+                # FIX: skip RANGE_PENALTY + MOVE_EXHAUSTED when 30-min trend
+                # confirms the direction is genuinely continuing.
+                trend_30m_pct = 0.0
+                trend_is_bullish = False
+                trend_is_bearish = False
+                try:
+                    hist = self._spot_history.get(index, [])
+                    if len(hist) >= 60:  # need ≥10 min of data (60 entries × ~10s)
+                        from datetime import datetime as _dt_th, timedelta as _td_th
+                        cutoff_30m = ist_now() - _td_th(minutes=30)
+                        # Find the entry closest to 30 min ago
+                        old_ltp = None
+                        for entry in hist:
+                            try:
+                                t = _dt_th.fromisoformat(entry["t"])
+                                if t.tzinfo is None:
+                                    t = IST.localize(t)
+                                if t >= cutoff_30m:
+                                    old_ltp = entry["ltp"]
+                                    break
+                            except Exception:
+                                continue
+                        if old_ltp and old_ltp > 0:
+                            trend_30m_pct = ((ltp - old_ltp) / old_ltp) * 100
+                            # Strong trend = >0.3% directional move in 30 min
+                            trend_is_bullish = trend_30m_pct > 0.3
+                            trend_is_bearish = trend_30m_pct < -0.3
+                except Exception:
+                    pass  # fail-open: no trend data → use legacy logic
+
                 # ── 1. RANGE POSITION PENALTY ──
                 # Bearish bias near day low = move exhausted, halve conviction
+                # GATE: skip if 30-min trend confirms continuing downside
                 if range_pos < 25 and bear_score > bull_score and from_open_pct < -0.4:
-                    old_bear = bear_score
-                    bear_score = int(bear_score * 0.5)
-                    bull_score += 8
-                    bias_adjustments.append({
-                        "name": "RANGE_PENALTY_BEAR",
-                        "reason": f"Spot near day-low (range {range_pos}%) after {from_open_pct:.2f}% drop — bearish bias EXHAUSTED, halved {old_bear}→{bear_score}, +8 to bull (bounce expected)",
-                        "old_bear": old_bear, "new_bear": bear_score, "bull_boost": 8,
-                    })
-                # Mirror: Bullish bias near day high = halve
+                    if trend_is_bearish:
+                        bias_adjustments.append({
+                            "name": "TREND_PROTECT_BEAR",
+                            "reason": f"Spot near day-low BUT 30-min trend {trend_30m_pct:+.2f}% still bearish — NOT exhausted, skipping RANGE_PENALTY",
+                            "trend_30m_pct": round(trend_30m_pct, 3),
+                        })
+                    else:
+                        old_bear = bear_score
+                        bear_score = int(bear_score * 0.5)
+                        bull_score += 8
+                        bias_adjustments.append({
+                            "name": "RANGE_PENALTY_BEAR",
+                            "reason": f"Spot near day-low (range {range_pos}%) after {from_open_pct:.2f}% drop, 30m trend {trend_30m_pct:+.2f}% (not continuing) — bearish bias EXHAUSTED, halved {old_bear}→{bear_score}, +8 to bull",
+                            "old_bear": old_bear, "new_bear": bear_score, "bull_boost": 8,
+                            "trend_30m_pct": round(trend_30m_pct, 3),
+                        })
+                # Mirror: Bullish bias near day high
+                # GATE: skip if 30-min trend confirms continuing upside
                 elif range_pos > 75 and bull_score > bear_score and from_open_pct > 0.4:
-                    old_bull = bull_score
-                    bull_score = int(bull_score * 0.5)
-                    bear_score += 8
-                    bias_adjustments.append({
-                        "name": "RANGE_PENALTY_BULL",
-                        "reason": f"Spot near day-high (range {range_pos}%) after +{from_open_pct:.2f}% rally — bullish bias EXHAUSTED, halved {old_bull}→{bull_score}, +8 to bear (pullback expected)",
-                        "old_bull": old_bull, "new_bull": bull_score, "bear_boost": 8,
-                    })
+                    if trend_is_bullish:
+                        bias_adjustments.append({
+                            "name": "TREND_PROTECT_BULL",
+                            "reason": f"Spot near day-high BUT 30-min trend {trend_30m_pct:+.2f}% still bullish — NOT exhausted, skipping RANGE_PENALTY",
+                            "trend_30m_pct": round(trend_30m_pct, 3),
+                        })
+                    else:
+                        old_bull = bull_score
+                        bull_score = int(bull_score * 0.5)
+                        bear_score += 8
+                        bias_adjustments.append({
+                            "name": "RANGE_PENALTY_BULL",
+                            "reason": f"Spot near day-high (range {range_pos}%) after +{from_open_pct:.2f}% rally, 30m trend {trend_30m_pct:+.2f}% (not continuing) — bullish bias EXHAUSTED, halved {old_bull}→{bull_score}, +8 to bear",
+                            "old_bull": old_bull, "new_bull": bull_score, "bear_boost": 8,
+                            "trend_30m_pct": round(trend_30m_pct, 3),
+                        })
 
                 # ── 2. MOVE EXHAUSTION (mid-zone too) ──
                 # Already moved >0.7% AND multi-TF aligned in same direction?
                 # Reduce conviction — fresh signal vs late entry
+                # GATE: skip if 30-min trend strongly aligned (real trend day)
                 if abs(from_open_pct) > 0.7:
-                    if from_open_pct < 0 and bear_score > 30:  # big drop, bear signal
-                        old = bear_score
-                        bear_score = int(bear_score * 0.7)  # 30% reduction
-                        bias_adjustments.append({
-                            "name": "MOVE_EXHAUSTED_BEAR",
-                            "reason": f"Already {from_open_pct:.2f}% from open — bearish entries are LATE, conviction reduced 30% ({old}→{bear_score})",
-                            "old_bear": old, "new_bear": bear_score,
-                        })
+                    if from_open_pct < 0 and bear_score > 30:
+                        if trend_is_bearish:
+                            bias_adjustments.append({
+                                "name": "TREND_PROTECT_BEAR_EXHAUSTION",
+                                "reason": f"Down {from_open_pct:.2f}% from open BUT 30m trend {trend_30m_pct:+.2f}% confirms continuing — NOT exhausted, skipping MOVE_EXHAUSTED",
+                                "trend_30m_pct": round(trend_30m_pct, 3),
+                            })
+                        else:
+                            old = bear_score
+                            bear_score = int(bear_score * 0.7)
+                            bias_adjustments.append({
+                                "name": "MOVE_EXHAUSTED_BEAR",
+                                "reason": f"Already {from_open_pct:.2f}% from open, 30m trend {trend_30m_pct:+.2f}% (not continuing) — bearish entries LATE, conviction -30% ({old}→{bear_score})",
+                                "old_bear": old, "new_bear": bear_score,
+                                "trend_30m_pct": round(trend_30m_pct, 3),
+                            })
                     elif from_open_pct > 0 and bull_score > 30:
-                        old = bull_score
-                        bull_score = int(bull_score * 0.7)
-                        bias_adjustments.append({
-                            "name": "MOVE_EXHAUSTED_BULL",
-                            "reason": f"Already +{from_open_pct:.2f}% from open — bullish entries are LATE, conviction reduced 30% ({old}→{bull_score})",
-                            "old_bull": old, "new_bull": bull_score,
-                        })
+                        if trend_is_bullish:
+                            bias_adjustments.append({
+                                "name": "TREND_PROTECT_BULL_EXHAUSTION",
+                                "reason": f"Up +{from_open_pct:.2f}% from open BUT 30m trend {trend_30m_pct:+.2f}% confirms continuing — NOT exhausted, skipping MOVE_EXHAUSTED",
+                                "trend_30m_pct": round(trend_30m_pct, 3),
+                            })
+                        else:
+                            old = bull_score
+                            bull_score = int(bull_score * 0.7)
+                            bias_adjustments.append({
+                                "name": "MOVE_EXHAUSTED_BULL",
+                                "reason": f"Already +{from_open_pct:.2f}% from open, 30m trend {trend_30m_pct:+.2f}% (not continuing) — bullish entries LATE, conviction -30% ({old}→{bull_score})",
+                                "old_bull": old, "new_bull": bull_score,
+                                "trend_30m_pct": round(trend_30m_pct, 3),
+                            })
 
                 # ── 3. CAPITULATION ENGINE BOOST ──
                 # Opposite-direction reversal forming? Boost it
