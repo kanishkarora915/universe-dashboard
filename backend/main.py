@@ -1121,6 +1121,73 @@ async def perf_sample_now():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Probability calibration (empirical historical winrate model) ─────
+
+@app.get("/api/calibration")
+async def calibration_table():
+    """Return the probability calibration table — historical winrate by
+    raw_prob bucket × engine × action.
+
+    Use to see WHEN trades historically win/lose at each probability level.
+    The audit on 2026-05-19 found severe non-monotone calibration:
+    higher raw_prob frequently = LOWER actual WR. This endpoint exposes
+    that data so the frontend can show a "calibrated WR" alongside the
+    raw probability for every trade.
+    """
+    try:
+        from calibration import get_table, diagnostics
+        return {"diagnostics": diagnostics(), "table": get_table()}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/calibration/lookup")
+async def calibration_lookup(prob: int, engine: str = "main", action: str = "ALL"):
+    """Lookup calibrated winrate + warnings for a specific (prob, engine, action).
+
+    Example: GET /api/calibration/lookup?prob=85&engine=scalper&action=BUY%20PE
+
+    Returns:
+      - raw_prob: input echo
+      - calibrated_wr: historical smoothed WR (or null if no data)
+      - is_inverted: True if a lower raw_prob bucket has higher WR
+      - warning: human-readable warning if expectancy negative
+    """
+    try:
+        from calibration import calibrated_wr, expectancy_warning, is_inverted
+        return {
+            "raw_prob": prob,
+            "engine": engine,
+            "action": action,
+            "calibrated_wr": calibrated_wr(prob, engine, action),
+            "is_inverted": is_inverted(prob, engine),
+            "warning": expectancy_warning(prob, engine, action),
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/calibration/rebuild")
+async def calibration_rebuild():
+    """Rebuild the calibration table from current closed-trade history.
+
+    Reads ALL closed trades from trades.db + scalper_trades.db, computes
+    smoothed winrates per (engine, action, raw_prob bucket), and writes
+    the table to /data/calibration_table.json (which then supersedes the
+    built-in v1 fallback).
+
+    Run this:
+      • Weekly (more data = better calibration)
+      • After regime changes (different market behaviour)
+      • Never DURING trading (writes to disk; brief lock)
+    """
+    try:
+        from calibration_builder import rebuild_from_db
+        return rebuild_from_db()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/trinity/db-stats")
 async def trinity_db_stats():
     """Trinity DB stats — file size, row counts per table, oldest/newest data.

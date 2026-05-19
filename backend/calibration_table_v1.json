@@ -1,0 +1,722 @@
+{
+  "version": 1,
+  "built_at": "2026-05-19",
+  "source": "audit of closed trades from prod",
+  "sample_sizes": {
+    "main": 160,
+    "scalper": 211
+  },
+  "prior": {
+    "n": 5,
+    "wr": 0.5,
+    "method": "laplace"
+  },
+  "main": {
+    "BUY CE": {
+      "50-54": {
+        "n": 6,
+        "wins": 5,
+        "losses": 1,
+        "wr_raw": 83.3,
+        "wr_smoothed": 68.2,
+        "total_pnl": 54291.0,
+        "avg_pnl": 9048.0,
+        "expectancy_positive": true
+      },
+      "55-59": {
+        "n": 10,
+        "wins": 9,
+        "losses": 1,
+        "wr_raw": 90.0,
+        "wr_smoothed": 76.7,
+        "total_pnl": 136957.0,
+        "avg_pnl": 13696.0,
+        "expectancy_positive": true
+      },
+      "60-64": {
+        "n": 15,
+        "wins": 7,
+        "losses": 8,
+        "wr_raw": 46.7,
+        "wr_smoothed": 47.5,
+        "total_pnl": 71765.0,
+        "avg_pnl": 4784.0,
+        "expectancy_positive": true
+      },
+      "65-69": {
+        "n": 17,
+        "wins": 8,
+        "losses": 9,
+        "wr_raw": 47.1,
+        "wr_smoothed": 47.7,
+        "total_pnl": 60286.0,
+        "avg_pnl": 3546.0,
+        "expectancy_positive": true
+      },
+      "70-74": {
+        "n": 26,
+        "wins": 14,
+        "losses": 12,
+        "wr_raw": 53.8,
+        "wr_smoothed": 53.2,
+        "total_pnl": 95426.0,
+        "avg_pnl": 3670.0,
+        "expectancy_positive": true
+      },
+      "75-79": {
+        "n": 16,
+        "wins": 7,
+        "losses": 9,
+        "wr_raw": 43.8,
+        "wr_smoothed": 45.2,
+        "total_pnl": -22974.0,
+        "avg_pnl": -1436.0,
+        "expectancy_positive": false
+      },
+      "80-84": {
+        "n": 14,
+        "wins": 4,
+        "losses": 10,
+        "wr_raw": 28.6,
+        "wr_smoothed": 34.2,
+        "total_pnl": -81615.0,
+        "avg_pnl": -5830.0,
+        "expectancy_positive": false
+      },
+      "85-89": {
+        "n": 10,
+        "wins": 3,
+        "losses": 7,
+        "wr_raw": 30.0,
+        "wr_smoothed": 36.7,
+        "total_pnl": -42033.0,
+        "avg_pnl": -4203.0,
+        "expectancy_positive": false
+      },
+      "90-94": {
+        "n": 0,
+        "wins": 0,
+        "losses": 0,
+        "wr_raw": null,
+        "wr_smoothed": 50.0,
+        "total_pnl": 0,
+        "avg_pnl": 0,
+        "expectancy_positive": false
+      },
+      "95-100": {
+        "n": 3,
+        "wins": 1,
+        "losses": 2,
+        "wr_raw": 33.3,
+        "wr_smoothed": 43.8,
+        "total_pnl": -103356.0,
+        "avg_pnl": -34452.0,
+        "expectancy_positive": false
+      }
+    },
+    "BUY PE": {
+      "50-54": {
+        "n": 2,
+        "wins": 2,
+        "losses": 0,
+        "wr_raw": 100.0,
+        "wr_smoothed": 64.3,
+        "total_pnl": 5966.0,
+        "avg_pnl": 2983.0,
+        "expectancy_positive": true
+      },
+      "55-59": {
+        "n": 5,
+        "wins": 1,
+        "losses": 4,
+        "wr_raw": 20.0,
+        "wr_smoothed": 35.0,
+        "total_pnl": -62803.0,
+        "avg_pnl": -12561.0,
+        "expectancy_positive": false
+      },
+      "60-64": {
+        "n": 5,
+        "wins": 4,
+        "losses": 1,
+        "wr_raw": 80.0,
+        "wr_smoothed": 65.0,
+        "total_pnl": 93714.0,
+        "avg_pnl": 18743.0,
+        "expectancy_positive": true
+      },
+      "65-69": {
+        "n": 4,
+        "wins": 3,
+        "losses": 1,
+        "wr_raw": 75.0,
+        "wr_smoothed": 61.1,
+        "total_pnl": -13353.0,
+        "avg_pnl": -3338.0,
+        "expectancy_positive": false
+      },
+      "70-74": {
+        "n": 4,
+        "wins": 4,
+        "losses": 0,
+        "wr_raw": 100.0,
+        "wr_smoothed": 72.2,
+        "total_pnl": 22246.0,
+        "avg_pnl": 5561.0,
+        "expectancy_positive": true
+      },
+      "75-79": {
+        "n": 13,
+        "wins": 6,
+        "losses": 7,
+        "wr_raw": 46.2,
+        "wr_smoothed": 47.2,
+        "total_pnl": -87491.0,
+        "avg_pnl": -6730.0,
+        "expectancy_positive": false
+      },
+      "80-84": {
+        "n": 5,
+        "wins": 5,
+        "losses": 0,
+        "wr_raw": 100.0,
+        "wr_smoothed": 75.0,
+        "total_pnl": 35458.0,
+        "avg_pnl": 7092.0,
+        "expectancy_positive": true
+      },
+      "85-89": {
+        "n": 1,
+        "wins": 1,
+        "losses": 0,
+        "wr_raw": 100.0,
+        "wr_smoothed": 58.3,
+        "total_pnl": 62880.0,
+        "avg_pnl": 62880.0,
+        "expectancy_positive": true
+      },
+      "90-94": {
+        "n": 1,
+        "wins": 0,
+        "losses": 1,
+        "wr_raw": 0.0,
+        "wr_smoothed": 41.7,
+        "total_pnl": -22815.0,
+        "avg_pnl": -22815.0,
+        "expectancy_positive": false
+      },
+      "95-100": {
+        "n": 3,
+        "wins": 1,
+        "losses": 2,
+        "wr_raw": 33.3,
+        "wr_smoothed": 43.8,
+        "total_pnl": -53170.0,
+        "avg_pnl": -17723.0,
+        "expectancy_positive": false
+      }
+    },
+    "ALL": {
+      "50-54": {
+        "n": 8,
+        "wins": 7,
+        "losses": 1,
+        "wr_raw": 87.5,
+        "wr_smoothed": 73.1,
+        "total_pnl": 60257.0,
+        "avg_pnl": 7532.0,
+        "expectancy_positive": true
+      },
+      "55-59": {
+        "n": 15,
+        "wins": 10,
+        "losses": 5,
+        "wr_raw": 66.7,
+        "wr_smoothed": 62.5,
+        "total_pnl": 74154.0,
+        "avg_pnl": 4944.0,
+        "expectancy_positive": true
+      },
+      "60-64": {
+        "n": 20,
+        "wins": 11,
+        "losses": 9,
+        "wr_raw": 55.0,
+        "wr_smoothed": 54.0,
+        "total_pnl": 165480.0,
+        "avg_pnl": 8274.0,
+        "expectancy_positive": true
+      },
+      "65-69": {
+        "n": 21,
+        "wins": 11,
+        "losses": 10,
+        "wr_raw": 52.4,
+        "wr_smoothed": 51.9,
+        "total_pnl": 46933.0,
+        "avg_pnl": 2235.0,
+        "expectancy_positive": true
+      },
+      "70-74": {
+        "n": 30,
+        "wins": 18,
+        "losses": 12,
+        "wr_raw": 60.0,
+        "wr_smoothed": 58.6,
+        "total_pnl": 117672.0,
+        "avg_pnl": 3922.0,
+        "expectancy_positive": true
+      },
+      "75-79": {
+        "n": 29,
+        "wins": 13,
+        "losses": 16,
+        "wr_raw": 44.8,
+        "wr_smoothed": 45.6,
+        "total_pnl": -110465.0,
+        "avg_pnl": -3809.0,
+        "expectancy_positive": false
+      },
+      "80-84": {
+        "n": 19,
+        "wins": 9,
+        "losses": 10,
+        "wr_raw": 47.4,
+        "wr_smoothed": 47.9,
+        "total_pnl": -46157.0,
+        "avg_pnl": -2429.0,
+        "expectancy_positive": false
+      },
+      "85-89": {
+        "n": 11,
+        "wins": 4,
+        "losses": 7,
+        "wr_raw": 36.4,
+        "wr_smoothed": 40.6,
+        "total_pnl": 20847.0,
+        "avg_pnl": 1895.0,
+        "expectancy_positive": true
+      },
+      "90-94": {
+        "n": 1,
+        "wins": 0,
+        "losses": 1,
+        "wr_raw": 0.0,
+        "wr_smoothed": 41.7,
+        "total_pnl": -22815.0,
+        "avg_pnl": -22815.0,
+        "expectancy_positive": false
+      },
+      "95-100": {
+        "n": 6,
+        "wins": 2,
+        "losses": 4,
+        "wr_raw": 33.3,
+        "wr_smoothed": 40.9,
+        "total_pnl": -156526.0,
+        "avg_pnl": -26088.0,
+        "expectancy_positive": false
+      }
+    }
+  },
+  "scalper": {
+    "BUY CE": {
+      "50-54": {
+        "n": 5,
+        "wins": 2,
+        "losses": 3,
+        "wr_raw": 40.0,
+        "wr_smoothed": 45.0,
+        "total_pnl": 17735.0,
+        "avg_pnl": 3547.0,
+        "expectancy_positive": true
+      },
+      "55-59": {
+        "n": 14,
+        "wins": 5,
+        "losses": 9,
+        "wr_raw": 35.7,
+        "wr_smoothed": 39.5,
+        "total_pnl": -76476.0,
+        "avg_pnl": -5463.0,
+        "expectancy_positive": false
+      },
+      "60-64": {
+        "n": 15,
+        "wins": 8,
+        "losses": 7,
+        "wr_raw": 53.3,
+        "wr_smoothed": 52.5,
+        "total_pnl": -31870.0,
+        "avg_pnl": -2125.0,
+        "expectancy_positive": false
+      },
+      "65-69": {
+        "n": 19,
+        "wins": 8,
+        "losses": 11,
+        "wr_raw": 42.1,
+        "wr_smoothed": 43.8,
+        "total_pnl": 133765.0,
+        "avg_pnl": 7040.0,
+        "expectancy_positive": true
+      },
+      "70-74": {
+        "n": 13,
+        "wins": 8,
+        "losses": 5,
+        "wr_raw": 61.5,
+        "wr_smoothed": 58.3,
+        "total_pnl": -29466.0,
+        "avg_pnl": -2267.0,
+        "expectancy_positive": false
+      },
+      "75-79": {
+        "n": 5,
+        "wins": 2,
+        "losses": 3,
+        "wr_raw": 40.0,
+        "wr_smoothed": 45.0,
+        "total_pnl": -85624.0,
+        "avg_pnl": -17125.0,
+        "expectancy_positive": false
+      },
+      "80-84": {
+        "n": 6,
+        "wins": 2,
+        "losses": 4,
+        "wr_raw": 33.3,
+        "wr_smoothed": 40.9,
+        "total_pnl": -40476.0,
+        "avg_pnl": -6746.0,
+        "expectancy_positive": false
+      },
+      "85-89": {
+        "n": 3,
+        "wins": 0,
+        "losses": 3,
+        "wr_raw": 0.0,
+        "wr_smoothed": 31.2,
+        "total_pnl": -44447.0,
+        "avg_pnl": -14816.0,
+        "expectancy_positive": false
+      },
+      "90-94": {
+        "n": 0,
+        "wins": 0,
+        "losses": 0,
+        "wr_raw": null,
+        "wr_smoothed": 50.0,
+        "total_pnl": 0,
+        "avg_pnl": 0,
+        "expectancy_positive": false
+      },
+      "95-100": {
+        "n": 0,
+        "wins": 0,
+        "losses": 0,
+        "wr_raw": null,
+        "wr_smoothed": 50.0,
+        "total_pnl": 0,
+        "avg_pnl": 0,
+        "expectancy_positive": false
+      }
+    },
+    "BUY PE": {
+      "50-54": {
+        "n": 3,
+        "wins": 2,
+        "losses": 1,
+        "wr_raw": 66.7,
+        "wr_smoothed": 56.2,
+        "total_pnl": 67606.0,
+        "avg_pnl": 22536.0,
+        "expectancy_positive": true
+      },
+      "55-59": {
+        "n": 28,
+        "wins": 9,
+        "losses": 19,
+        "wr_raw": 32.1,
+        "wr_smoothed": 34.8,
+        "total_pnl": -147521.0,
+        "avg_pnl": -5269.0,
+        "expectancy_positive": false
+      },
+      "60-64": {
+        "n": 13,
+        "wins": 8,
+        "losses": 5,
+        "wr_raw": 61.5,
+        "wr_smoothed": 58.3,
+        "total_pnl": 3025.0,
+        "avg_pnl": 233.0,
+        "expectancy_positive": true
+      },
+      "65-69": {
+        "n": 18,
+        "wins": 8,
+        "losses": 10,
+        "wr_raw": 44.4,
+        "wr_smoothed": 45.7,
+        "total_pnl": 140673.0,
+        "avg_pnl": 7815.0,
+        "expectancy_positive": true
+      },
+      "70-74": {
+        "n": 29,
+        "wins": 15,
+        "losses": 14,
+        "wr_raw": 51.7,
+        "wr_smoothed": 51.5,
+        "total_pnl": 112471.0,
+        "avg_pnl": 3878.0,
+        "expectancy_positive": true
+      },
+      "75-79": {
+        "n": 23,
+        "wins": 14,
+        "losses": 9,
+        "wr_raw": 60.9,
+        "wr_smoothed": 58.9,
+        "total_pnl": 156619.0,
+        "avg_pnl": 6810.0,
+        "expectancy_positive": true
+      },
+      "80-84": {
+        "n": 13,
+        "wins": 6,
+        "losses": 7,
+        "wr_raw": 46.2,
+        "wr_smoothed": 47.2,
+        "total_pnl": 74813.0,
+        "avg_pnl": 5755.0,
+        "expectancy_positive": true
+      },
+      "85-89": {
+        "n": 3,
+        "wins": 1,
+        "losses": 2,
+        "wr_raw": 33.3,
+        "wr_smoothed": 43.8,
+        "total_pnl": 34905.0,
+        "avg_pnl": 11635.0,
+        "expectancy_positive": true
+      },
+      "90-94": {
+        "n": 1,
+        "wins": 0,
+        "losses": 1,
+        "wr_raw": 0.0,
+        "wr_smoothed": 41.7,
+        "total_pnl": -6496.0,
+        "avg_pnl": -6496.0,
+        "expectancy_positive": false
+      },
+      "95-100": {
+        "n": 0,
+        "wins": 0,
+        "losses": 0,
+        "wr_raw": null,
+        "wr_smoothed": 50.0,
+        "total_pnl": 0,
+        "avg_pnl": 0,
+        "expectancy_positive": false
+      }
+    },
+    "ALL": {
+      "50-54": {
+        "n": 8,
+        "wins": 4,
+        "losses": 4,
+        "wr_raw": 50.0,
+        "wr_smoothed": 50.0,
+        "total_pnl": 85342.0,
+        "avg_pnl": 10668.0,
+        "expectancy_positive": true
+      },
+      "55-59": {
+        "n": 42,
+        "wins": 14,
+        "losses": 28,
+        "wr_raw": 33.3,
+        "wr_smoothed": 35.1,
+        "total_pnl": -223998.0,
+        "avg_pnl": -5333.0,
+        "expectancy_positive": false
+      },
+      "60-64": {
+        "n": 28,
+        "wins": 16,
+        "losses": 12,
+        "wr_raw": 57.1,
+        "wr_smoothed": 56.1,
+        "total_pnl": -28846.0,
+        "avg_pnl": -1030.0,
+        "expectancy_positive": false
+      },
+      "65-69": {
+        "n": 37,
+        "wins": 16,
+        "losses": 21,
+        "wr_raw": 43.2,
+        "wr_smoothed": 44.0,
+        "total_pnl": 274438.0,
+        "avg_pnl": 7417.0,
+        "expectancy_positive": true
+      },
+      "70-74": {
+        "n": 42,
+        "wins": 23,
+        "losses": 19,
+        "wr_raw": 54.8,
+        "wr_smoothed": 54.3,
+        "total_pnl": 83005.0,
+        "avg_pnl": 1976.0,
+        "expectancy_positive": true
+      },
+      "75-79": {
+        "n": 28,
+        "wins": 16,
+        "losses": 12,
+        "wr_raw": 57.1,
+        "wr_smoothed": 56.1,
+        "total_pnl": 70995.0,
+        "avg_pnl": 2536.0,
+        "expectancy_positive": true
+      },
+      "80-84": {
+        "n": 19,
+        "wins": 8,
+        "losses": 11,
+        "wr_raw": 42.1,
+        "wr_smoothed": 43.8,
+        "total_pnl": 34337.0,
+        "avg_pnl": 1807.0,
+        "expectancy_positive": true
+      },
+      "85-89": {
+        "n": 6,
+        "wins": 1,
+        "losses": 5,
+        "wr_raw": 16.7,
+        "wr_smoothed": 31.8,
+        "total_pnl": -9542.0,
+        "avg_pnl": -1590.0,
+        "expectancy_positive": false
+      },
+      "90-94": {
+        "n": 1,
+        "wins": 0,
+        "losses": 1,
+        "wr_raw": 0.0,
+        "wr_smoothed": 41.7,
+        "total_pnl": -6496.0,
+        "avg_pnl": -6496.0,
+        "expectancy_positive": false
+      },
+      "95-100": {
+        "n": 0,
+        "wins": 0,
+        "losses": 0,
+        "wr_raw": null,
+        "wr_smoothed": 50.0,
+        "total_pnl": 0,
+        "avg_pnl": 0,
+        "expectancy_positive": false
+      }
+    }
+  },
+  "calibration_curves": {
+    "main_overall": {
+      "50": 73.1,
+      "55": 62.5,
+      "60": 54.0,
+      "65": 51.9,
+      "70": 58.6,
+      "75": 45.6,
+      "80": 47.9,
+      "85": 40.6,
+      "90": 41.7,
+      "95": 40.9
+    },
+    "scalper_overall": {
+      "50": 50.0,
+      "55": 35.1,
+      "60": 56.1,
+      "65": 44.0,
+      "70": 54.3,
+      "75": 56.1,
+      "80": 43.8,
+      "85": 31.8,
+      "90": 41.7,
+      "95": 50.0
+    }
+  },
+  "warnings": [
+    {
+      "engine": "main",
+      "type": "INVERSION",
+      "from_bucket": 50,
+      "to_bucket": 55,
+      "wr_drop_pp": 10.6,
+      "message": "main: raw_prob 50% has higher WR (73.1%) than raw_prob 55% (62.5%) \u2014 calibration inverted"
+    },
+    {
+      "engine": "main",
+      "type": "INVERSION",
+      "from_bucket": 55,
+      "to_bucket": 60,
+      "wr_drop_pp": 8.5,
+      "message": "main: raw_prob 55% has higher WR (62.5%) than raw_prob 60% (54.0%) \u2014 calibration inverted"
+    },
+    {
+      "engine": "main",
+      "type": "INVERSION",
+      "from_bucket": 70,
+      "to_bucket": 75,
+      "wr_drop_pp": 13.0,
+      "message": "main: raw_prob 70% has higher WR (58.6%) than raw_prob 75% (45.6%) \u2014 calibration inverted"
+    },
+    {
+      "engine": "main",
+      "type": "INVERSION",
+      "from_bucket": 80,
+      "to_bucket": 85,
+      "wr_drop_pp": 7.3,
+      "message": "main: raw_prob 80% has higher WR (47.9%) than raw_prob 85% (40.6%) \u2014 calibration inverted"
+    },
+    {
+      "engine": "scalper",
+      "type": "INVERSION",
+      "from_bucket": 50,
+      "to_bucket": 55,
+      "wr_drop_pp": 14.9,
+      "message": "scalper: raw_prob 50% has higher WR (50.0%) than raw_prob 55% (35.1%) \u2014 calibration inverted"
+    },
+    {
+      "engine": "scalper",
+      "type": "INVERSION",
+      "from_bucket": 60,
+      "to_bucket": 65,
+      "wr_drop_pp": 12.1,
+      "message": "scalper: raw_prob 60% has higher WR (56.1%) than raw_prob 65% (44.0%) \u2014 calibration inverted"
+    },
+    {
+      "engine": "scalper",
+      "type": "INVERSION",
+      "from_bucket": 75,
+      "to_bucket": 80,
+      "wr_drop_pp": 12.3,
+      "message": "scalper: raw_prob 75% has higher WR (56.1%) than raw_prob 80% (43.8%) \u2014 calibration inverted"
+    },
+    {
+      "engine": "scalper",
+      "type": "INVERSION",
+      "from_bucket": 80,
+      "to_bucket": 85,
+      "wr_drop_pp": 12.0,
+      "message": "scalper: raw_prob 80% has higher WR (43.8%) than raw_prob 85% (31.8%) \u2014 calibration inverted"
+    }
+  ]
+}
