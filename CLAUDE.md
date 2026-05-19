@@ -247,28 +247,157 @@ Loop, Structure Reader) and phased rollout plan.
 
 ## Last session summary
 
-Date: 2026-05-10
-What user asked: "Continue Phase 2 from Task 2.4 only"
-What got done:
-  - Task 2.4 — extracted `PulseScheduler` into `engine_modules/pulse_scheduler.py`
-  - 7 new tests added (101 total now passing)
-  - Commit `c3ed0bb` pushed to main
-  - Doc updates (this file + ROADMAP.md) — separate commit
+Date: 2026-05-19 (most recent — supersedes all earlier session notes)
 
-User explicitly held off on Tasks 2.5/2.6 as HIGH RISK.
-2.8 (wiring) deferred — user will decide when to do it (needs Sentry monitoring
-window after deploy).
+### What was wrong + what got fixed
 
-What's next when user returns:
-- Decide whether to do Task 2.8 (wire engine.py to use new modules).
-  This is the smallest-diff "switch the lights on" commit, but it DOES
-  modify engine.py so it needs the user's attention post-deploy.
-- After 2.8 stable in prod → consider 2.5/2.6 (still high risk).
-- Postgres migration (Phase 3) is the bigger fish after Phase 2 done.
+**Scalper losses (4 sessions, -₹119,046):**
+- 38% winrate, 82% PE bias (counter-trend in trending markets)
+- 10/45 trades killed by theta decay
+- Probability scoring uncalibrated (70-79% prob bucket = -₹103k)
+- Root cause: counter-trend philosophy in trending market
 
-User's open S3 todo: Add 4 env vars to Render to activate backup daemon
+**Main engine — 0 trades for 10+ days (since May 8):**
+- smartBias flipping bullish → bearish on every rally day
+- RANGE_PENALTY_BULL + MOVE_EXHAUSTED_BULL halved + reduced bull scores
+- Result: BUY PE on rallying days → either lost or refused to fire
+- FIXED 2026-05-19: trend-aware gate added (`commit 2035e71`)
 
-If user starts new chat saying "let's continue", point them to:
-1. This file (CLAUDE.md)
-2. ROADMAP.md (specific Phase 2 tasks)
-3. Their own memory file at `~/.claude/projects/.../MEMORY.md`
+**WebSocket stale (last_tick_age_sec hitting 200+s):**
+- Old watchdog: 30s checks + 60s threshold + 2 strikes = 90-120s detection
+- 5-min cooldown between attempts
+- Only ONE recovery strategy
+- FIXED 2026-05-19: 5-stage escalating watchdog (`commit eb07887`)
+  - Stage 1 (15s): restart ticker
+  - Stage 2 (45s): restart + force re-subscribe
+  - Stage 3 (90s): reload token from cache
+  - Stage 4 (150s): fresh Kite login
+  - Stage 5 (210s): 🚨 Telegram CRITICAL
+
+**Reversal Zone disaster (2026-05-12, -₹48k):**
+- Disabled via REVERSAL_ZONE_ENABLED=False flag (`commit 0ef01a3`)
+- Still disabled. Re-enable only after P0 fixes (trend gate, regime gate, etc).
+
+### Current state (as of 2026-05-19)
+
+Working systems:
+- ✅ 6-layer auto-login (daemon, GitHub cron, self-heal, etc.)
+- ✅ Telegram alerts (working — verified)
+- ✅ Trinity cadence at 1s (was 500ms)
+- ✅ Trinity DB prune (was broken, now correct — deletes from real tables)
+- ✅ Page visibility polling pause (8 components)
+- ✅ React.memo HeatmapRow
+- ✅ Perf monitor (5-min sampling to council.db perf_samples table)
+- ✅ Trend-aware smartBias gate (no false bull→bear flips on trend days)
+- ✅ 5-stage WS watchdog (15s-210s escalation)
+- ✅ Scalper auto-trade re-enabled (user's choice) with kill switch
+- ✅ Council aggregator OBSERVE-ONLY (collecting data, not influencing trades)
+
+Pending decisions:
+- 🟡 Scalper trading logic fixes (directional gate, theta protection)
+- 🟡 Engine.py modules wiring (Phase 2.8) — scaffold exists, unused
+- 🟡 DB consolidation (30 → 5 logical groups)
+- 🟡 Trap_data.db audit (1.98 GB, biggest disk hog)
+- 🟡 Postgres migration (Phase 3)
+
+### Critical Discoveries (Don't Repeat)
+
+1. **Engine died at 3:55 AM (2026-05-14) — cause unknown**
+   - No instrumentation existed to diagnose
+   - NOW: perf_monitor samples every 5 min to council.db perf_samples
+   - Future crash: query `/api/perf-history?hours=2` to see what was happening
+
+2. **trinity.db prune was deleting wrong tables**
+   - Old code tried to DELETE FROM verdict_history, stream_history etc.
+   - Those tables DON'T EXIST. Real tables are trinity_ticks, trinity_signals, trinity_strike_data
+   - Silently failed → DB grew unbounded to 111MB
+   - FIXED 2026-05-17 (`commit b7a566a`) + verified working
+
+3. **Council observe mode revealed engine vote direction inversion**
+   - Initial implementation read magnitude only (always positive)
+   - 82% bullish votes, even when reasons said BEARISH
+   - FIXED 2026-05-13 (`commit f0f45a6`) — now reads bull_reasons/bear_reasons lists
+
+4. **Auto-trade kill switch precedent**
+   - 2026-05-18: paused scalper via SCALPER_AUTO_TRADE env var
+   - 2026-05-18 same day: user chose to re-enable, accept risk
+   - Pattern: env-var gated flags are good for emergency pauses
+
+### Today's Open Questions
+
+User keeps asking variations of "why does my dashboard keep failing":
+- Honest answer (2026-05-19 session): It's not a failure, it's wrong tool for goal.
+- Custom dashboard for solo trader = engineering luxury
+- Commercial tools (Sensibull, Opstra, Streak) cheaper + more reliable
+- Hybrid recommended: keep dashboard for monitoring, use commercial for analysis
+
+User decision PENDING:
+- Path B (Surgical refactor, 15-20 hr) vs Trading Logic Fixes (20-25 hr)
+- 5 trading fixes (gap classifier, OI memory, OI flow, scalper directional gate,
+  engine accuracy audit) — would improve P&L
+- Path B (modular engines, DB consolidation) — would improve maintainability
+
+### Resume Instructions for New Session
+
+If user starts new chat saying any of these:
+- "continue from last session"
+- "where did we leave off"
+- "what's the status"
+- "let's resume"
+
+→ Steps for new Claude:
+
+1. Read this file (CLAUDE.md) FIRST
+2. Read ARCHITECTURE.md for component overview
+3. Read ROADMAP.md for Phase 2/3 task list
+4. Check memory file: `~/.claude/projects/-Users-kanishkarora-Desktop-oi-live-bot-dhan/memory/project_universe_dashboard.md`
+5. Run `git log --oneline -20` to see recent commits
+6. Hit `/api/ws/health` to verify engine state
+7. Hit `/api/auto-login/status` to verify daemon working
+8. DO NOT make code changes until user confirms direction
+9. Engineering style: terse Hinglish, no preambles, honest pushback when wrong
+
+### CRITICAL — Things New Session Must NOT Do
+
+- ❌ Don't add new engines (already too many)
+- ❌ Don't build new abstractions without user OK
+- ❌ Don't run mass `git add -A` (caused 216-file deletion 2026-05-18)
+- ❌ Don't re-enable Reversal Zone without P0 fixes
+- ❌ Don't refactor without explicit user request
+- ❌ Don't be defensive when user is frustrated — be brutally honest
+- ❌ Don't suggest building if user is losing money — suggest commercial tools
+
+### Strict Git Workflow (after 2026-05-18 disaster)
+
+Before every commit:
+1. `git status` — verify expected files only
+2. `git diff --cached --stat` — verify diff size sensible
+3. NEVER `git add -A` unless user explicitly asks
+4. Stage files by exact path: `git add backend/scalper_mode.py` etc.
+5. Use heredoc for commit message: `git commit -F /tmp/commit_msg.txt`
+6. Push immediately, verify CI green
+
+### User Profile
+
+- **Name:** Kanishk Arora
+- **Communication:** Hinglish (Hindi + English mix), terse, direct
+- **Background:** Solo trader, 10 invited users on dashboard
+- **Goal:** Reliable trading bot, not a startup product
+- **Patience:** Low when system breaks during market hours
+- **Honesty:** Wants brutal truth, not engineering polish
+- **Phone:** Telegram bot `UNIVERSE_DASHBOARD_BOT` (chat_id: 7970601517)
+
+### Most Recent Commits (newest first, 2026-05-19)
+
+```
+eb07887  fix(ws): aggressive multi-stage auto-recovery — 'fix this forever'
+2035e71  feat(smartbias): trend-aware gate — fix 10+ days of zero main trades
+33057e1  feat(scalper): re-enable auto-trade by default — user choice
+56c797a  fix: restore 216 files accidentally deleted in acde378
+acde378  fix(scalper): PAUSE auto-trade — 4-session audit, -₹119k losses
+32ed4e5  feat(perf): system metrics sampling — diagnose future crashes
+b7a566a  fix(trinity): proper DB prune — fixes silent disk fill (was 111MB)
+7ef76e9  perf: React.memo HeatmapRow with custom comparator
+0eba8b2  perf: pause polling when browser tab is hidden (8 setInterval sites)
+c1c4865  perf: Trinity cadence 500ms → 1s
+```
