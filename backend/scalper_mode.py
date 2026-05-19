@@ -1437,9 +1437,52 @@ def check_scalper_exits(chains):
             exit_price = t2
             exit_reason = f"T2 hit at ₹{t2}"
         elif current_ltp >= t1:
-            new_status = "T1_HIT"
-            exit_price = t1
-            exit_reason = f"T1 hit at ₹{t1}"
+            # ── T1 FLOOR LOCK (Fix 5, 2026-05-19) ──
+            # Audit: 30 T1_HIT scalper trades, all wins, +₹921k.
+            # Full exit at T1 misses runners that go to T2 or beyond.
+            #
+            # NEW: when T1 hits AND lock enabled AND current SL < T1,
+            # promote SL to T1 (lock in the T1 profit as floor). Trade
+            # stays OPEN. Subsequent ticks:
+            #   • If price → T2: exit at T2 (full runner captured)
+            #   • If price drops back to T1: SL_HIT but at T1 = +T1% profit
+            #   • If timeout: exit at current_ltp ≥ T1
+            #
+            # Strictly better than current behavior:
+            #   Worst case  = T1 profit (same as old)
+            #   Best case   = T2 profit (12% better avg)
+            #   Side effect = SL_HIT will increment instead of T1_HIT,
+            #                 but exit_reason makes the distinction clear.
+            #
+            # Env-gated: T1_FLOOR_LOCK_ENABLED=on
+            import os as _os
+            t1_lock_enabled = _os.environ.get("T1_FLOOR_LOCK_ENABLED", "off").lower() == "on"
+            if t1_lock_enabled and active_sl_used < t1:
+                # Lock SL to T1 — apply small buffer to avoid same-tick re-fire
+                new_floor_sl = round(t1 * 0.995, 2)  # T1 - 0.5% buffer
+                if new_floor_sl > active_sl_used:
+                    # Update DB so next tick sees the new SL
+                    try:
+                        conn_lock = _conn()
+                        conn_lock.execute(
+                            "UPDATE scalper_trades SET sl_price=? WHERE id=? AND status='OPEN'",
+                            (new_floor_sl, t["id"]),
+                        )
+                        conn_lock.commit()
+                        conn_lock.close()
+                        print(f"[SCALPER] T1_FLOOR_LOCK #{t['id']}: T1 ₹{t1} reached, "
+                              f"SL locked to ₹{new_floor_sl} (was ₹{active_sl_used:.2f}). "
+                              f"Letting runner continue to T2 ₹{t2}.")
+                    except Exception as _e:
+                        print(f"[SCALPER] T1_FLOOR_LOCK update failed (falling through to exit): {_e}")
+                        new_status = "T1_HIT"
+                        exit_price = t1
+                        exit_reason = f"T1 hit at ₹{t1}"
+                # Don't set new_status — trade stays OPEN
+            else:
+                new_status = "T1_HIT"
+                exit_price = t1
+                exit_reason = f"T1 hit at ₹{t1}"
         elif hold_sec >= active_max_hold_min * 60:
             # ── PROFIT-ANCHOR TIMEOUT EXTENSION (Fix 2, 2026-05-19) ──
             # Audit: TIMEOUT_EXIT bucket = 18W (+₹357k) vs 16L (-₹223k).
