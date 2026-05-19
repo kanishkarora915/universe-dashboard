@@ -1167,6 +1167,27 @@ async def calibration_lookup(prob: int, engine: str = "main", action: str = "ALL
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/engine-bias")
+async def engine_bias(hours: int = 168):
+    """Per-engine bull/bear/neutral bias over last N hours.
+
+    Built 2026-05-19 to make the structural bias of oi_flow, price_action,
+    and seller_positioning visible to the dashboard. These three engines
+    measure correlated aspects of Indian-market PE-write-dominance —
+    treat them as ONE signal when all three vote bull, not three.
+
+    Returns:
+      • Per-engine: bull / bear / neutral counts, bias_pct, fire_rate
+      • flag: STRUCTURAL_BULL | STRUCTURAL_BEAR | BALANCED | RARE | DEAD
+      • correlated_bull_cluster: list of engines audit found to overlap
+    """
+    try:
+        from engine_bias_analyzer import compute_engine_bias
+        return compute_engine_bias(hours=hours)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.post("/api/calibration/rebuild")
 async def calibration_rebuild():
     """Rebuild the calibration table from current closed-trade history.
