@@ -355,6 +355,29 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
     except Exception as _e:
         print(f"[SCALPER] circuit_breaker error (allow): {_e}")
 
+    # ── G0c: CALIBRATION GATE (Fix 6) ──
+    # 60-day audit: probability is INVERSE — high raw_prob = low actual WR.
+    # When CALIBRATION_GATE_ENABLED=on, skip entries where calibrated_wr
+    # (historical WR at that raw_prob bucket) is below threshold.
+    # Default off until 250+ trades accumulate for higher confidence buckets.
+    try:
+        import os as _os
+        if _os.environ.get("CALIBRATION_GATE_ENABLED", "off").lower() == "on":
+            from calibration import calibrated_wr, is_inverted
+            cal_min = float(_os.environ.get("CALIBRATION_MIN_WR", "55"))
+            cal_wr = calibrated_wr(int(win_pct), engine_type="scalper", action=action_str)
+            inverted = is_inverted(int(win_pct), engine_type="scalper")
+            # Shadow log every check
+            print(f"[CALIB_SHADOW] scalper {action_str} raw_prob={win_pct:.0f}% "
+                  f"cal_wr={cal_wr} inverted={inverted} threshold={cal_min}")
+            # Block only if data exists AND below threshold
+            if cal_wr is not None and cal_wr < cal_min:
+                print(f"[SCALPER] REJECT entry (G0c): calibration gate — "
+                      f"raw {win_pct:.0f}% but historical WR {cal_wr}% < {cal_min}%")
+                return False
+    except Exception as _e:
+        print(f"[SCALPER] calibration_gate error (allow): {_e}")
+
     # Threshold (user-configurable)
     cfg = get_scalper_config()
     threshold = cfg.get("threshold") or SCALPER_THRESHOLD

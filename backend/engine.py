@@ -5145,6 +5145,27 @@ class MarketEngine:
                         except Exception:
                             pass
 
+                        # ── G0c: CALIBRATION GATE (Fix 6) ──
+                        # Skip when calibrated_wr < threshold (default 55%).
+                        # Audit found probability is inverse: high raw_prob = low actual WR.
+                        try:
+                            import os as _os
+                            if _os.environ.get("CALIBRATION_GATE_ENABLED", "off").lower() == "on":
+                                from calibration import calibrated_wr as _cal_wr_fn
+                                cal_min = float(_os.environ.get("CALIBRATION_MIN_WR", "55"))
+                                raw_prob = pending.get("probability", 0)
+                                cal_wr = _cal_wr_fn(int(raw_prob), engine_type="main", action=action)
+                                print(f"[CALIB_SHADOW] main {action} raw_prob={raw_prob}% "
+                                      f"cal_wr={cal_wr} threshold={cal_min}")
+                                if cal_wr is not None and cal_wr < cal_min:
+                                    print(f"[TRADE] BLOCKED by calibration gate: raw "
+                                          f"{raw_prob}% but historical WR {cal_wr}% < {cal_min}%")
+                                    self.trade_manager._pending_entry.pop(idx, None)
+                                    self.trade_manager._pending_entry_time.pop(idx, None)
+                                    continue
+                        except Exception as _e:
+                            print(f"[TRADE] calibration_gate error (allow): {_e}")
+
                         # Use LOCKED strike from pending (not current ATM — ATM can drift)
                         pending_strike = pending["strike"]
                         pending_strike_data = chain.get(pending_strike, {})
