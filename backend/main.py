@@ -1167,6 +1167,24 @@ async def calibration_lookup(prob: int, engine: str = "main", action: str = "ALL
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/circuit-breaker/status")
+async def circuit_breaker_status():
+    """Current circuit-breaker state per tab (P&L vs limit, streak status).
+
+    Use for the dashboard daily P&L pace bar — shows how close each tab
+    is to triggering the breaker.
+    """
+    try:
+        from circuit_breaker import status, is_enabled
+        return {
+            "enabled": is_enabled(),
+            "main": status("MAIN"),
+            "scalper": status("SCALPER"),
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/engine-bias")
 async def engine_bias(hours: int = 168):
     """Per-engine bull/bear/neutral bias over last N hours.

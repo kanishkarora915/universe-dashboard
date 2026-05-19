@@ -344,6 +344,17 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
     except Exception as _e:
         print(f"[SCALPER] expiry_day_guard error (allow): {_e}")
 
+    # ── G0b: CIRCUIT BREAKER (daily loss cap + consecutive loss pause) ──
+    # 60-day audit: May 14 disaster -₹81k single session, 4-session collapse -₹119k.
+    # Hard cap prevents bleed-out days; consec pause prevents tilt-firing.
+    try:
+        from circuit_breaker import should_block
+        if should_block(tab="SCALPER", source="scalper.should_enter_scalp"):
+            print(f"[SCALPER] REJECT entry (G0b): circuit breaker triggered")
+            return False
+    except Exception as _e:
+        print(f"[SCALPER] circuit_breaker error (allow): {_e}")
+
     # Threshold (user-configurable)
     cfg = get_scalper_config()
     threshold = cfg.get("threshold") or SCALPER_THRESHOLD

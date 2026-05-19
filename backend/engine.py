@@ -5134,6 +5134,17 @@ class MarketEngine:
                         except Exception:
                             pass
 
+                        # ── G0b: CIRCUIT BREAKER (daily loss cap + consec losses) ──
+                        try:
+                            from circuit_breaker import should_block
+                            if should_block(tab="MAIN", source="engine.pending_confirmation"):
+                                print(f"[TRADE] BLOCKED by circuit breaker: daily loss cap or streak pause")
+                                self.trade_manager._pending_entry.pop(idx, None)
+                                self.trade_manager._pending_entry_time.pop(idx, None)
+                                continue
+                        except Exception:
+                            pass
+
                         # Use LOCKED strike from pending (not current ATM — ATM can drift)
                         pending_strike = pending["strike"]
                         pending_strike_data = chain.get(pending_strike, {})
