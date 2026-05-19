@@ -579,6 +579,41 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         except Exception as _e:
             print(f"[SCALPER] entry_filters error (allow): {_e}")
 
+    # ── G12: THETA GATE (2026-05-19) ──
+    # 19 VELOCITY_EXIT scalper trades, 0 wins, -₹212,386 over 60d.
+    # All were "bought option in flat market, theta ate premium before
+    # spot moved". theta_gate uses REAL Black-Scholes (from engine.py
+    # bs_greeks) + realized 30-min spot range to gate entries when
+    # expected premium gain < 2× theta loss over hold window.
+    # Shadow-logs always; only blocks when THETA_GATE_ENABLED=on.
+    if engine is not None and atm_strike is not None:
+        try:
+            from theta_gate import gate_or_pass, is_theta_gate_enabled
+            side = "CE" if is_ce else "PE"
+            atm_data = engine.chains.get(idx, {}).get(int(atm_strike), {})
+            entry_premium = atm_data.get(f"{side.lower()}_ltp", 0)
+            expiry_str = str(engine.nearest_expiry.get(idx, "")) if hasattr(engine, "nearest_expiry") else ""
+            hold_min = cfg.get("max_hold_min", 15)
+
+            if entry_premium > 0:
+                decision = gate_or_pass(
+                    engine=engine,
+                    idx=idx,
+                    strike=int(atm_strike),
+                    side=side,
+                    option_premium=entry_premium,
+                    expiry_date=expiry_str,
+                    action=action_str,
+                    hold_minutes=hold_min,
+                    source="scalper.should_enter_scalp",
+                )
+                if is_theta_gate_enabled() and not decision.get("passes", True):
+                    print(f"[SCALPER] REJECT entry (G12 theta): {decision.get('reason', '')}")
+                    return False
+        except Exception as _e:
+            # NEVER let theta_gate exception block legit entries
+            print(f"[SCALPER] theta_gate error (allow): {_e}")
+
     return True
 
 
