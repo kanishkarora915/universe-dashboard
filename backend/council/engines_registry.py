@@ -30,17 +30,29 @@ from .vote import EngineVote, Direction, Horizon
 # ── Registry of engines we want to include in the council ────────────
 
 # Order matters for display but not for aggregation.
+#
+# REMOVED 2026-05-19 (audit of 14d / 35,957 council pulses):
+#   • "vwap"        — 0 directional votes EVER (100% NEUTRAL). Dead.
+#   • "predictive"  — fires 2.7% of pulses, near-random direction
+#                     (426 BULL / 533 BEAR). Aggregate is noise.
+#
+# Kept despite low fire rate:
+#   • "trap_fingerprints" — only 1.1% of pulses, but per 2026-05-05
+#     backtest hit 61.9% WR @ +₹6.4k avg. Rare-but-accurate signal.
+#
+# Note: removing from this list ONLY stops council vote-logging.
+# Engine.py still computes these signals — to fully disable, the user
+# would need to toggle the engine via /api/engine-toggles (which only
+# affects verdict weighting, not compute).
 COUNCIL_ENGINES = [
     "seller_positioning",
     "trap_fingerprints",
     "price_action",
     "oi_flow",
     "market_context",
-    "vwap",
     "multi_timeframe",
     "fii_dii",
     "global_cues",
-    "predictive",
     "smart_money",
 ]
 

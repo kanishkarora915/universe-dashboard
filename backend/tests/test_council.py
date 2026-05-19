@@ -350,13 +350,13 @@ class TestEngineRegistry:
         through to NEUTRAL as safe default.
         """
         eng_dict = {
-            "vwap": 3,
+            "price_action": 3,
             "fii_dii": 10,
             "global_cues": 5,
             "unknown_engine": 5,
         }
         bull_reasons = [
-            "VWAP above + rising — bullish bias [3pts]",
+            "Higher close + higher low — price action bullish [3pts]",
         ]
         bear_reasons = [
             "FII net: -1959Cr (STRONG_BEAR) [10pts]",
@@ -369,9 +369,9 @@ class TestEngineRegistry:
         engine_names = [v.engine for v in votes]
         assert "unknown_engine" not in engine_names
 
-        # vwap: in bull_reasons → BULLISH
-        vw = next(v for v in votes if v.engine == "vwap")
-        assert vw.direction == Direction.BULLISH
+        # price_action: in bull_reasons → BULLISH
+        pa = next(v for v in votes if v.engine == "price_action")
+        assert pa.direction == Direction.BULLISH
 
         # fii_dii: in bear_reasons → BEARISH (this is THE bug we fixed)
         fii = next(v for v in votes if v.engine == "fii_dii")
