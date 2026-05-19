@@ -333,6 +333,17 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
     if not market_open:
         return False
 
+    # ── G0: EXPIRY DAY GUARD (Tuesday NIFTY weekly expiry) ──
+    # 60-day audit: Tuesday cost combined -₹193,805 (24% of all losses).
+    # Theta crusher + max-pain pin = BUYER strategy gets murdered.
+    try:
+        from expiry_day_guard import should_skip
+        if should_skip(source="scalper.should_enter_scalp", now=now):
+            print(f"[SCALPER] REJECT entry (G0): Tuesday NIFTY weekly expiry — buyer strategy paused")
+            return False
+    except Exception as _e:
+        print(f"[SCALPER] expiry_day_guard error (allow): {_e}")
+
     # Threshold (user-configurable)
     cfg = get_scalper_config()
     threshold = cfg.get("threshold") or SCALPER_THRESHOLD

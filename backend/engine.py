@@ -5122,6 +5122,18 @@ class MarketEngine:
                     pending = self.trade_manager._pending_entry.get(idx)
 
                     if pending and pending["action"] == action:
+                        # ── G0: EXPIRY DAY GUARD ──
+                        # Tuesday = NIFTY weekly expiry. 60d audit: -₹116k MAIN loss.
+                        try:
+                            from expiry_day_guard import should_skip
+                            if should_skip(source="engine.pending_confirmation"):
+                                print(f"[TRADE] BLOCKED by expiry day guard: Tuesday NIFTY weekly expiry")
+                                self.trade_manager._pending_entry.pop(idx, None)
+                                self.trade_manager._pending_entry_time.pop(idx, None)
+                                continue
+                        except Exception:
+                            pass
+
                         # Use LOCKED strike from pending (not current ATM — ATM can drift)
                         pending_strike = pending["strike"]
                         pending_strike_data = chain.get(pending_strike, {})
