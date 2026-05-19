@@ -1430,9 +1430,58 @@ def check_scalper_exits(chains):
             exit_price = t1
             exit_reason = f"T1 hit at ₹{t1}"
         elif hold_sec >= active_max_hold_min * 60:
-            new_status = "TIMEOUT_EXIT"
-            exit_price = current_ltp
-            exit_reason = f"Max hold {active_max_hold_min}min reached, exit @ ₹{current_ltp}"
+            # ── PROFIT-ANCHOR TIMEOUT EXTENSION (Fix 2, 2026-05-19) ──
+            # Audit: TIMEOUT_EXIT bucket = 18W (+₹357k) vs 16L (-₹223k).
+            # When trade is profitable at timeout, it's "still working" —
+            # let it run another 50% time to capture more (or hit T1/T2).
+            # When trade is losing at timeout, cut as before (don't waste).
+            #
+            # State derived from hold_sec — no DB column needed:
+            #   hold < active_max_hold_min    →   normal monitoring
+            #   active_max <= hold < extended →   if profitable, hold; else exit
+            #   hold >= extended_max_min      →   hard exit
+            #
+            # Env-gated: TIMEOUT_EXTENSION_ENABLED=on
+            import os as _os
+            extension_enabled = _os.environ.get("TIMEOUT_EXTENSION_ENABLED", "off").lower() == "on"
+            extension_factor = 1.5  # extend by 50%
+            min_profit_pct = 0.01   # must be >+1% to qualify
+
+            extended_max_min = active_max_hold_min * extension_factor
+            current_pnl_pct = (current_ltp - entry) / entry if entry > 0 else 0
+
+            past_hard_limit = hold_sec >= extended_max_min * 60
+            in_extension_window = (
+                hold_sec >= active_max_hold_min * 60
+                and hold_sec < extended_max_min * 60
+            )
+
+            if not extension_enabled or past_hard_limit:
+                # Either feature off or we've crossed the hard ceiling → exit
+                new_status = "TIMEOUT_EXIT"
+                exit_price = current_ltp
+                tag = "EXTENDED" if extension_enabled and past_hard_limit else "STANDARD"
+                exit_reason = (
+                    f"Max hold {(extended_max_min if extension_enabled else active_max_hold_min):.0f}min "
+                    f"reached ({tag}), exit @ ₹{current_ltp}"
+                )
+            elif in_extension_window and current_pnl_pct > min_profit_pct:
+                # Profitable + in extension window → log once, stay open
+                # (the next monitoring tick will re-evaluate)
+                if hold_sec < (active_max_hold_min * 60) + 30:
+                    # Only log within 30s of crossing the threshold
+                    print(f"[SCALPER] TIMEOUT_EXTENDED #{t['id']}: profitable at "
+                          f"{current_pnl_pct*100:+.1f}% at {hold_sec/60:.0f}m, "
+                          f"extending to {extended_max_min:.0f}m total")
+                # Don't set new_status — trade stays OPEN
+            elif in_extension_window:
+                # In extension window but NOT profitable → exit now (cut loss)
+                new_status = "TIMEOUT_EXIT"
+                exit_price = current_ltp
+                exit_reason = (
+                    f"Max hold {active_max_hold_min}min reached "
+                    f"(not profitable, no extension), exit @ ₹{current_ltp}"
+                )
 
         # Update or close
         pnl_pts = round(current_ltp - entry, 2)
