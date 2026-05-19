@@ -599,6 +599,20 @@ class TradeManager:
             t1_price = targets["t1"]
             t2_price = targets["t2"]
             method_label = "ATR" if targets["method"] == "atr" else "REVERSAL_ZONE"
+            # Anti-stop-hunt SL wrapping. Pass the ATR-derived SL through
+            # smart_sl_or_legacy so it gets non-round-number adjustment
+            # when SMART_SL_ENABLED=on. Shadow-logs regardless of flag.
+            try:
+                from smart_sl import smart_sl_or_legacy
+                sl_price = smart_sl_or_legacy(
+                    entry_price=entry_price,
+                    legacy_sl=sl_price,
+                    atr_pct=targets.get("atr_pct"),
+                    direction=action,
+                    source=f"trade_logger.{method_label.lower()}",
+                )
+            except Exception as _e:
+                print(f"[TRADE] smart_sl wrap failed (keeping legacy): {_e}")
             print(f"[TRADE] {method_label} targets: SL ₹{sl_price} (-{targets['sl_pct']}%) "
                   f"T1 ₹{t1_price} (+{targets['t1_pct']}%) T2 ₹{t2_price} (+{targets['t2_pct']}%)")
         else:
@@ -609,6 +623,18 @@ class TradeManager:
             sl_price = round(entry_price * 0.95, 1)   # -5% (was -15% to -20%)
             t1_price = round(entry_price * 1.05, 1)   # +5% (was +20%)
             t2_price = round(entry_price * 1.12, 1)   # +12% (was +40%)
+            # Same anti-stop-hunt wrap on the fallback path
+            try:
+                from smart_sl import smart_sl_or_legacy
+                sl_price = smart_sl_or_legacy(
+                    entry_price=entry_price,
+                    legacy_sl=sl_price,
+                    atr_pct=None,
+                    direction=action,
+                    source="trade_logger.fallback",
+                )
+            except Exception as _e:
+                print(f"[TRADE] smart_sl wrap failed (keeping legacy): {_e}")
             print(f"[TRADE] Fallback targets (no ATR): SL ₹{sl_price} (-5%) "
                   f"T1 ₹{t1_price} (+5%) T2 ₹{t2_price} (+12%)")
 

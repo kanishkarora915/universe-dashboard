@@ -3461,6 +3461,23 @@ class MarketEngine:
                     sl = round(entry * 0.85)   # 15% SL
                     t1 = round(entry * 1.30)   # +30% T1 (R:R 1:2)
                     t2 = round(entry * 1.60)   # +60% T2 (R:R 1:4)
+
+                # Anti-stop-hunt SL placement (2026-05-19).
+                # Wraps the legacy SL with non-round-number adjustment +
+                # ATR-scaled distance when ATR is available. Always shadow-
+                # logs the comparison, only swaps when SMART_SL_ENABLED=on.
+                try:
+                    from smart_sl import smart_sl_or_legacy
+                    sl = smart_sl_or_legacy(
+                        entry_price=entry,
+                        legacy_sl=sl,
+                        atr_pct=None,  # verdict-display path; trade-firing has ATR
+                        direction=action,
+                        source="engine.verdict",
+                    )
+                except Exception:
+                    pass  # never let smart_sl break verdict computation
+
                 rr = round((t1 - entry) / max(entry - sl, 1), 1)
             else:
                 sl = t1 = t2 = rr = 0

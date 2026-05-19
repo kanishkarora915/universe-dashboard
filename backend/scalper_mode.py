@@ -790,6 +790,23 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
     t1_price = round(entry_price * (1 + t1_pct))
     t2_price = round(entry_price * (1 + t2_pct))
 
+    # Anti-stop-hunt SL wrapping (2026-05-19).
+    # Scalper had 69 SL_HIT trades / -₹656k over 60d — many at obvious
+    # round-number SLs that institutions sweep. smart_sl applies tick-
+    # precision rounding + offset from round levels. Always shadow-logs.
+    # Behaviour change only when SMART_SL_ENABLED=on.
+    try:
+        from smart_sl import smart_sl_or_legacy
+        sl_price = smart_sl_or_legacy(
+            entry_price=entry_price,
+            legacy_sl=sl_price,
+            atr_pct=None,  # scalper uses % config; pass None for non-round adj only
+            direction=action,
+            source="scalper.log_scalp_trade",
+        )
+    except Exception as _e:
+        print(f"[SCALPER] smart_sl wrap failed (keeping legacy): {_e}")
+
     # Lot size lookup (exchange-fixed) — current as of 2025
     lot_sizes = {"NIFTY": 75, "BANKNIFTY": 35}
     lot_size = lot_sizes.get(idx, 75)
