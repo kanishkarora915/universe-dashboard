@@ -65,6 +65,18 @@ DEFAULT_CONFIG = {
     "tight_sl_scalper": True,
     "min_score_for_exit": 3,      # Below this = auto-exit if enabled
     "min_score_for_tight_sl": 5,
+    # ────── WATCHER MODE (Fix 4, 2026-05-19) ──────
+    # 60-day audit: WATCHER_EXIT cost -₹350k combined (5 main + 9 scalper).
+    # Avg loss per watcher exit = -₹17k main, -₹29k scalper.
+    # By the time bypass triggers fire (HARD_LOSS_CAP, OI_REVERSAL, etc),
+    # the trade is already deep underwater. Watcher is REACTIVE not proactive.
+    #
+    # "warn_only" mode: skip all auto-close pathways including BYPASS triggers.
+    #   Trades hit natural SL/T1/T2/timeout instead.
+    #   Watcher still logs warnings + sends Telegram alerts.
+    #
+    # Env-gated: WATCHER_MODE=active (default) | warn_only | disabled
+    "watcher_mode": "active",
     # ────── HARD LOSS FLOOR (always-on safety net) ──────
     # These bypass auto_exit_main/scalper config — user's explicit
     # request: "agar position lete hi trade loss mein jara hai toh
@@ -193,7 +205,27 @@ def get_config() -> Dict:
                     cfg[k] = v
             except Exception:
                 pass
+    # ENV OVERRIDE for watcher_mode (so user can flip without DB update)
+    import os as _os
+    env_mode = _os.environ.get("WATCHER_MODE", "").lower().strip()
+    if env_mode in ("active", "warn_only", "disabled"):
+        cfg["watcher_mode"] = env_mode
     return cfg
+
+
+def is_warn_only(cfg=None) -> bool:
+    """Returns True if watcher should NOT auto-close trades.
+    In warn_only or disabled mode, all force-close pathways are skipped."""
+    if cfg is None:
+        cfg = get_config()
+    mode = str(cfg.get("watcher_mode", "active")).lower()
+    return mode in ("warn_only", "disabled")
+
+
+def is_disabled(cfg=None) -> bool:
+    if cfg is None:
+        cfg = get_config()
+    return str(cfg.get("watcher_mode", "active")).lower() == "disabled"
 
 
 def set_config(**kwargs):
@@ -920,6 +952,29 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
     # Evaluate trigger
     trigger = _evaluate_triggers(trade, health, action, cfg)
     action_taken = "NONE"
+
+    # ── WATCHER MODE GATE (Fix 4) ──
+    # In warn_only / disabled mode, log warnings + send alerts but
+    # never auto-close. Trades hit natural SL/T1/T2/timeout.
+    _warn_only = is_warn_only(cfg)
+    if _warn_only and trigger:
+        print(f"[WATCHER] WARN_ONLY mode — {source} #{trade_id} trigger={trigger} "
+              f"score={health.get('score', 0):.1f} profit={health.get('profit_pct', 0):+.2f}% "
+              f"(no auto-close)")
+        # Telegram alert for the user (throttled)
+        try:
+            import telegram_alerts as _tg
+            if _tg.is_enabled():
+                _tg.send(
+                    f"⚠️ Watcher warning ({source} #{trade_id}): {trigger} "
+                    f"profit {health.get('profit_pct', 0):+.2f}% — NO auto-close",
+                    key=f"watcher_warn_{trigger}",
+                )
+        except Exception:
+            pass
+        # Log the would-have-fired event for audit
+        _log_health(source, trade_id, idx, action, health, trigger, "WARN_ONLY")
+        return
 
     # ──── OI_REVERSAL — bypass-gate exit when already in loss ────
     # New: if OI is hostile AND we're losing (profit < -3%), force-exit
