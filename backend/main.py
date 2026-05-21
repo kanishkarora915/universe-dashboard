@@ -1255,6 +1255,41 @@ async def journal_stats_endpoint(days: int = 7):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/profit-floor/diagnose")
+async def profit_floor_diagnose(entry: float, peak: float, current_sl: float):
+    """Diagnose what profit floor would set for given entry/peak/SL.
+
+    Use to verify floor logic for any trade scenario:
+      GET /api/profit-floor/diagnose?entry=100&peak=110&current_sl=85
+    """
+    try:
+        from profit_floor import diagnose
+        return diagnose(entry, peak, current_sl)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/profit-floor/bands")
+async def profit_floor_bands():
+    """Show the peak-threshold → SL-floor bands."""
+    try:
+        from profit_floor import PROFIT_FLOOR_BANDS, is_enabled
+        return {
+            "enabled": is_enabled(),
+            "bands": [
+                {
+                    "peak_threshold_pct": t,
+                    "floor_multiplier": m,
+                    "locked_pct": round((m - 1) * 100, 1),
+                    "rule": f"Peak ≥ +{t}% → SL ≥ entry × {m} ({(m - 1) * 100:+.1f}% locked)",
+                }
+                for t, m in PROFIT_FLOOR_BANDS
+            ],
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/aggressive-trail/status")
 async def aggressive_trail_status():
     """Current aggressive trail configuration + flag state."""

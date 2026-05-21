@@ -205,14 +205,40 @@ def update_main_trail(trade: Dict, current_premium: float) -> Optional[Dict]:
 
     calc = calculate_trail_sl(entry, current_premium, current_sl, LADDER_MAIN)
 
-    # ── AGGRESSIVE PEAK TRAIL (2026-05-21) ──
-    # When AGGRESSIVE_TRAIL_ENABLED=on, use peak-anchored tight trail
-    # instead of entry-anchored ladder. Captures 15-25% more on big winners.
+    # ── PEAK TRACKING (always) ──
     peak_price = trade.get("peak_ltp", 0) or current_premium
     if peak_price < current_premium:
-        peak_price = current_premium  # peak is at LEAST current
-    legacy_new_sl = calc["new_sl"] if calc else current_sl
+        peak_price = current_premium
 
+    # ── PROFIT FLOOR (HARD GUARANTEE — default ON) ──
+    # User's rule: profitable trade should NEVER close in loss.
+    # If peak ever crossed +3%, SL minimum = entry (breakeven).
+    # +5% → +1% locked, +10% → +4%, etc.
+    legacy_new_sl = calc["new_sl"] if calc else current_sl
+    try:
+        from profit_floor import get_minimum_sl as _pf_min, shadow_log as _pf_shadow
+        _pf_shadow(
+            entry_price=entry, peak_price=peak_price,
+            current_sl=current_sl, trade_id=trade.get("id"), tab="MAIN",
+        )
+        floor_sl = _pf_min(
+            entry_price=entry, peak_price=peak_price, current_sl=current_sl,
+        )
+        # Floor wins if higher than current legacy
+        if floor_sl > legacy_new_sl:
+            calc = calc or {}
+            calc["new_sl"] = floor_sl
+            calc["profit_floor_applied"] = True
+            calc["locked_pct"] = round((floor_sl - entry) / entry * 100, 2)
+            calc["profit_pct"] = round((current_premium - entry) / entry * 100, 2)
+            calc["stage_threshold"] = "profit_floor_guarantee"
+            legacy_new_sl = floor_sl
+    except Exception as _pf_e:
+        print(f"[PROFIT-FLOOR] error (allow legacy): {_pf_e}")
+
+    # ── AGGRESSIVE PEAK TRAIL (offensive — env-gated) ──
+    # When AGGRESSIVE_TRAIL_ENABLED=on, use peak-anchored tight trail
+    # instead of entry-anchored ladder. Captures 15-25% more on big winners.
     try:
         from aggressive_trail import get_or_legacy as _agg_trail
         agg_sl = _agg_trail(
@@ -305,13 +331,35 @@ def update_scalper_trail(trade: Dict, current_premium: float) -> Optional[Dict]:
 
     calc = calculate_trail_sl(entry, current_premium, current_sl, LADDER_SCALPER)
 
-    # ── AGGRESSIVE PEAK TRAIL (2026-05-21) ──
-    # Tight trail anchored to peak instead of entry — captures more on big winners
+    # ── PEAK TRACKING ──
     peak_price = trade.get("peak_ltp", 0) or current_premium
     if peak_price < current_premium:
         peak_price = current_premium
-    legacy_new_sl = calc["new_sl"] if calc else current_sl
 
+    # ── PROFIT FLOOR (HARD GUARANTEE — default ON) ──
+    # Profitable trade must never close in loss. Peak ≥ +3% → entry floor.
+    legacy_new_sl = calc["new_sl"] if calc else current_sl
+    try:
+        from profit_floor import get_minimum_sl as _pf_min, shadow_log as _pf_shadow
+        _pf_shadow(
+            entry_price=entry, peak_price=peak_price,
+            current_sl=current_sl, trade_id=trade.get("id"), tab="SCALPER",
+        )
+        floor_sl = _pf_min(
+            entry_price=entry, peak_price=peak_price, current_sl=current_sl,
+        )
+        if floor_sl > legacy_new_sl:
+            calc = calc or {}
+            calc["new_sl"] = floor_sl
+            calc["profit_floor_applied"] = True
+            calc["locked_pct"] = round((floor_sl - entry) / entry * 100, 2)
+            calc["profit_pct"] = round((current_premium - entry) / entry * 100, 2)
+            calc["stage_threshold"] = "profit_floor_guarantee"
+            legacy_new_sl = floor_sl
+    except Exception as _pf_e:
+        print(f"[PROFIT-FLOOR] scalper error (allow legacy): {_pf_e}")
+
+    # ── AGGRESSIVE PEAK TRAIL (offensive — env-gated) ──
     try:
         from aggressive_trail import get_or_legacy as _agg_trail
         agg_sl = _agg_trail(
