@@ -1185,6 +1185,46 @@ async def circuit_breaker_status():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/engine-correlation")
+async def engine_correlation(hours: int = 336, threshold: float = 0.70):
+    """Pairwise engine vote agreement analysis (Level-2 refactor data).
+
+    Built 2026-05-21 to answer: which engines actually measure independent
+    signals, and which are voting together as correlated noise?
+
+    Returns observed clusters (engines voting together >= threshold) +
+    independent engines + a hypothesis comparison.
+
+    Use cases:
+      • Identify which engines should be merged into meta-engines
+      • Quantify the "11 engines but really 4-5 unique signals" hypothesis
+      • Validate consolidation decisions before refactoring
+
+    Args:
+      hours:     lookback window (default 14 days)
+      threshold: correlation cutoff to be considered "highly correlated" (0.0-1.0)
+    """
+    try:
+        from engine_correlation_analyzer import suggest_consolidation
+        return suggest_consolidation(hours=hours, threshold=threshold)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/engine-correlation/raw")
+async def engine_correlation_raw(hours: int = 336):
+    """Raw pairwise correlation matrix (no clustering).
+
+    Returns every (engine_a, engine_b) pair with agreement_rate +
+    counts. Use for detailed inspection of correlations.
+    """
+    try:
+        from engine_correlation_analyzer import compute_pairwise_correlation
+        return compute_pairwise_correlation(hours=hours)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/engine-bias")
 async def engine_bias(hours: int = 168):
     """Per-engine bull/bear/neutral bias over last N hours.
