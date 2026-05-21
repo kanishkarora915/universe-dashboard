@@ -5539,6 +5539,14 @@ class MarketEngine:
             if len(self._spot_history[index]) > 600:
                 self._spot_history[index] = self._spot_history[index][-600:]
 
+            # ── EARLY MOVE DETECTORS: feed spot ticks ──
+            # Cross-asset lead-lag tracker (NIFTY ↔ BANKNIFTY)
+            try:
+                from early_move import cross_asset as _em_cross
+                _em_cross.record_tick(idx=index, spot=ltp)
+            except Exception:
+                pass
+
             cfg = INDEX_CONFIG[index]
             atm = round(ltp / cfg["strike_gap"]) * cfg["strike_gap"]
             chain = self.chains.get(index, {})
@@ -5558,6 +5566,21 @@ class MarketEngine:
                     # Keep last 360 entries (~1 hour at 10s intervals)
                     if len(self.ltp_history[key]) > 360:
                         self.ltp_history[key] = self.ltp_history[key][-360:]
+
+                    # ── EARLY MOVE DETECTOR: premium velocity ──
+                    # Feed ATM±1 strike ticks (most informative for divergence)
+                    try:
+                        if abs(offset) <= 1:  # ATM, ATM+1, ATM-1
+                            from early_move import premium_velocity as _em_pv
+                            _em_pv.record_tick(
+                                idx=index,
+                                strike=int(strike),
+                                side=opt.upper(),
+                                premium=oltp,
+                                spot=ltp,
+                            )
+                    except Exception:
+                        pass
 
     def get_price_action(self, expiry_str=None) -> dict:
         """Analyze ATM±3 CE/PE LTP+OI for imbalance, traps, sudden moves → trade signal.

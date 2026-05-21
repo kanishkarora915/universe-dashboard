@@ -1255,6 +1255,82 @@ async def journal_stats_endpoint(days: int = 7):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/early-move/scan")
+async def early_move_scan():
+    """Scan ALL early-move detectors right now. Returns active signals.
+
+    Built 2026-05-21 to solve: "system har chiz late kyu samjhta hai?"
+    Uses LEADING indicators (premium velocity, cross-asset lead-lag, etc)
+    instead of lagging confluence engines.
+    """
+    try:
+        from early_move import premium_velocity, cross_asset
+        signals = []
+
+        # Cross-asset signal
+        try:
+            sig = cross_asset.check_and_log(source="api_scan")
+            if sig:
+                signals.append(sig)
+        except Exception as e:
+            signals.append({"error": "cross_asset", "msg": str(e)})
+
+        # Premium velocity — scan all tracked strikes
+        try:
+            history_sizes = premium_velocity.get_history_size()
+            # For each tracked strike, try to detect
+            for k in list(history_sizes.keys()):
+                parts = k.split("|")
+                if len(parts) != 3:
+                    continue
+                idx, strike_s, side = parts
+                try:
+                    sig = premium_velocity.check_and_log(
+                        idx=idx, strike=int(strike_s), side=side,
+                        delta=0.5,  # default ATM delta — caller can refine
+                        source="api_scan",
+                    )
+                    if sig:
+                        signals.append(sig)
+                except Exception:
+                    continue
+        except Exception as e:
+            signals.append({"error": "premium_velocity", "msg": str(e)})
+
+        return {
+            "signals": signals,
+            "n_active": len(signals),
+            "detectors_status": {
+                "premium_velocity_enabled": premium_velocity.is_enabled(),
+                "cross_asset_enabled": cross_asset.is_enabled(),
+            },
+            "tracked_strikes": len(premium_velocity.get_history_size()),
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/early-move/status")
+async def early_move_status():
+    """Detector tracking state."""
+    try:
+        from early_move import premium_velocity, cross_asset
+        return {
+            "premium_velocity": {
+                "enabled": premium_velocity.is_enabled(),
+                "shadow": premium_velocity.is_shadow_enabled(),
+                "tracked_keys": list(premium_velocity.get_history_size().keys()),
+                "n_keys": len(premium_velocity.get_history_size()),
+            },
+            "cross_asset": {
+                "enabled": cross_asset.is_enabled(),
+                "shadow": cross_asset.is_shadow_enabled(),
+            },
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/profit-floor/diagnose")
 async def profit_floor_diagnose(entry: float, peak: float, current_sl: float):
     """Diagnose what profit floor would set for given entry/peak/SL.
