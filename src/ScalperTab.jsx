@@ -800,8 +800,13 @@ function CapitalUsagePanel({ usage, config, todayPnl, openLivePnl }) {
 function ScalperTradeCard({ t, livePrice, isExpanded, onToggleExpand, onManualExit }) {
   const isOpen = t.status === "OPEN";
 
-  // Use live tick LTP if available (zero-latency), else DB current_ltp
-  const cur = livePrice?.ltp || t.current_ltp || t.exit_price || t.entry_price;
+  // For OPEN trades: live tick LTP > DB current_ltp.
+  // For CLOSED trades: ALWAYS use exit_price (DB stored exit), NEVER current_ltp.
+  //   current_ltp gets updated by tick stream even after trade closes,
+  //   causing display to drift from actual exit price (BUG fixed 2026-05-21).
+  const cur = (t.status && t.status !== "OPEN")
+    ? (t.exit_price || t.entry_price)   // closed → use real exit
+    : (livePrice?.ltp || t.current_ltp || t.entry_price);  // open → live
   const livePnl = isOpen
     ? (livePrice?.pnl_rupees ?? (cur - t.entry_price) * (t.qty || 0))
     : (t.pnl_rupees || 0);
