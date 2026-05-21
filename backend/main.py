@@ -1167,6 +1167,24 @@ async def calibration_lookup(prob: int, engine: str = "main", action: str = "ALL
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/profit-target/status")
+async def profit_target_status():
+    """Daily profit-target status per tab.
+
+    Returns current P&L vs target, whether target hit, % completion.
+    Use for "book win + walk away" dashboard widget.
+    """
+    try:
+        from profit_target import status, is_enabled
+        return {
+            "enabled": is_enabled(),
+            "main": status("MAIN"),
+            "scalper": status("SCALPER"),
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/circuit-breaker/status")
 async def circuit_breaker_status():
     """Current circuit-breaker state per tab (P&L vs limit, streak status).

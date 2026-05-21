@@ -355,6 +355,29 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
     except Exception as _e:
         print(f"[SCALPER] circuit_breaker error (allow): {_e}")
 
+    # ── G0d: PROFIT TARGET (book win + walk away mode) ──
+    # User vision 2026-05-21: "paisa banakr nikle" — when target hit,
+    # stop trading and lock the day's profit. Prevents greed reversal.
+    try:
+        from profit_target import should_block as _pt_should_block, assess as _pt_assess
+        if _pt_should_block(tab="SCALPER", source="scalper.should_enter_scalp"):
+            print(f"[SCALPER] REJECT entry (G0d): profit target hit — booking the win")
+            # Throttled telegram alert (first hit of the day)
+            try:
+                import telegram_alerts as _tg
+                if _tg.is_enabled():
+                    d = _pt_assess("SCALPER")
+                    _tg.send(
+                        f"🎯 SCALPER target hit ₹{d['today_pnl']:,.0f} / "
+                        f"₹{d['target']:,.0f} — booking the win, no new entries today",
+                        key="scalper_profit_target_hit",  # 1/day throttle
+                    )
+            except Exception:
+                pass
+            return False
+    except Exception as _e:
+        print(f"[SCALPER] profit_target error (allow): {_e}")
+
     # Threshold (user-configurable) — moved up so calibration gate can use win_pct/action_str
     cfg = get_scalper_config()
     threshold = cfg.get("threshold") or SCALPER_THRESHOLD

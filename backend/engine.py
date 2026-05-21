@@ -5145,6 +5145,29 @@ class MarketEngine:
                         except Exception:
                             pass
 
+                        # ── G0d: PROFIT TARGET (book win + walk away) ──
+                        # User vision: lock the day's profit when target hit.
+                        try:
+                            from profit_target import should_block as _pt_should_block, assess as _pt_assess
+                            if _pt_should_block(tab="MAIN", source="engine.pending_confirmation"):
+                                print(f"[TRADE] BLOCKED by profit target: booking the win")
+                                try:
+                                    import telegram_alerts as _tg
+                                    if _tg.is_enabled():
+                                        d = _pt_assess("MAIN")
+                                        _tg.send(
+                                            f"🎯 MAIN target hit ₹{d['today_pnl']:,.0f} / "
+                                            f"₹{d['target']:,.0f} — booking win, no new entries today",
+                                            key="main_profit_target_hit",
+                                        )
+                                except Exception:
+                                    pass
+                                self.trade_manager._pending_entry.pop(idx, None)
+                                self.trade_manager._pending_entry_time.pop(idx, None)
+                                continue
+                        except Exception:
+                            pass
+
                         # ── G0c: CALIBRATION GATE (Fix 6) ──
                         # Skip when calibrated_wr < threshold (default 55%).
                         # Audit found probability is inverse: high raw_prob = low actual WR.
