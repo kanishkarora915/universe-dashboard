@@ -161,7 +161,11 @@ def last_loss_time(tab: str) -> Optional[datetime]:
     if not db.exists():
         return None
 
-    today_iso = datetime.now(IST).strftime("%Y-%m-%d")
+    now = datetime.now(IST)
+    today_iso = now.strftime("%Y-%m-%d")
+    # Cutoff: exit_time must be in the past (avoids brittle ordering when
+    # clock skew or test data places exit_time in the future).
+    now_iso = now.isoformat()
     try:
         conn = sqlite3.connect(str(db))
         cur = conn.execute(
@@ -169,8 +173,10 @@ def last_loss_time(tab: str) -> Optional[datetime]:
             f"WHERE substr(entry_time, 1, 10) = ? "
             f"AND COALESCE(status, '') NOT IN ('OPEN', '') "
             f"AND pnl_rupees < 0 "
+            f"AND exit_time IS NOT NULL "
+            f"AND exit_time <= ? "
             f"ORDER BY exit_time DESC LIMIT 1",
-            (today_iso,),
+            (today_iso, now_iso),
         )
         row = cur.fetchone()
         if not row or not row[0]:

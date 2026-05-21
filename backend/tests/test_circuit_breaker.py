@@ -51,6 +51,23 @@ def _reset_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
+@pytest.fixture
+def frozen_noon(monkeypatch):
+    """Freeze 'now' to 12:00 IST on today's date so cool-off tests are
+    independent of when they run (3:54 AM in pre-market vs 11 AM intraday)."""
+    import circuit_breaker
+    today = datetime.now(IST).date()
+    frozen = IST.localize(datetime(today.year, today.month, today.day, 12, 0, 0))
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen if tz else frozen.replace(tzinfo=None)
+
+    monkeypatch.setattr(circuit_breaker, "datetime", _FrozenDatetime)
+    return frozen
+
+
 # ── ENV FLAGS ──────────────────────────────────────────────────────────
 
 class TestEnvFlags:
@@ -165,18 +182,18 @@ class TestConsecutiveLossPause:
         # Newest trade is a win → streak = 0
         assert circuit_breaker.recent_consecutive_losses("MAIN") == 0
 
-    def test_three_loss_streak_triggers_pause_within_cool_off(self, monkeypatch, tmp_path):
+    def test_three_loss_streak_triggers_pause_within_cool_off(self, monkeypatch, tmp_path, frozen_noon):
         """3 losses → pause for 30min after last loss."""
         import circuit_breaker
         db = tmp_path / "main.db"
-        today = datetime.now(IST).strftime("%Y-%m-%d")
-        # Last loss 5 min ago — well within 30-min cool-off
-        now = datetime.now(IST)
-        recent = (now - timedelta(minutes=5)).isoformat()
+        # Anchor offsets to frozen 12:00 IST
+        t1 = (frozen_noon - timedelta(minutes=60)).isoformat()  # 11:00
+        t2 = (frozen_noon - timedelta(minutes=30)).isoformat()  # 11:30
+        t3 = (frozen_noon - timedelta(minutes=5)).isoformat()   # 11:55 (within cool-off)
         _seed_trades(db, "trades", [
-            (f"{today}T09:00:00+05:30", "SL_HIT", -2000),
-            (f"{today}T09:30:00+05:30", "SL_HIT", -3000),
-            (recent, "SL_HIT", -4000),
+            (t1, "SL_HIT", -2000),
+            (t2, "SL_HIT", -3000),
+            (t3, "SL_HIT", -4000),
         ])
         monkeypatch.setattr(circuit_breaker, "_TRADES_DB", db)
         d = circuit_breaker.assess("MAIN")
@@ -185,17 +202,18 @@ class TestConsecutiveLossPause:
         assert d["block"] is True
         assert "CONSEC_LOSS_PAUSE" in d["reason"]
 
-    def test_pause_clears_after_cool_off(self, monkeypatch, tmp_path):
+    def test_pause_clears_after_cool_off(self, monkeypatch, tmp_path, frozen_noon):
         """After 30+ min from last loss, pause clears."""
         import circuit_breaker
         db = tmp_path / "main.db"
-        today = datetime.now(IST).strftime("%Y-%m-%d")
-        now = datetime.now(IST)
-        long_ago = (now - timedelta(minutes=45)).isoformat()
+        # All trades well before frozen 12:00
+        t1 = (frozen_noon - timedelta(minutes=120)).isoformat()  # 10:00
+        t2 = (frozen_noon - timedelta(minutes=90)).isoformat()   # 10:30
+        t3 = (frozen_noon - timedelta(minutes=45)).isoformat()   # 11:15 — > 30m cool-off
         _seed_trades(db, "trades", [
-            (f"{today}T09:00:00+05:30", "SL_HIT", -2000),
-            (f"{today}T09:30:00+05:30", "SL_HIT", -3000),
-            (long_ago, "SL_HIT", -4000),
+            (t1, "SL_HIT", -2000),
+            (t2, "SL_HIT", -3000),
+            (t3, "SL_HIT", -4000),
         ])
         monkeypatch.setattr(circuit_breaker, "_TRADES_DB", db)
         d = circuit_breaker.assess("MAIN")
@@ -259,6 +277,46 @@ class TestShouldBlock:
 
 
 # ── Status snapshot ────────────────────────────────────────────────────
+
+class TestLastLossTimeRobustness:
+    """Regression tests for the 2026-05-21 audit-fix:
+    last_loss_time must not return future-dated exit_time rows.
+
+    Bug: lexicographic ORDER BY exit_time DESC selected morning-time
+    trades that were "in the future" when test ran in pre-market hours.
+    Production safety added `AND exit_time <= now` clause.
+    """
+
+    def test_skips_future_exit_time(self, monkeypatch, tmp_path, frozen_noon):
+        """Trade with exit_time in the future is NOT returned as last loss."""
+        import circuit_breaker
+        db = tmp_path / "main.db"
+        # Future trade (after frozen noon)
+        future_t = (frozen_noon + timedelta(hours=2)).isoformat()
+        # Past trade (10 min ago)
+        past_t = (frozen_noon - timedelta(minutes=10)).isoformat()
+        _seed_trades(db, "trades", [
+            (past_t, "SL_HIT", -5000),
+            (future_t, "SL_HIT", -3000),
+        ])
+        monkeypatch.setattr(circuit_breaker, "_TRADES_DB", db)
+        ll = circuit_breaker.last_loss_time("MAIN")
+        # Should return the PAST trade time, not the future one
+        assert ll is not None
+        elapsed = (frozen_noon - ll).total_seconds() / 60
+        assert 9 <= elapsed <= 11  # ~10 min ago
+
+    def test_returns_none_when_all_future(self, monkeypatch, tmp_path, frozen_noon):
+        """All trades future-dated → no loss found → None."""
+        import circuit_breaker
+        db = tmp_path / "main.db"
+        future_t = (frozen_noon + timedelta(hours=1)).isoformat()
+        _seed_trades(db, "trades", [
+            (future_t, "SL_HIT", -5000),
+        ])
+        monkeypatch.setattr(circuit_breaker, "_TRADES_DB", db)
+        assert circuit_breaker.last_loss_time("MAIN") is None
+
 
 class TestStatus:
     def test_status_returns_dict(self, monkeypatch, tmp_path):

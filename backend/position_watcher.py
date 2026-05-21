@@ -955,12 +955,17 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
 
     # ── WATCHER MODE GATE (Fix 4) ──
     # In warn_only / disabled mode, log warnings + send alerts but
-    # never auto-close. Trades hit natural SL/T1/T2/timeout.
+    # SKIP only the auto-close (force-exit) pathways. SL tightening
+    # remains active because it's protective, not destructive.
+    #
+    # 2026-05-21 audit fix: original implementation `return`-ed early,
+    # which also skipped tight_sl. Now we set a flag and let the func
+    # reach tight_sl normally.
     _warn_only = is_warn_only(cfg)
     if _warn_only and trigger:
         print(f"[WATCHER] WARN_ONLY mode — {source} #{trade_id} trigger={trigger} "
               f"score={health.get('score', 0):.1f} profit={health.get('profit_pct', 0):+.2f}% "
-              f"(no auto-close)")
+              f"(no auto-close; SL tightening still allowed)")
         # Telegram alert for the user (throttled)
         try:
             import telegram_alerts as _tg
@@ -972,16 +977,14 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
                 )
         except Exception:
             pass
-        # Log the would-have-fired event for audit
-        _log_health(source, trade_id, idx, action, health, trigger, "WARN_ONLY")
-        return
 
     # ──── OI_REVERSAL — bypass-gate exit when already in loss ────
     # New: if OI is hostile AND we're losing (profit < -3%), force-exit
     # regardless of auto_exit config. Matches user's "don't let hostile
     # market context bleed me out" preference. Saves the #106-style
     # ₹88k bleed from yesterday.
-    if trigger == "OI_REVERSAL":
+    # 2026-05-21: skip when warn_only mode (no auto-close in that mode).
+    if trigger == "OI_REVERSAL" and not _warn_only:
         profit_pct = health.get("profit_pct", 0)
         oi_comp = health.get("components", {}).get("oi", {})
         oi_signals = oi_comp.get("hostile_signals", [])
@@ -1012,7 +1015,7 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
     # User's Rule 1: trade peaked ≥+5%, now down to ≤-5% → exit immediately.
     # Saves the "I touched +12%, now I'm -10%" pain. Same bypass behavior
     # as HARD_LOSS_CAP (ignores auto_exit_main/scalper gating).
-    if trigger == "PEAK_FLOOR_HIT" and cfg.get("peak_aware_floor_enable", True):
+    if trigger == "PEAK_FLOOR_HIT" and cfg.get("peak_aware_floor_enable", True) and not _warn_only:
         profit_pct = health.get("profit_pct", 0)
         peak = health.get("peak_profit_pct", 0)
         peak_floor = float(cfg.get("peak_aware_floor_pct", -5.0))
@@ -1041,7 +1044,7 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
     # User rule: "agar position lete hi trade loss mein jara hai toh
     # max 5-8% loss hona chahiye". These triggers force-close even when
     # auto_exit_main / auto_exit_scalper are False.
-    if trigger in ("HARD_LOSS_CAP", "FAST_LOSS_CAP") and cfg.get("hard_loss_enforce", True):
+    if trigger in ("HARD_LOSS_CAP", "FAST_LOSS_CAP") and cfg.get("hard_loss_enforce", True) and not _warn_only:
         profit_pct = health.get("profit_pct", 0)
         cap_pct = (cfg.get("hard_loss_cap_pct", -8.0)
                    if trigger == "HARD_LOSS_CAP"
@@ -1072,8 +1075,8 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
         auto_exit = (cfg["auto_exit_main"] if source == "MAIN" else cfg["auto_exit_scalper"])
         tight_sl = (cfg["tight_sl_main"] if source == "MAIN" else cfg["tight_sl_scalper"])
 
-        # CRITICAL exits get hard close (if auto-exit on)
-        if health["score"] < cfg["min_score_for_exit"] and auto_exit:
+        # CRITICAL exits get hard close (if auto-exit on AND not warn_only)
+        if health["score"] < cfg["min_score_for_exit"] and auto_exit and not _warn_only:
             ok = (_force_close_main(trade_id, current_premium, f"{trigger}: {health['reasons'][0] if health['reasons'] else trigger}")
                   if source == "MAIN"
                   else _force_close_scalper(trade_id, current_premium, f"{trigger}: {health['reasons'][0] if health['reasons'] else trigger}"))

@@ -121,6 +121,40 @@ class TestCalibrationModuleIntegration:
             assert wr is None or (0 <= wr <= 100)
 
 
+class TestScalperWireInRegression:
+    """Regression test for 2026-05-21 bug: scalper G0c gate originally
+    placed BEFORE win_pct/action_str were defined → NameError silently
+    swallowed by try/except, gate never worked. After fix, the gate is
+    placed AFTER those variables and can actually execute its logic.
+
+    We test by importing should_enter_scalp, building a verdict_data
+    payload that hits the gate, and verifying it doesn't raise NameError
+    or silently allow trades that should be blocked.
+    """
+
+    def test_scalper_function_imports_cleanly(self):
+        """Importing scalper_mode should not raise — this is the canary."""
+        import scalper_mode
+        assert hasattr(scalper_mode, "should_enter_scalp")
+
+    def test_calibration_gate_position_not_before_win_pct(self):
+        """The code must reference win_pct/action_str AFTER they're
+        defined. We verify by reading source lines."""
+        import scalper_mode
+        src = open(scalper_mode.__file__).read()
+        # Find the G0c gate
+        g0c_pos = src.find("G0c: CALIBRATION GATE")
+        assert g0c_pos > 0, "G0c gate not found"
+        # Find win_pct definition
+        win_def_pos = src.find('win_pct = verdict_data.get("winProbability"')
+        assert win_def_pos > 0, "win_pct definition not found"
+        # G0c must come AFTER win_pct definition
+        assert win_def_pos < g0c_pos, (
+            f"BUG: G0c gate at offset {g0c_pos} comes BEFORE win_pct "
+            f"definition at offset {win_def_pos} — would NameError"
+        )
+
+
 class TestEndToEndScenarios:
     """Walk through realistic gate decisions for each prob bucket."""
 

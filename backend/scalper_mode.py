@@ -355,11 +355,29 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
     except Exception as _e:
         print(f"[SCALPER] circuit_breaker error (allow): {_e}")
 
-    # ── G0c: CALIBRATION GATE (Fix 6) ──
+    # Threshold (user-configurable) — moved up so calibration gate can use win_pct/action_str
+    cfg = get_scalper_config()
+    threshold = cfg.get("threshold") or SCALPER_THRESHOLD
+    daily_cap = cfg.get("daily_cap") or SCALPER_DAILY_CAP
+    # Use RUNNING capital from tracker (compounds with P&L)
+    try:
+        from capital_tracker import get_running_capital
+        capital = get_running_capital("SCALPER") or cfg.get("capital") or 1000000
+    except Exception:
+        capital = cfg.get("capital") or 1000000
+
+    win_pct = verdict_data.get("winProbability", 0)
+    action_str = verdict_data.get("action", "")
+    is_ce = "CE" in action_str.upper()
+
+    # ── G0c: CALIBRATION GATE (Fix 6) — uses win_pct + action_str ──
     # 60-day audit: probability is INVERSE — high raw_prob = low actual WR.
     # When CALIBRATION_GATE_ENABLED=on, skip entries where calibrated_wr
     # (historical WR at that raw_prob bucket) is below threshold.
     # Default off until 250+ trades accumulate for higher confidence buckets.
+    #
+    # 2026-05-21 bug fix: gate was placed BEFORE win_pct was defined, so
+    # NameError was being swallowed and gate never worked. Moved here.
     try:
         import os as _os
         if _os.environ.get("CALIBRATION_GATE_ENABLED", "off").lower() == "on":
@@ -377,21 +395,6 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
                 return False
     except Exception as _e:
         print(f"[SCALPER] calibration_gate error (allow): {_e}")
-
-    # Threshold (user-configurable)
-    cfg = get_scalper_config()
-    threshold = cfg.get("threshold") or SCALPER_THRESHOLD
-    daily_cap = cfg.get("daily_cap") or SCALPER_DAILY_CAP
-    # Use RUNNING capital from tracker (compounds with P&L)
-    try:
-        from capital_tracker import get_running_capital
-        capital = get_running_capital("SCALPER") or cfg.get("capital") or 1000000
-    except Exception:
-        capital = cfg.get("capital") or 1000000
-
-    win_pct = verdict_data.get("winProbability", 0)
-    action_str = verdict_data.get("action", "")
-    is_ce = "CE" in action_str.upper()
 
     # ── Capitulation-confirmed lowering of threshold ──
     # If capit engine sees reversal in same direction as our action,
