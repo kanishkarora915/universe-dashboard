@@ -242,6 +242,45 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         print(f"[STARTUP] perf monitor spawn failed: {_e}")
 
+    # ── Phase 1: Anomaly alerts background scheduler ──
+    # Every 15 min during market hours, run regime_monitor + pattern_shift
+    # checks and fire Telegram alerts on threshold breaches.
+    # Also runs EOD diagnostic at 15:35 IST.
+    try:
+        import threading as _th
+        import time as _time
+        from datetime import datetime as _dt
+        import pytz as _pytz
+
+        def _anomaly_scheduler():
+            _IST = _pytz.timezone("Asia/Kolkata")
+            last_eod_date = None
+            while True:
+                try:
+                    # Periodic checks every 15 min
+                    from anomaly_alerts import run_periodic_checks, run_eod_diagnostic
+                    run_periodic_checks()
+
+                    # EOD diagnostic at 15:35 IST (once per day)
+                    now = _dt.now(_IST)
+                    today_iso = now.strftime("%Y-%m-%d")
+                    if (now.hour == 15 and now.minute >= 35 and last_eod_date != today_iso):
+                        print(f"[ANOMALY_ALERTS] Running EOD diagnostic for {today_iso}")
+                        run_eod_diagnostic()
+                        last_eod_date = today_iso
+                except Exception as _e:
+                    print(f"[ANOMALY_ALERTS] scheduler error: {_e}")
+                _time.sleep(15 * 60)  # check every 15 min
+
+        _th.Thread(
+            target=_anomaly_scheduler,
+            daemon=True,
+            name="anomaly-scheduler",
+        ).start()
+        print("[STARTUP] anomaly alerts scheduler started")
+    except Exception as _e:
+        print(f"[STARTUP] anomaly alerts spawn failed: {_e}")
+
     yield
     if engine:
         engine.stop()
@@ -1163,6 +1202,94 @@ async def calibration_lookup(prob: int, engine: str = "main", action: str = "ALL
             "is_inverted": is_inverted(prob, engine),
             "warning": expectancy_warning(prob, engine, action),
         }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/regime-monitor")
+async def regime_monitor_endpoint(tab: str = "BOTH", current_days: int = 7, baseline_days: int = 30):
+    """Phase 1 DETECTION: regime health check.
+
+    Compares last 7 days of trading vs last 30 days baseline across
+    10 KPIs. Fires CRITICAL when 4+ metrics deviate >2σ.
+
+    Use this to spot "today is different" BEFORE losses cascade.
+    """
+    try:
+        from regime_monitor import assess
+        return assess(tab=tab, current_days=current_days, baseline_days=baseline_days)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/regime-monitor/quick")
+async def regime_monitor_quick():
+    """Compact regime health for dashboard widget."""
+    try:
+        from regime_monitor import quick_status
+        return quick_status()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/pattern-shift")
+async def pattern_shift_endpoint(tab: str = "BOTH"):
+    """Phase 1 DETECTION: intra-session pattern shift.
+
+    Checks if today's exit-status distribution + losing streak
+    indicate regime breakdown happening NOW.
+    """
+    try:
+        from pattern_shift_detector import detect_shifts
+        return detect_shifts(tab=tab)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/daily-diagnostic")
+async def daily_diagnostic_endpoint(date: Optional[str] = None):
+    """Phase 1 DETECTION: full EOD diagnostic report.
+
+    Generates plain-English analysis of the day's trading:
+    P&L vs baseline, best/worst trades, what worked, verdict.
+    """
+    try:
+        from daily_diagnostic import generate_report
+        return generate_report(date_iso=date)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/anomaly-alerts/check-now")
+async def anomaly_check_now():
+    """Force an immediate anomaly check + fire alerts if conditions met.
+
+    Useful for manual sanity check during trading. Normally called
+    every 15 min by background scheduler.
+    """
+    try:
+        from anomaly_alerts import run_periodic_checks
+        return run_periodic_checks()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/anomaly-alerts/eod-report")
+async def anomaly_eod_now():
+    """Trigger EOD diagnostic + Telegram send NOW (without waiting for 15:35)."""
+    try:
+        from anomaly_alerts import run_eod_diagnostic
+        return run_eod_diagnostic()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/anomaly-alerts/status")
+async def anomaly_status():
+    """Current state of alert throttling + history."""
+    try:
+        from anomaly_alerts import get_status
+        return get_status()
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
