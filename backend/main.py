@@ -1206,6 +1206,72 @@ async def calibration_lookup(prob: int, engine: str = "main", action: str = "ALL
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/journal/trade/{trade_id}")
+async def journal_trade_endpoint(trade_id: int):
+    """Get complete decision timeline for a single trade.
+
+    Use to debug "why did this trade do what it did?". Returns ENTRY,
+    every SL update, partial exits, pyramids, and final EXIT — all in
+    chronological order with reasoning.
+    """
+    try:
+        from trade_journal import get_trade_timeline, explain_trade
+        return {
+            "trade_id": trade_id,
+            "timeline": get_trade_timeline(trade_id),
+            "explanation": explain_trade(trade_id),
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/journal/recent")
+async def journal_recent_endpoint(n: int = 50, event_type: Optional[str] = None,
+                                  tab: Optional[str] = None):
+    """Recent journal events (with optional filters).
+
+    event_type values: ENTRY, SL_UPDATE, PARTIAL_EXIT, PYRAMID_ADD, EXIT,
+                       GATE_BLOCKED, REGIME_CHANGE, ALERT
+    tab values: MAIN, SCALPER
+    """
+    try:
+        from trade_journal import get_recent_events
+        return {
+            "limit": n,
+            "filters": {"event_type": event_type, "tab": tab},
+            "events": get_recent_events(limit=n, event_type=event_type, tab=tab),
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/journal/stats")
+async def journal_stats_endpoint(days: int = 7):
+    """Aggregate journal stats — event counts by type."""
+    try:
+        from trade_journal import get_stats
+        return get_stats(days=days)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/aggressive-trail/status")
+async def aggressive_trail_status():
+    """Current aggressive trail configuration + flag state."""
+    try:
+        from aggressive_trail import is_enabled, is_shadow_enabled, PEAK_TRAIL_BANDS
+        return {
+            "enabled": is_enabled(),
+            "shadow_logging": is_shadow_enabled(),
+            "trail_bands": [
+                {"peak_threshold_pct": t, "giveback_pct_from_peak": gb}
+                for t, gb in PEAK_TRAIL_BANDS
+            ],
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/regime-monitor")
 async def regime_monitor_endpoint(tab: str = "BOTH", current_days: int = 7, baseline_days: int = 30):
     """Phase 1 DETECTION: regime health check.

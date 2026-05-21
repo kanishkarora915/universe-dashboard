@@ -204,6 +204,37 @@ def update_main_trail(trade: Dict, current_premium: float) -> Optional[Dict]:
         return None
 
     calc = calculate_trail_sl(entry, current_premium, current_sl, LADDER_MAIN)
+
+    # ── AGGRESSIVE PEAK TRAIL (2026-05-21) ──
+    # When AGGRESSIVE_TRAIL_ENABLED=on, use peak-anchored tight trail
+    # instead of entry-anchored ladder. Captures 15-25% more on big winners.
+    peak_price = trade.get("peak_ltp", 0) or current_premium
+    if peak_price < current_premium:
+        peak_price = current_premium  # peak is at LEAST current
+    legacy_new_sl = calc["new_sl"] if calc else current_sl
+
+    try:
+        from aggressive_trail import get_or_legacy as _agg_trail
+        agg_sl = _agg_trail(
+            entry_price=entry,
+            peak_price=peak_price,
+            current_price=current_premium,
+            current_sl=current_sl,
+            legacy_sl=legacy_new_sl,
+            trade_id=trade.get("id"),
+            source="main",
+        )
+        # If aggressive returned higher SL, use it
+        if agg_sl and agg_sl > legacy_new_sl:
+            calc = calc or {}
+            calc["new_sl"] = agg_sl
+            calc["aggressive_override"] = True
+            calc["locked_pct"] = round((agg_sl - entry) / entry * 100, 2)
+            calc["profit_pct"] = round((current_premium - entry) / entry * 100, 2)
+            calc["stage_threshold"] = "aggressive_peak"
+    except Exception as _e:
+        pass  # never let aggressive break legacy
+
     if not calc:
         return None
 
@@ -224,8 +255,9 @@ def update_main_trail(trade: Dict, current_premium: float) -> Optional[Dict]:
             conn.close()
             return None
 
-        reason = (f"PROFIT_TRAIL: profit {calc['profit_pct']:+.2f}% "
-                  f"→ stage +{calc['stage_threshold']}% "
+        method_tag = "AGGRESSIVE_PEAK" if calc.get("aggressive_override") else "PROFIT_TRAIL"
+        reason = (f"{method_tag}: profit {calc['profit_pct']:+.2f}% "
+                  f"→ stage {calc.get('stage_threshold', '?')} "
                   f"→ SL ₹{calc['new_sl']} (locked {calc['locked_pct']:+.2f}%)")
         conn.execute("""
             UPDATE trades SET sl_price=?,
@@ -234,6 +266,23 @@ def update_main_trail(trade: Dict, current_premium: float) -> Optional[Dict]:
         """, (calc["new_sl"], f" | {reason}", trade["id"]))
         conn.commit()
         conn.close()
+
+        # Journal: log this SL update
+        try:
+            from trade_journal import log_sl_update
+            log_sl_update(
+                trade_id=trade["id"],
+                tab="MAIN",
+                old_sl=latest_sl,
+                new_sl=calc["new_sl"],
+                reason=reason,
+                current_price=current_premium,
+                peak_price=peak_price,
+                profit_pct=calc.get("profit_pct"),
+                method=method_tag.lower(),
+            )
+        except Exception:
+            pass
     except Exception as e:
         print(f"[PROFIT-TRAIL] main update err: {e}")
         return None
@@ -255,6 +304,35 @@ def update_scalper_trail(trade: Dict, current_premium: float) -> Optional[Dict]:
         return None
 
     calc = calculate_trail_sl(entry, current_premium, current_sl, LADDER_SCALPER)
+
+    # ── AGGRESSIVE PEAK TRAIL (2026-05-21) ──
+    # Tight trail anchored to peak instead of entry — captures more on big winners
+    peak_price = trade.get("peak_ltp", 0) or current_premium
+    if peak_price < current_premium:
+        peak_price = current_premium
+    legacy_new_sl = calc["new_sl"] if calc else current_sl
+
+    try:
+        from aggressive_trail import get_or_legacy as _agg_trail
+        agg_sl = _agg_trail(
+            entry_price=entry,
+            peak_price=peak_price,
+            current_price=current_premium,
+            current_sl=current_sl,
+            legacy_sl=legacy_new_sl,
+            trade_id=trade.get("id"),
+            source="scalper",
+        )
+        if agg_sl and agg_sl > legacy_new_sl:
+            calc = calc or {}
+            calc["new_sl"] = agg_sl
+            calc["aggressive_override"] = True
+            calc["locked_pct"] = round((agg_sl - entry) / entry * 100, 2)
+            calc["profit_pct"] = round((current_premium - entry) / entry * 100, 2)
+            calc["stage_threshold"] = "aggressive_peak"
+    except Exception:
+        pass
+
     if not calc:
         return None
 
@@ -280,6 +358,24 @@ def update_scalper_trail(trade: Dict, current_premium: float) -> Optional[Dict]:
         """, (calc["new_sl"], calc["new_sl"], calc["new_sl"], trade["id"]))
         conn.commit()
         conn.close()
+
+        # Journal: log this SL update
+        try:
+            from trade_journal import log_sl_update
+            method_tag = "aggressive_peak" if calc.get("aggressive_override") else "profit_trail"
+            log_sl_update(
+                trade_id=trade["id"],
+                tab="SCALPER",
+                old_sl=latest_sl,
+                new_sl=calc["new_sl"],
+                reason=f"trail update: {calc.get('stage_threshold', '?')}",
+                current_price=current_premium,
+                peak_price=peak_price,
+                profit_pct=calc.get("profit_pct"),
+                method=method_tag,
+            )
+        except Exception:
+            pass
     except Exception as e:
         print(f"[PROFIT-TRAIL] scalper update err: {e}")
         return None

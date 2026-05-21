@@ -982,6 +982,28 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
     conn.close()
 
     print(f"[SCALPER] OPENED #{trade_id}: {action} {idx} {strike} @ ₹{entry_price} | qty {qty} | capital used ₹{capital_used:,.0f} (of ₹{capital:,.0f}) | SL ₹{sl_price} T1 ₹{t1_price}")
+
+    # ── Journal: log entry with full context ──
+    try:
+        from trade_journal import log_entry
+        log_entry(
+            trade_id=trade_id,
+            tab="SCALPER",
+            idx=idx,
+            action=action,
+            strike=int(strike),
+            entry_price=entry_price,
+            qty=qty,
+            probability=probability,
+            sl_price=sl_price,
+            t1_price=t1_price,
+            t2_price=t2_price,
+            source="verdict_momentum",
+            reasoning=entry_reasoning or "",
+        )
+    except Exception as _je:
+        print(f"[JOURNAL] scalper entry log failed: {_je}")
+
     return trade_id
 
 
@@ -1607,6 +1629,23 @@ def check_scalper_exits(chains):
                   smart_active_sl if smart_enabled else None,
                   t["id"]))
             print(f"[SCALPER] CLOSED #{t['id']} {idx} {action} {strike}: ₹{final_pnl:+,.0f} ({new_status})")
+
+            # ── Journal: log exit with full context ──
+            try:
+                from trade_journal import log_exit as _je_log_exit
+                pnl_pct = ((exit_price - entry) / entry * 100) if entry > 0 else 0
+                _je_log_exit(
+                    trade_id=t["id"],
+                    tab="SCALPER",
+                    exit_price=exit_price,
+                    exit_reason=exit_reason or new_status,
+                    status=new_status,
+                    pnl_rupees=final_pnl,
+                    pnl_pct=pnl_pct,
+                    peak_price=peak,
+                )
+            except Exception as _je:
+                print(f"[JOURNAL] scalper exit log failed: {_je}")
             # ── Record P&L in capital tracker (auto-adjust running capital + profit bank) ──
             try:
                 from capital_tracker import record_trade_pnl
