@@ -60,6 +60,7 @@ from . import oi_rotation
 from . import iv_term_structure
 from . import volume_profile
 from . import aggregator
+from . import entry_gate
 
 __all__ = [
     "premium_velocity",
@@ -68,4 +69,5 @@ __all__ = [
     "iv_term_structure",
     "volume_profile",
     "aggregator",
+    "entry_gate",
 ]

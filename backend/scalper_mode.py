@@ -685,6 +685,28 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
             # NEVER let theta_gate exception block legit entries
             print(f"[SCALPER] theta_gate error (allow): {_e}")
 
+    # ── G13: EARLY-MOVE ENTRY GATE (2026-05-22) ──
+    # Aggregator of 5 leading detectors. In 'veto'/'full' mode it can
+    # BLOCK a scalper entry if the leading-indicator panel says BLOCKED
+    # (IV crush / fakeout / exhaustion) or FIRE the OPPOSITE direction.
+    # Default mode 'off' = pure shadow log, never affects trades.
+    # This is the FIX for scalper's late-entry / chop-reversal problem.
+    if engine is not None:
+        try:
+            from early_move.entry_gate import evaluate_entry
+            em = evaluate_entry(
+                engine=engine,
+                idx=idx,
+                proposed_action=action_str,
+                source="scalper.should_enter_scalp",
+            )
+            if not em.get("allow", True):
+                print(f"[SCALPER] REJECT entry (G13 early-move): {em.get('reason', '')}")
+                return False
+        except Exception as _e:
+            # NEVER let early_move exception block legit entries
+            print(f"[SCALPER] early_move entry_gate error (allow): {_e}")
+
     return True
 
 

@@ -1418,6 +1418,24 @@ async def early_move_volume_profile(idx: str = "BANKNIFTY"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/early-move/entry-gate")
+async def early_move_entry_gate_status():
+    """Entry-gate status — how the aggregator is wired into trade firing.
+
+    Modes:
+      off   — shadow only (aggregator never affects trades)
+      veto  — aggregator can BLOCK trades (crush/fakeout/conflict)
+      full  — veto + confirm
+
+    Set via env EARLY_MOVE_ENTRY_MODE.
+    """
+    try:
+        from early_move.entry_gate import diagnostics
+        return diagnostics()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/early-move/verdict")
 async def early_move_verdict(idx: str = "BANKNIFTY", min_agree: int = 2):
     """AGGREGATOR verdict — combines all 5 leading detectors into ONE decision.

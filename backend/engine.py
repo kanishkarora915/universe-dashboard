@@ -5189,6 +5189,27 @@ class MarketEngine:
                         except Exception as _e:
                             print(f"[TRADE] calibration_gate error (allow): {_e}")
 
+                        # ── G0e: EARLY-MOVE ENTRY GATE (2026-05-22) ──
+                        # Aggregator of 5 leading detectors. veto/full mode can
+                        # BLOCK when leading panel says BLOCKED (IV crush /
+                        # fakeout / exhaustion) or FIRE opposite direction.
+                        # Default 'off' = shadow only.
+                        try:
+                            from early_move.entry_gate import evaluate_entry as _em_eval
+                            _em = _em_eval(
+                                engine=self,
+                                idx=idx,
+                                proposed_action=action,
+                                source="engine.pending_confirmation",
+                            )
+                            if not _em.get("allow", True):
+                                print(f"[TRADE] BLOCKED by early-move gate: {_em.get('reason', '')}")
+                                self.trade_manager._pending_entry.pop(idx, None)
+                                self.trade_manager._pending_entry_time.pop(idx, None)
+                                continue
+                        except Exception as _e:
+                            print(f"[TRADE] early_move entry_gate error (allow): {_e}")
+
                         # Use LOCKED strike from pending (not current ATM — ATM can drift)
                         pending_strike = pending["strike"]
                         pending_strike_data = chain.get(pending_strike, {})
