@@ -930,6 +930,28 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
     if is_expiry:
         print(f"[SCALPER] EXPIRY config: SL={sl_pct*100:.1f}% T1={t1_pct*100:.1f}% "
               f"T2={t2_pct*100:.1f}% qty×{qty_mult} hold≤{cfg.get('max_hold_min')}m")
+
+    # ── ADAPTIVE MARKET-HEALTH — exit-side tuning (2026-05-22) ──
+    # Bigger targets when the market is AGGRESSIVE, smaller size when
+    # DEFENSIVE. Reads the cached health level set by should_enter_scalp
+    # earlier in the same cycle (assess() returns the cached result, so
+    # no engine ref is needed here). Applied only in 'live' mode.
+    try:
+        import scalper_health
+        _h = scalper_health.assess(None, idx)
+        if _h.get("mode") == "live":
+            _ht = _h.get("tuning", {})
+            _tm = _ht.get("target_mult", 1.0)
+            _sm = _ht.get("size_mult", 1.0)
+            if _tm != 1.0 or _sm != 1.0:
+                t1_pct = t1_pct * _tm
+                t2_pct = t2_pct * _tm
+                qty_mult = qty_mult * _sm
+                print(f"[SCALPER] health {_h.get('level')} exit-tune — "
+                      f"targets ×{_tm} size ×{_sm}")
+    except Exception as _e:
+        print(f"[SCALPER] scalper_health exit-tuning error (default): {_e}")
+
     # Use RUNNING capital (capital tracker) — base falls back to user config
     try:
         from capital_tracker import get_running_capital

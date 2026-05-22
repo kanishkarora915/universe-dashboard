@@ -231,7 +231,11 @@ def assess(engine, idx: str = "NIFTY") -> Dict:
         "reasons": reasons,
         "tuning": dict(TUNING[level]),
     }
-    _cache[idx] = (time.time(), result)
+    # Cache only on a real engine read — assess(None, ...) callers (e.g.
+    # log_scalp_trade reading the level mid-cycle) must not poison the
+    # cache with a neutral UNKNOWN result.
+    if engine is not None:
+        _cache[idx] = (time.time(), result)
 
     # Shadow log — printed in shadow AND live so the level is always visible.
     print(f"[SCALPER_HEALTH] {idx} level={level} score={score} mode={mode} "
