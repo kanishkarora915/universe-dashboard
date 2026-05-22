@@ -5582,6 +5582,27 @@ class MarketEngine:
                     except Exception:
                         pass
 
+            # ── EARLY MOVE DETECTOR: OI rotation snapshot ──
+            # Record OI for ATM±5 strikes every cycle (~10s). The detector
+            # compares snapshots over time to spot wall builds/collapses,
+            # strike migration, writer flips — smart money positioning leak.
+            try:
+                from early_move import oi_rotation as _em_oi
+                for _oi_offset in range(-5, 6):
+                    _s = atm + _oi_offset * cfg["strike_gap"]
+                    _cinfo = chain.get(_s, {})
+                    _ce_oi = _cinfo.get("ce_oi", 0) or 0
+                    _pe_oi = _cinfo.get("pe_oi", 0) or 0
+                    if _ce_oi > 0 or _pe_oi > 0:
+                        _em_oi.record_oi_snapshot(
+                            idx=index,
+                            strike=int(_s),
+                            ce_oi=int(_ce_oi),
+                            pe_oi=int(_pe_oi),
+                        )
+            except Exception:
+                pass
+
     def get_price_action(self, expiry_str=None) -> dict:
         """Analyze ATM±3 CE/PE LTP+OI for imbalance, traps, sudden moves → trade signal.
         If expiry_str provided, fetches that expiry via REST. Else uses live ticker data."""

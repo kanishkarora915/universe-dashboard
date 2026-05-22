@@ -56,5 +56,6 @@ STATUS
 
 from . import premium_velocity
 from . import cross_asset
+from . import oi_rotation
 
-__all__ = ["premium_velocity", "cross_asset"]
+__all__ = ["premium_velocity", "cross_asset", "oi_rotation"]

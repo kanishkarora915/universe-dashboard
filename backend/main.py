@@ -1331,6 +1331,60 @@ async def early_move_status():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/early-move/oi-rotation")
+async def early_move_oi_rotation(idx: str = "BANKNIFTY"):
+    """OI rotation scan — smart money positioning detector.
+
+    Runs the 5 OI sub-detectors (WALL_BUILD, WALL_COLLAPSE,
+    STRIKE_MIGRATION, WRITER_FLIP, UNUSUAL_VELOCITY) on the live
+    option chain for the given index.
+
+    Detects institutional positioning 30-45 min before confluence
+    engines align — the "OI rotation" early-warning signal.
+    """
+    try:
+        from early_move import oi_rotation
+        global engine
+        if engine is None:
+            return {"error": "engine not running", "signals": []}
+
+        spot_token = engine.spot_tokens.get(idx)
+        spot = engine.prices.get(spot_token, {}).get("ltp", 0) if spot_token else 0
+        if spot <= 0:
+            return {"error": "no spot price", "idx": idx, "signals": []}
+
+        try:
+            from engine import INDEX_CONFIG as _IDX_CFG
+            cfg = _IDX_CFG.get(idx)
+        except Exception:
+            cfg = None
+        gap = cfg["strike_gap"] if cfg else (100 if idx == "BANKNIFTY" else 50)
+        atm = round(spot / gap) * gap
+        chain = engine.chains.get(idx, {})
+
+        # Build strikes_data using the helper (uses stored snapshots for change)
+        strikes_data = []
+        for off in range(-10, 11):
+            s = atm + off * gap
+            cinfo = chain.get(s, {})
+            ce_oi = cinfo.get("ce_oi", 0) or 0
+            pe_oi = cinfo.get("pe_oi", 0) or 0
+            ce_chg = cinfo.get("ce_oi_change", 0) or 0
+            pe_chg = cinfo.get("pe_oi_change", 0) or 0
+            strikes_data.append({
+                "strike": s, "ce_oi": ce_oi, "pe_oi": pe_oi,
+                "ce_change": ce_chg, "pe_change": pe_chg,
+            })
+
+        result = oi_rotation.check_and_log(
+            idx=idx, spot=spot, strikes_data=strikes_data, source="api",
+        )
+        result["enabled"] = oi_rotation.is_enabled()
+        return result
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/profit-floor/diagnose")
 async def profit_floor_diagnose(entry: float, peak: float, current_sl: float):
     """Diagnose what profit floor would set for given entry/peak/SL.
