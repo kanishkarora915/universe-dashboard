@@ -1418,6 +1418,31 @@ async def early_move_volume_profile(idx: str = "BANKNIFTY"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/early-move/verdict")
+async def early_move_verdict(idx: str = "BANKNIFTY", min_agree: int = 2):
+    """AGGREGATOR verdict — combines all 5 leading detectors into ONE decision.
+
+    The aggregator is the "jury": it reads premium_velocity, cross_asset,
+    oi_rotation, iv_term_structure, volume_profile signals and produces:
+
+      FIRE      — 2+ detectors agree on direction (early entry)
+      NO_TRADE  — not enough agreement
+      BLOCKED   — IV crush / fakeout / exhaustion veto
+
+    This is the heart of the leading-indicator system. When 2+ LEADING
+    detectors agree, the move is just starting — fire EARLY, ~30-40 min
+    before the lagging confluence engines align.
+    """
+    try:
+        from early_move import aggregator
+        global engine
+        if engine is None:
+            return {"verdict": "NO_TRADE", "reason": "engine not running"}
+        return aggregator.get_verdict(engine=engine, idx=idx, min_agree=min_agree)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/profit-floor/diagnose")
 async def profit_floor_diagnose(entry: float, peak: float, current_sl: float):
     """Diagnose what profit floor would set for given entry/peak/SL.

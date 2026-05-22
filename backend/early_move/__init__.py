@@ -59,6 +59,7 @@ from . import cross_asset
 from . import oi_rotation
 from . import iv_term_structure
 from . import volume_profile
+from . import aggregator
 
 __all__ = [
     "premium_velocity",
@@ -66,4 +67,5 @@ __all__ = [
     "oi_rotation",
     "iv_term_structure",
     "volume_profile",
+    "aggregator",
 ]
