@@ -1283,6 +1283,12 @@ def get_market_close_status():
     }
 
 
+# Wick-hunt protection: consecutive ticks each open trade has spent
+# at/below its SL. A single-tick poke (classic "SL hunt") is filtered;
+# the SL only fires once the breach holds for SCALPER_SL_CONFIRM_TICKS.
+_sl_breach_count: dict = {}
+
+
 def check_scalper_exits(chains):
     """Monitor open scalper trades — quick exit logic.
     Smart SL applied if enabled in smart_sl_config (else static SL)."""
@@ -1531,19 +1537,38 @@ def check_scalper_exits(chains):
         # ─── Exit logic (priority order) ───
         active_sl_used = smart_active_sl if smart_enabled else sl
 
+        # Wick-hunt protection: reset the consecutive-breach counter the
+        # moment premium climbs back clear of SL.
+        if current_ltp > active_sl_used:
+            _sl_breach_count.pop(t["id"], None)
+
         if new_status == "PEAK_FLOOR_EXIT":
             pass  # already set — skip everything else
         elif reversal_exit:
             pass  # already set above — skip SL/T1/T2 logic
         elif current_ltp <= active_sl_used:
-            new_status = "SL_HIT"
-            exit_price = active_sl_used
-            if smart_enabled:
-                exit_reason = f"Smart SL hit (Stage {smart_stage} - {smart_label}) at ₹{active_sl_used:.2f}"
-                sl_reason_text = f"Profit ladder triggered: Stage {smart_stage} ({smart_label}). Premium ₹{current_ltp:.2f} hit SL ₹{active_sl_used:.2f}"
+            # ── WICK-HUNT PROTECTION (2026-05-22 — user rule) ──
+            # A single tick poking below SL is often a wick that reverts
+            # instantly — exiting on it is the classic "SL hunt" loss.
+            # Require N consecutive ticks at/below SL before honouring
+            # the exit; the trade stays OPEN until the breach is confirmed.
+            # Env: SCALPER_SL_CONFIRM_TICKS (default 2; set 1 = old behaviour).
+            import os as _os_wk
+            _confirm_ticks = max(1, int(_os_wk.environ.get("SCALPER_SL_CONFIRM_TICKS", "2") or 2))
+            _sl_breach_count[t["id"]] = _sl_breach_count.get(t["id"], 0) + 1
+            if _sl_breach_count[t["id"]] >= _confirm_ticks:
+                new_status = "SL_HIT"
+                exit_price = active_sl_used
+                if smart_enabled:
+                    exit_reason = f"Smart SL hit (Stage {smart_stage} - {smart_label}) at ₹{active_sl_used:.2f}"
+                    sl_reason_text = f"Profit ladder triggered: Stage {smart_stage} ({smart_label}). Premium ₹{current_ltp:.2f} hit SL ₹{active_sl_used:.2f}"
+                else:
+                    exit_reason = f"SL hit at ₹{sl:.2f}"
+                    sl_reason_text = f"Static SL hit. Premium ₹{current_ltp:.2f} ≤ SL ₹{sl:.2f}"
             else:
-                exit_reason = f"SL hit at ₹{sl:.2f}"
-                sl_reason_text = f"Static SL hit. Premium ₹{current_ltp:.2f} ≤ SL ₹{sl:.2f}"
+                print(f"[SCALPER] SL wick #{t['id']}: premium ₹{current_ltp:.2f} ≤ SL "
+                      f"₹{active_sl_used:.2f} but only {_sl_breach_count[t['id']]}/{_confirm_ticks} "
+                      f"ticks — waiting for confirmation (anti-hunt)")
         elif spot_exit:
             new_status = "SPOT_ANCHOR_EXIT"
             exit_price = current_ltp
@@ -1660,6 +1685,7 @@ def check_scalper_exits(chains):
 
         conn2 = _conn()
         if new_status != "OPEN":
+            _sl_breach_count.pop(t["id"], None)  # clean wick counter on close
             final_pnl = round((exit_price - entry) * t["qty"], 2)
             conn2.execute("""
                 UPDATE scalper_trades SET
