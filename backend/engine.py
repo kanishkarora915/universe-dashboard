@@ -5603,6 +5603,35 @@ class MarketEngine:
             except Exception:
                 pass
 
+            # ── EARLY MOVE DETECTOR: IV term structure ──
+            # Record near-month ATM IV each cycle — detector watches IV
+            # velocity (expansion = move coming, crush = avoid buying).
+            try:
+                from early_move import iv_term_structure as _em_iv
+                _atm_iv = self._get_atm_iv(index, ltp)
+                if _atm_iv and _atm_iv > 0:
+                    _em_iv.record_iv(idx=index, atm_iv=float(_atm_iv))
+            except Exception:
+                pass
+
+            # ── EARLY MOVE DETECTOR: volume profile ──
+            # Record spot + volume proxy (sum of ATM±2 CE/PE volume).
+            # Detector spots volume breakouts / fakeouts / exhaustion.
+            try:
+                from early_move import volume_profile as _em_vol
+                _vol_proxy = 0.0
+                for _v_offset in range(-2, 3):
+                    _vs = atm + _v_offset * cfg["strike_gap"]
+                    _vinfo = chain.get(_vs, {})
+                    _vol_proxy += (_vinfo.get("ce_volume", 0) or 0)
+                    _vol_proxy += (_vinfo.get("pe_volume", 0) or 0)
+                if _vol_proxy > 0:
+                    _em_vol.record_tick(
+                        idx=index, spot=ltp, volume_proxy=float(_vol_proxy),
+                    )
+            except Exception:
+                pass
+
     def get_price_action(self, expiry_str=None) -> dict:
         """Analyze ATM±3 CE/PE LTP+OI for imbalance, traps, sudden moves → trade signal.
         If expiry_str provided, fetches that expiry via REST. Else uses live ticker data."""

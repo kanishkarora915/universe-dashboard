@@ -57,5 +57,13 @@ STATUS
 from . import premium_velocity
 from . import cross_asset
 from . import oi_rotation
+from . import iv_term_structure
+from . import volume_profile
 
-__all__ = ["premium_velocity", "cross_asset", "oi_rotation"]
+__all__ = [
+    "premium_velocity",
+    "cross_asset",
+    "oi_rotation",
+    "iv_term_structure",
+    "volume_profile",
+]

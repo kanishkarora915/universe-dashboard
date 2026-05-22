@@ -1385,6 +1385,39 @@ async def early_move_oi_rotation(idx: str = "BANKNIFTY"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/early-move/iv-term")
+async def early_move_iv_term(idx: str = "BANKNIFTY"):
+    """IV term-structure scan — volatility-timing detector.
+
+    Detects IV expansion (move coming), IV crush (don't buy — vega
+    against you), and term-structure inversion (imminent volatility).
+    """
+    try:
+        from early_move import iv_term_structure
+        result = iv_term_structure.check_and_log(idx=idx, source="api")
+        result["enabled"] = iv_term_structure.is_enabled()
+        return result
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/early-move/volume-profile")
+async def early_move_volume_profile(idx: str = "BANKNIFTY"):
+    """Volume-profile scan — breakout confirmation detector.
+
+    Detects volume breakouts (real momentum), fakeout warnings (no
+    volume behind move), volume exhaustion (move ending), and the
+    session's high-volume price nodes (real support/resistance).
+    """
+    try:
+        from early_move import volume_profile
+        result = volume_profile.check_and_log(idx=idx, source="api")
+        result["enabled"] = volume_profile.is_enabled()
+        return result
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/profit-floor/diagnose")
 async def profit_floor_diagnose(entry: float, peak: float, current_sl: float):
     """Diagnose what profit floor would set for given entry/peak/SL.
