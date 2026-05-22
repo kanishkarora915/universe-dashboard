@@ -27,12 +27,18 @@ THREE MODES (env-controlled)
       is intentionally NOT in this module yet; that's a later step
       once shadow data proves the edge.)
 
-WHY NO "AGGREGATOR FIRES ITS OWN TRADES" YET
+INDEPENDENT-FIRE PATH (2026-05-22)
 
-  The detectors shipped days ago. Zero validated shadow data. Letting
-  an unproven detector CREATE trades is reckless. veto/full modes only
-  let it FILTER existing confluence trades — strictly safer. The
-  independent-fire path unlocks after 1-2 weeks of shadow validation.
+  evaluate_fire() lets the aggregator OPEN a scalper trade on its own —
+  catching a move EARLIER than the lagging 11-engine confluence.
+  Controlled by EARLY_MOVE_SCALPER_FIRE:
+    off    → never fires
+    shadow → logs would-be entries, does NOT trade (default — this is
+             how the "is the signal good?" validation data accumulates)
+    live   → actually fires, but every fire still passes the full
+             should_enter_scalp gate stack (capital / OI / capitulation).
+  Shadow-first because an unvalidated trigger spends real money — unlike
+  veto (which can only ever reduce bad trades).
 
 INTEGRATION
 
@@ -180,15 +186,96 @@ def evaluate_entry(
     }
 
 
+def fire_mode() -> str:
+    """Return the independent-fire mode: 'off' | 'shadow' | 'live'."""
+    m = os.environ.get("EARLY_MOVE_SCALPER_FIRE", "shadow").lower().strip()
+    return m if m in ("off", "shadow", "live") else "shadow"
+
+
+def evaluate_fire(*, engine, idx: str) -> Dict:
+    """Independent-fire check — does early_move want to OPEN a trade itself?
+
+    Unlike evaluate_entry() (which only FILTERS a legacy-confluence trade),
+    this asks: do the leading detectors want to START a trade right now,
+    BEFORE the lagging 11-engine verdict catches up?
+
+    Args:
+        engine: the live engine instance
+        idx: index name (NIFTY / BANKNIFTY)
+
+    Returns:
+        {
+          "fire": bool,         # True → caller should open the trade
+          "action": str|None,   # "BUY CE" / "BUY PE" when fire is True
+          "reason": str,
+          "mode": str,          # off | shadow | live
+          "verdict": dict,      # full aggregator verdict
+        }
+
+    Behaviour by EARLY_MOVE_SCALPER_FIRE:
+        off    → never fires
+        shadow → fire=False, but logs the would-be entry (default)
+        live   → fire=True on a clean FIRE verdict
+
+    Even in 'live' mode the caller MUST still run the trade through the
+    full should_enter_scalp() gate stack — this only supplies the signal.
+    Aggregator failure fails SAFE (no fire).
+    """
+    fm = fire_mode()
+    result: Dict = {"fire": False, "action": None, "reason": "",
+                    "mode": fm, "verdict": {}}
+
+    if fm == "off":
+        result["reason"] = "early_move scalper-fire OFF"
+        return result
+
+    # Run the aggregator
+    try:
+        from early_move import aggregator
+        verdict = aggregator.get_verdict(engine=engine, idx=idx)
+    except Exception as e:
+        # Unvalidated trigger must never fire on an error
+        result["reason"] = f"aggregator error (no fire): {e}"
+        return result
+
+    result["verdict"] = verdict
+    v_type = verdict.get("verdict", "NO_TRADE")
+    v_dir = verdict.get("direction")
+
+    if v_type != "FIRE" or v_dir not in ("BULL", "BEAR"):
+        result["reason"] = f"no fire — aggregator {v_type}/{v_dir}"
+        return result
+
+    action = "BUY CE" if v_dir == "BULL" else "BUY PE"
+    detail = (f"{verdict.get('detectors_agreed', 0)} detectors agree {v_dir}, "
+              f"conf {verdict.get('confidence', 0)}")
+
+    if fm == "shadow":
+        print(f"[EARLY_MOVE_FIRE_SHADOW] {idx} WOULD fire {action} — "
+              f"{detail} — (shadow, not traded)")
+        result["reason"] = f"shadow — would fire {action} ({detail})"
+        return result
+
+    # live
+    result["fire"] = True
+    result["action"] = action
+    result["reason"] = f"EARLY_MOVE FIRE {action} — {detail}"
+    return result
+
+
 def diagnostics() -> Dict:
     """State snapshot for API."""
     return {
         "mode": entry_mode(),
         "shadow": is_shadow_enabled(),
+        "fire_mode": fire_mode(),
         "modes_available": ["off", "veto", "full"],
+        "fire_modes_available": ["off", "shadow", "live"],
         "description": {
             "off": "shadow only — aggregator never affects trades",
             "veto": "aggregator can BLOCK trades (crush/fakeout/conflict)",
-            "full": "veto + confirm (independent-fire path deferred)",
+            "full": "veto + confirm",
+            "fire": "evaluate_fire() — aggregator opens its own scalper "
+                    "trades (off/shadow/live via EARLY_MOVE_SCALPER_FIRE)",
         },
     }

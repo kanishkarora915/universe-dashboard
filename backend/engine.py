@@ -5054,6 +5054,59 @@ class MarketEngine:
                                     entry_bear_pct=v.get("bearPct", 0),
                                     entry_spot=spot_ltp,
                                 )
+
+                    # ── EARLY-MOVE INDEPENDENT FIRE (2026-05-22) ──
+                    # Leading detectors open a scalper trade on their own —
+                    # catching the move EARLIER than the lagging 11-engine
+                    # confluence verdict. Every fire STILL passes the full
+                    # should_enter_scalp gate stack (capital / OI / capit
+                    # safety). Default 'shadow' — logs would-be entries
+                    # without trading, so validation data accumulates from
+                    # day one. Flip EARLY_MOVE_SCALPER_FIRE=live to activate.
+                    try:
+                        from early_move.entry_gate import evaluate_fire
+                        for idx in ["NIFTY", "BANKNIFTY"]:
+                            legacy_action = verdict.get(idx.lower(), {}).get("action", "")
+                            # Only fire independently when legacy didn't already act
+                            if legacy_action and legacy_action != "NO TRADE":
+                                continue
+                            fire = evaluate_fire(engine=self, idx=idx)
+                            if not fire.get("fire"):
+                                continue
+                            em_action = fire["action"]
+                            cfg = INDEX_CONFIG[idx]
+                            spot_ltp = self.prices.get(self.spot_tokens.get(idx), {}).get("ltp", 0)
+                            if spot_ltp <= 0:
+                                continue
+                            atm = round(spot_ltp / cfg["strike_gap"]) * cfg["strike_gap"]
+                            conf = float(fire.get("verdict", {}).get("confidence", 0) or 0)
+                            em_verdict = {
+                                "action": em_action,
+                                "winProbability": int(conf * 100),
+                                "reasons": [fire.get("reason", "early-move fire")],
+                                "bullPct": 0, "bearPct": 0,
+                            }
+                            if scalper_mode.should_enter_scalp(
+                                idx, em_verdict, scalper_enabled=True,
+                                atm_strike=atm, engine=self,
+                            ):
+                                atm_data = self.chains.get(idx, {}).get(atm, {})
+                                entry_premium = atm_data.get(
+                                    "ce_ltp" if "CE" in em_action else "pe_ltp", 0)
+                                if 5 < entry_premium < 5000:
+                                    print(f"[SCALPER] EARLY-MOVE FIRE entry · "
+                                          f"{idx} {em_action} — {fire.get('reason', '')}")
+                                    scalper_mode.log_scalp_trade(
+                                        idx=idx, action=em_action, strike=int(atm),
+                                        entry_price=entry_premium,
+                                        probability=em_verdict["winProbability"],
+                                        expiry=str(self.nearest_expiry.get(idx, "")),
+                                        entry_reasoning=f"EARLY-MOVE: {fire.get('reason', '')}",
+                                        entry_bull_pct=0, entry_bear_pct=0,
+                                        entry_spot=spot_ltp,
+                                    )
+                    except Exception as e:
+                        print(f"[SCALPER] early-move fire error: {e}")
             except Exception as e:
                 print(f"[SCALPER] Error: {e}")
 

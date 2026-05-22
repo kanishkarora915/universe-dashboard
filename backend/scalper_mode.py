@@ -1399,6 +1399,30 @@ def check_scalper_exits(chains):
         except Exception as _e:
             pass
 
+        # ─── BREAKEVEN LOCK (2026-05-22 — user rule) ───
+        # "Trade profit mein gaya toh SL entry pe aa jaye." Once a trade is
+        # meaningfully in profit, raise SL to the entry price so it can
+        # NEVER turn into a loss — worst case becomes breakeven.
+        # Works in BOTH static and smart-SL paths: the smart ladder below
+        # does max(smart_active_sl, sl), so the raised sl is picked up;
+        # the static path uses sl directly. Stateless — recomputed each
+        # tick from cur_profit_pct, so no DB persistence needed.
+        # Trigger threshold avoids noise-locking on a +0.5% wiggle that
+        # would then stop the trade at breakeven on normal chop.
+        # Env: SCALPER_BREAKEVEN_LOCK (default on),
+        #      SCALPER_BREAKEVEN_TRIGGER (default 4 = +4% profit).
+        try:
+            import os as _os_be
+            if _os_be.environ.get("SCALPER_BREAKEVEN_LOCK", "on").lower() == "on":
+                be_trigger = float(_os_be.environ.get("SCALPER_BREAKEVEN_TRIGGER", "4"))
+                if cur_profit_pct >= be_trigger and sl < entry:
+                    sl = entry
+                    t["sl_price"] = sl
+                    print(f"[SCALPER] BREAKEVEN #{t['id']}: profit {cur_profit_pct:+.1f}% "
+                          f"≥ {be_trigger}% — SL locked to entry ₹{entry} (trade now risk-free)")
+        except Exception:
+            pass
+
         # ─── SMART SL LADDER (if enabled) ───
         smart_active_sl = sl  # fallback to static
         smart_stage = 0

@@ -21,7 +21,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _reset_env(monkeypatch):
     for var in ["EARLY_MOVE_ENTRY_MODE", "EARLY_MOVE_ENTRY_SHADOW",
-                "EARLY_MOVE_AGGREGATOR_ENABLED"]:
+                "EARLY_MOVE_AGGREGATOR_ENABLED", "EARLY_MOVE_SCALPER_FIRE"]:
         monkeypatch.delenv(var, raising=False)
 
 
@@ -153,6 +153,81 @@ class TestSafety:
         assert result["allow"] is True
 
 
+# ── INDEPENDENT FIRE — evaluate_fire ───────────────────────────────────
+
+class TestEvaluateFire:
+    def test_fire_default_is_shadow(self):
+        from early_move.entry_gate import fire_mode
+        assert fire_mode() == "shadow"
+
+    def test_fire_off_never_fires(self, monkeypatch):
+        monkeypatch.setenv("EARLY_MOVE_SCALPER_FIRE", "off")
+        from early_move.entry_gate import evaluate_fire
+        r = evaluate_fire(engine=_FakeEngine(), idx="BANKNIFTY")
+        assert r["fire"] is False
+        assert r["mode"] == "off"
+
+    def test_fire_shadow_never_trades(self, monkeypatch):
+        """Shadow mode: even on a FIRE verdict, fire stays False."""
+        monkeypatch.setenv("EARLY_MOVE_SCALPER_FIRE", "shadow")
+        import early_move.entry_gate as eg
+        import early_move.aggregator as agg
+        monkeypatch.setattr(agg, "get_verdict", lambda **kw: {
+            "verdict": "FIRE", "direction": "BULL",
+            "detectors_agreed": 3, "confidence": 0.8,
+        })
+        r = eg.evaluate_fire(engine=_FakeEngine(), idx="BANKNIFTY")
+        assert r["fire"] is False
+        assert r["mode"] == "shadow"
+
+    def test_fire_live_fires_on_bull(self, monkeypatch):
+        monkeypatch.setenv("EARLY_MOVE_SCALPER_FIRE", "live")
+        import early_move.entry_gate as eg
+        import early_move.aggregator as agg
+        monkeypatch.setattr(agg, "get_verdict", lambda **kw: {
+            "verdict": "FIRE", "direction": "BULL",
+            "detectors_agreed": 3, "confidence": 0.85,
+        })
+        r = eg.evaluate_fire(engine=_FakeEngine(), idx="NIFTY")
+        assert r["fire"] is True
+        assert r["action"] == "BUY CE"
+
+    def test_fire_live_fires_on_bear(self, monkeypatch):
+        monkeypatch.setenv("EARLY_MOVE_SCALPER_FIRE", "live")
+        import early_move.entry_gate as eg
+        import early_move.aggregator as agg
+        monkeypatch.setattr(agg, "get_verdict", lambda **kw: {
+            "verdict": "FIRE", "direction": "BEAR",
+            "detectors_agreed": 4, "confidence": 0.9,
+        })
+        r = eg.evaluate_fire(engine=_FakeEngine(), idx="NIFTY")
+        assert r["fire"] is True
+        assert r["action"] == "BUY PE"
+
+    def test_fire_live_no_trade_does_not_fire(self, monkeypatch):
+        monkeypatch.setenv("EARLY_MOVE_SCALPER_FIRE", "live")
+        import early_move.entry_gate as eg
+        import early_move.aggregator as agg
+        monkeypatch.setattr(agg, "get_verdict", lambda **kw: {
+            "verdict": "NO_TRADE", "direction": None,
+        })
+        r = eg.evaluate_fire(engine=_FakeEngine(), idx="NIFTY")
+        assert r["fire"] is False
+
+    def test_fire_aggregator_exception_fails_safe(self, monkeypatch):
+        """Unvalidated trigger must fail SAFE — aggregator error → no fire."""
+        monkeypatch.setenv("EARLY_MOVE_SCALPER_FIRE", "live")
+        import early_move.entry_gate as eg
+        import early_move.aggregator as agg
+
+        def _boom(**kw):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(agg, "get_verdict", _boom)
+        r = eg.evaluate_fire(engine=_FakeEngine(), idx="NIFTY")
+        assert r["fire"] is False
+
+
 # ── DIRECTION HELPERS ──────────────────────────────────────────────────
 
 class TestDirectionHelpers:
@@ -178,3 +253,5 @@ class TestDiagnostics:
         assert d["mode"] == "off"
         assert "modes_available" in d
         assert set(d["modes_available"]) == {"off", "veto", "full"}
+        assert d["fire_mode"] == "shadow"
+        assert set(d["fire_modes_available"]) == {"off", "shadow", "live"}
