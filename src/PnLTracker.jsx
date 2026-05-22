@@ -346,11 +346,29 @@ export default function PnLTracker() {
     if (Array.isArray(d)) setDates(d);
   }, []);
 
+  // Live tick poll (1s) — zero-latency LTP from engine.chains in-memory.
+  // Overlays fresh LTP + P&L onto open trades so cards show real-time
+  // values instead of waiting for the 15s full refresh.
+  const livePoll = useCallback(async () => {
+    const r = await safeFetch("/api/trades/live-prices", null);
+    if (r && Array.isArray(r.prices)) {
+      const map = {};
+      r.prices.forEach(p => { map[p.id] = p; });
+      setOpenTrades(prev => prev.map(t => {
+        const lp = map[t.id];
+        if (!lp || !(lp.ltp > 0)) return t;
+        return { ...t, current_ltp: lp.ltp, pnl_rupees: lp.pnl_rupees, pnl_pct: lp.pnl_pct };
+      }));
+    }
+  }, []);
+
   useEffect(() => {
     refresh();
-    const iv = setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 15000);
-    return () => clearInterval(iv);
-  }, [refresh]);
+    const visGuard = (fn) => () => { if (document.visibilityState === "visible") fn(); };
+    const iv = setInterval(visGuard(refresh), 15000);
+    const ivLive = setInterval(visGuard(livePoll), 1000);
+    return () => { clearInterval(iv); clearInterval(ivLive); };
+  }, [refresh, livePoll]);
 
   // Fetch trades for selected date
   useEffect(() => {

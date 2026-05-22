@@ -2990,6 +2990,36 @@ async def scalper_live_prices():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/trades/live-prices")
+async def trades_live_prices():
+    """Zero-latency live LTP per open MAIN trade — reads engine.chains
+    in-memory (no DB hit, no cache). The PnL tab polls this ~1s so it
+    shows real-time premium + P&L instead of the 15s full-refresh lag.
+    Mirror of /api/scalper/live-prices for the swing/PnL side."""
+    if not engine or not hasattr(engine, "trade_manager") or not engine.trade_manager:
+        return {"prices": [], "ts": 0}
+    try:
+        import time as _time
+        ts = int(_time.time() * 1000)
+        out = []
+        for t in engine.trade_manager.get_open_trades():
+            chain = engine.chains.get(t.get("idx"), {})
+            strike_data = chain.get(t.get("strike"), {})
+            side_key = "ce_ltp" if "CE" in (t.get("action") or "") else "pe_ltp"
+            ltp = strike_data.get(side_key) or 0
+            entry = t.get("entry_price") or 0
+            qty = t.get("qty") or 0
+            pnl_rupees = round((ltp - entry) * qty, 2) if ltp > 0 else 0
+            pnl_pct = round((ltp - entry) / entry * 100, 2) if ltp > 0 and entry > 0 else 0
+            out.append({
+                "id": t.get("id"), "ltp": ltp, "entry": entry, "qty": qty,
+                "pnl_rupees": pnl_rupees, "pnl_pct": pnl_pct, "ts": ts,
+            })
+        return {"prices": out, "ts": ts}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/scalper/trades/{trade_id}/ticks")
 async def scalper_trade_ticks(trade_id: int, limit: int = 500):
     """Tick history for one scalper trade (live LTP samples)."""

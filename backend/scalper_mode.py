@@ -1828,10 +1828,15 @@ def get_scalper_stats():
     closed = [r[0] or 0 for r in closed]
     wins = [p for p in closed if p > 0]
     losses = [p for p in closed if p < 0]
+    breakevens = [p for p in closed if p == 0]
 
     conn.close()
 
-    win_rate = round(len(wins) / max(len(closed), 1) * 100, 1) if closed else 0
+    # Win rate = wins / (wins + losses). Breakeven (pnl=0) trades are
+    # scratches, not losses — excluded from the denominator so the
+    # breakeven-lock feature does not artificially deflate win rate.
+    decided = len(wins) + len(losses)
+    win_rate = round(len(wins) / decided * 100, 1) if decided else 0
     total_pnl = sum(closed)
     avg_win = round(sum(wins) / max(len(wins), 1), 0) if wins else 0
     avg_loss = round(sum(losses) / max(len(losses), 1), 0) if losses else 0
@@ -1842,6 +1847,7 @@ def get_scalper_stats():
         "open": open_count,
         "wins": len(wins),
         "losses": len(losses),
+        "breakevens": len(breakevens),
         "winRate": win_rate,
         "totalPnl": total_pnl,
         "avgWin": avg_win,

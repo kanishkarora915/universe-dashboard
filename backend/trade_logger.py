@@ -1580,10 +1580,11 @@ class TradeManager:
             return {"month": prefix, "trades": [], "stats": {"total": 0}}
 
         closed = [t for t in trades if t["status"] != "OPEN"]
-        wins = [t for t in trades if t["status"] in ("T1_HIT", "T2_HIT")]
-        losses = [t for t in trades if t["status"] == "SL_HIT"]
+        # Win / loss by actual P&L sign — consistent with get_stats().
+        wins = [t for t in closed if (t["pnl_rupees"] or 0) > 0]
+        losses = [t for t in closed if (t["pnl_rupees"] or 0) < 0]
         hunts = [t for t in trades if t["status"] == "STOP_HUNTED"]
-        total_pnl = sum(t["pnl_rupees"] for t in closed)
+        total_pnl = sum((t["pnl_rupees"] or 0) for t in closed)
         win_pnls = [(t["pnl_rupees"] or 0) for t in wins]
         loss_pnls = [(t["pnl_rupees"] or 0) for t in losses]
 
@@ -1594,12 +1595,13 @@ class TradeManager:
             if day not in daily:
                 daily[day] = {"trades": 0, "wins": 0, "losses": 0, "pnl": 0}
             daily[day]["trades"] += 1
-            if t["status"] in ("T1_HIT", "T2_HIT"):
-                daily[day]["wins"] += 1
-            elif t["status"] == "SL_HIT":
-                daily[day]["losses"] += 1
             if t["status"] != "OPEN":
-                daily[day]["pnl"] += t["pnl_rupees"]
+                p = t["pnl_rupees"] or 0
+                daily[day]["pnl"] += p
+                if p > 0:
+                    daily[day]["wins"] += 1
+                elif p < 0:
+                    daily[day]["losses"] += 1
 
         return {
             "month": prefix,
@@ -1610,7 +1612,7 @@ class TradeManager:
                 "wins": len(wins),
                 "losses": len(losses),
                 "stopHunts": len(hunts),
-                "winRate": round(len(wins) / len(closed) * 100) if closed else 0,
+                "winRate": round(len(wins) / (len(wins) + len(losses)) * 100) if (wins or losses) else 0,
                 "totalPnl": round(total_pnl),
                 "avgWin": round(sum(win_pnls) / len(win_pnls)) if win_pnls else 0,
                 "avgLoss": round(sum(loss_pnls) / len(loss_pnls)) if loss_pnls else 0,
@@ -1663,11 +1665,15 @@ class TradeManager:
                     "capitalUsedPct": 0, "availableCapital": _get_running_capital()}
 
         open_trades = [t for t in all_trades if t["status"] == "OPEN"]
-        wins = [t for t in all_trades if t["status"] in ("T1_HIT", "T2_HIT", "TRAIL_EXIT")]
-        losses = [t for t in all_trades if t["status"] in ("SL_HIT",)]
-        breakevens = [t for t in all_trades if t["status"] == "BREAKEVEN_EXIT"]
-        hunts = [t for t in all_trades if t["status"] == "STOP_HUNTED"]
         closed = [t for t in all_trades if t["status"] != "OPEN"]
+        # Win / loss / breakeven by ACTUAL P&L sign — not by exit status.
+        # A profitable TIMEOUT_EXIT / REVERSAL_EXIT is a win; a losing
+        # STOP_HUNTED is a loss. Status-based counting mislabelled both
+        # and deflated win rate.
+        wins = [t for t in closed if (t["pnl_rupees"] or 0) > 0]
+        losses = [t for t in closed if (t["pnl_rupees"] or 0) < 0]
+        breakevens = [t for t in closed if (t["pnl_rupees"] or 0) == 0]
+        hunts = [t for t in all_trades if t["status"] == "STOP_HUNTED"]
 
         # Capital calculations — safe with None/0 values
         total_invested = sum((t["entry_price"] or 0) * (t["qty"] or 0) for t in all_trades)
@@ -1686,14 +1692,19 @@ class TradeManager:
         win_pnls = [(t["pnl_rupees"] or 0) for t in wins]
         loss_pnls = [(t["pnl_rupees"] or 0) for t in losses]
 
-        closed_count = len(closed)
-        win_rate = round(len(wins) / closed_count * 100) if closed_count > 0 else 0
+        # Win rate = wins / (wins + losses) — breakeven scratches excluded.
+        decided = len(wins) + len(losses)
+        win_rate = round(len(wins) / decided * 100) if decided > 0 else 0
 
-        # Streak
+        # Streak — by P&L sign; breakeven scratches are skipped (they
+        # neither extend nor break a streak).
         streak = 0
         streak_type = ""
         for t in sorted(closed, key=lambda x: x.get("exit_time") or "", reverse=True):
-            is_win = t["status"] in ("T1_HIT", "T2_HIT", "TRAIL_EXIT")
+            p = t["pnl_rupees"] or 0
+            if p == 0:
+                continue
+            is_win = p > 0
             if streak == 0:
                 streak_type = "WIN" if is_win else "LOSS"
                 streak = 1
