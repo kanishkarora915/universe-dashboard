@@ -382,6 +382,28 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
     cfg = get_scalper_config()
     threshold = cfg.get("threshold") or SCALPER_THRESHOLD
     daily_cap = cfg.get("daily_cap") or SCALPER_DAILY_CAP
+
+    # ── ADAPTIVE MARKET-HEALTH (2026-05-22) ──
+    # The scalper reads market health and tunes its own aggression:
+    # looser gates when conditions favour scalping, tighter when they
+    # don't. Replaces a static aggressive flag. Shadow mode (default)
+    # computes + logs the level but does NOT apply it; only 'live' mode
+    # applies the tuning. Any failure → BALANCED (no change).
+    _cooldown_mult = 1.0
+    _allow_chop_health = False
+    try:
+        from scalper_health import assess as _sh_assess
+        _health = _sh_assess(engine, idx)
+        if _health.get("mode") == "live":
+            _ht = _health.get("tuning", {})
+            threshold = max(40, threshold + _ht.get("threshold_delta", 0))
+            if _ht.get("daily_cap"):
+                daily_cap = _ht["daily_cap"]
+            _cooldown_mult = _ht.get("cooldown_mult", 1.0)
+            _allow_chop_health = bool(_ht.get("allow_chop", False))
+    except Exception as _e:
+        print(f"[SCALPER] scalper_health error (balanced fallback): {_e}")
+
     # Use RUNNING capital from tracker (compounds with P&L)
     try:
         from capital_tracker import get_running_capital
@@ -525,7 +547,7 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
 
     # Guard 1: Cooldown after ANY exit on same strike
     # Scalper INDEPENDENT — uses its own config, not buyer_mode (which is for main trades)
-    cooldown_cutoff = (now - timedelta(minutes=COOLDOWN_SAME_STRIKE_MIN)).isoformat()
+    cooldown_cutoff = (now - timedelta(minutes=COOLDOWN_SAME_STRIKE_MIN * _cooldown_mult)).isoformat()
     recent_same_strike = conn.execute(
         """SELECT COUNT(*) FROM scalper_trades
            WHERE idx=? AND strike=? AND status!='OPEN' AND exit_time > ?""",
@@ -536,7 +558,7 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         return False
 
     # Guard 2: Flip direction block (CE→PE or PE→CE on same strike)
-    flip_cutoff = (now - timedelta(minutes=COOLDOWN_FLIP_DIRECTION_MIN)).isoformat()
+    flip_cutoff = (now - timedelta(minutes=COOLDOWN_FLIP_DIRECTION_MIN * _cooldown_mult)).isoformat()
     opposite = "BUY PE" if "CE" in action_str else "BUY CE"
     recent_opposite = conn.execute(
         """SELECT COUNT(*) FROM scalper_trades
@@ -635,11 +657,12 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
                         (is_ce and cap_bull >= 4) or
                         (not is_ce and cap_bear >= 4)
                     )
-                    if not capit_confirms_direction:
+                    if not capit_confirms_direction and not _allow_chop_health:
                         print(f"[SCALPER] REJECT entry (G11): {filter_reason}")
                         return False
                     else:
-                        print(f"[SCALPER] CHOP override: capit-confirmed, {filter_reason}")
+                        _chop_why = "capit-confirmed" if capit_confirms_direction else "health AGGRESSIVE"
+                        print(f"[SCALPER] CHOP override ({_chop_why}): {filter_reason}")
                 else:
                     print(f"[SCALPER] REJECT entry (G11): {filter_reason}")
                     return False

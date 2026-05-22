@@ -1461,6 +1461,37 @@ async def early_move_verdict(idx: str = "BANKNIFTY", min_agree: int = 2):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/scalper/health")
+async def scalper_health_status():
+    """Adaptive market-health → scalper aggression level.
+
+    The scalper reads market health (regime, VIX, ATR, expiry day,
+    recent W/L streak) and picks its own aggression:
+
+      AGGRESSIVE — conditions favour scalping → looser gates, higher cap
+      BALANCED   — normal → default settings
+      DEFENSIVE  — dead/expiry/spike/losing-streak → tighter, smaller
+
+    Mode via env SCALPER_ADAPTIVE_HEALTH (off / shadow / live). In
+    'shadow' the level is computed + logged but not applied; 'live'
+    applies the tuning inside should_enter_scalp().
+    """
+    try:
+        import scalper_health
+        out = scalper_health.diagnostics()
+        global engine
+        if engine is not None:
+            out["live"] = {
+                "NIFTY": scalper_health.assess(engine, "NIFTY"),
+                "BANKNIFTY": scalper_health.assess(engine, "BANKNIFTY"),
+            }
+        else:
+            out["live"] = {"note": "engine not running"}
+        return out
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/profit-floor/diagnose")
 async def profit_floor_diagnose(entry: float, peak: float, current_sl: float):
     """Diagnose what profit floor would set for given entry/peak/SL.
