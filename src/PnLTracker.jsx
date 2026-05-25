@@ -366,7 +366,7 @@ export default function PnLTracker() {
     refresh();
     const visGuard = (fn) => () => { if (document.visibilityState === "visible") fn(); };
     const iv = setInterval(visGuard(refresh), 15000);
-    const ivLive = setInterval(visGuard(livePoll), 1000);
+    const ivLive = setInterval(visGuard(livePoll), 2000);  // 2s — paired with scalper poll, prevents freeze under load
     return () => { clearInterval(iv); clearInterval(ivLive); };
   }, [refresh, livePoll]);
 

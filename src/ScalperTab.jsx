@@ -424,7 +424,7 @@ export default function ScalperTab() {
     // Pause polling when tab not visible (huge CPU saving)
     const visGuard = (fn) => () => { if (document.visibilityState === "visible") fn(); };
     const ivFull = setInterval(visGuard(fullLoad), 15000);  // was 5s — too aggressive
-    const ivTick = setInterval(visGuard(livePoll), 1000);   // 1s — true live LTP (endpoint is in-memory, cheap)
+    const ivTick = setInterval(visGuard(livePoll), 2000);   // 2s — endpoint is in-memory cheap, 1s caused load spikes (2026-05-25)
     return () => { clearInterval(ivFull); clearInterval(ivTick); };
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 

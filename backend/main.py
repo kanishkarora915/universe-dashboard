@@ -139,23 +139,58 @@ async def lifespan(app: FastAPI):
             if api_key and access_token:
                 kite = KiteConnect(api_key=api_key)
                 kite.set_access_token(access_token)
-                session["api_key"] = api_key
-                session["api_secret"] = api_secret
-                session["access_token"] = access_token
-                session["kite"] = kite
+
+                # ── Verify cached token before starting the engine ──
+                # Kite access_tokens expire daily at 6 AM IST. The previous
+                # behaviour started the engine with whatever token was on
+                # disk; if it was yesterday's, the ticker would fail and we
+                # waited up to 5 min for self-heal to notice. kite.profile()
+                # is a cheap call that fails fast on an expired token, so
+                # we can attempt a fresh login immediately at cold start.
+                token_ok = False
                 try:
-                    from trade_logger import save_nse_holidays_from_kite
-                    save_nse_holidays_from_kite(kite)
-                except Exception:
-                    pass
-                engine = MarketEngine(api_key=api_key, access_token=access_token, loop=event_loop)
-                engine.start()
-                try:
-                    from trinity import api_routes as _tr
-                    _tr.attach_engine(engine)
-                except Exception as _e:
-                    print(f"[TRINITY] attach_engine failed: {_e}")
-                print(f"[STARTUP] Engine auto-resumed from cached token {access_token[:8]}…")
+                    kite.profile()
+                    token_ok = True
+                    print(f"[STARTUP] Cached token {access_token[:8]}… verified")
+                except Exception as ve:
+                    print(f"[STARTUP] Cached token DEAD ({ve}) — attempting fresh Kite login")
+                    try:
+                        import auto_login as al
+                        required = ["KITE_USER_ID", "KITE_PASSWORD", "KITE_TOTP_SECRET",
+                                    "KITE_API_KEY", "KITE_API_SECRET"]
+                        if all(os.environ.get(k) for k in required):
+                            new_token = al.kite_login()
+                            if new_token:
+                                access_token = new_token
+                                api_key = os.environ["KITE_API_KEY"]
+                                api_secret = os.environ.get("KITE_API_SECRET", "")
+                                kite = KiteConnect(api_key=api_key)
+                                kite.set_access_token(access_token)
+                                token_ok = True
+                                print(f"[STARTUP] Fresh login OK — new token {access_token[:8]}…")
+                        else:
+                            print("[STARTUP] Fresh-login env vars missing — engine NOT started, self-heal will retry")
+                    except Exception as fle:
+                        print(f"[STARTUP] Fresh login failed: {fle} — engine NOT started, self-heal will retry")
+
+                if token_ok:
+                    session["api_key"] = api_key
+                    session["api_secret"] = api_secret
+                    session["access_token"] = access_token
+                    session["kite"] = kite
+                    try:
+                        from trade_logger import save_nse_holidays_from_kite
+                        save_nse_holidays_from_kite(kite)
+                    except Exception:
+                        pass
+                    engine = MarketEngine(api_key=api_key, access_token=access_token, loop=event_loop)
+                    engine.start()
+                    try:
+                        from trinity import api_routes as _tr
+                        _tr.attach_engine(engine)
+                    except Exception as _e:
+                        print(f"[TRINITY] attach_engine failed: {_e}")
+                    print(f"[STARTUP] Engine auto-resumed from cached token {access_token[:8]}…")
             else:
                 print("[STARTUP] access_token.json present but missing fields — manual login needed")
         elif engine is None:
@@ -380,8 +415,21 @@ def _engine_selfheal_monitor():
         t = now.hour * 60 + now.minute
         return 9 * 60 + 15 <= t <= 15 * 60 + 30
 
-    SELFHEAL_INTERVAL = 300  # 5 min between checks
-    print("[SELFHEAL] Started — will check engine every 5 min during market hours")
+    # Adaptive cooldown — 60s in the first hour after market open (the
+    # window where a stale token from yesterday matters most) and 300s
+    # the rest of the day. Prevents hammering Kite all afternoon while
+    # keeping morning bootstrap recovery snappy (≤1 min instead of ≤5).
+    SELFHEAL_INTERVAL_OFF_HOURS = 300
+    SELFHEAL_INTERVAL_FAST = 60       # 09:15-10:15 IST
+    SELFHEAL_INTERVAL_DEFAULT = 300   # rest of market hours
+
+    def _adaptive_interval(now) -> int:
+        t = now.hour * 60 + now.minute
+        if 9 * 60 + 15 <= t <= 10 * 60 + 15:
+            return SELFHEAL_INTERVAL_FAST
+        return SELFHEAL_INTERVAL_DEFAULT
+
+    print("[SELFHEAL] Started — 60s checks in first market hour, 300s thereafter")
 
     last_recovery_attempt = 0
     last_alert_for_engine_down = 0
@@ -390,8 +438,10 @@ def _engine_selfheal_monitor():
         try:
             now = _ist_now()
             if not _is_market_hours(now):
-                _t.sleep(SELFHEAL_INTERVAL)
+                _t.sleep(SELFHEAL_INTERVAL_OFF_HOURS)
                 continue
+
+            interval = _adaptive_interval(now)
 
             # Engine state check
             engine_alive = (
@@ -399,13 +449,13 @@ def _engine_selfheal_monitor():
                 and getattr(engine, "running", False)
             )
             if engine_alive:
-                _t.sleep(SELFHEAL_INTERVAL)
+                _t.sleep(interval)
                 continue
 
             # Engine DOWN during market hours — attempt recovery
             now_ts = time.time()
-            if (now_ts - last_recovery_attempt) < SELFHEAL_INTERVAL:
-                _t.sleep(30)  # short sleep, cooldown not elapsed
+            if (now_ts - last_recovery_attempt) < interval:
+                _t.sleep(15)  # short sleep, cooldown not elapsed
                 continue
             last_recovery_attempt = now_ts
 
@@ -488,7 +538,7 @@ def _engine_selfheal_monitor():
                 except Exception:
                     pass
 
-            _t.sleep(SELFHEAL_INTERVAL)
+            _t.sleep(_adaptive_interval(_ist_now()))
 
         except Exception as e:
             print(f"[SELFHEAL] Outer loop error: {e}")
