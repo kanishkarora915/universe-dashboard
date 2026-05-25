@@ -220,6 +220,24 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         print(f"[STARTUP] autologin daemon spawn failed: {_e}")
 
+    # ── Stale-token reaper — wipes the cached Kite token at 06:00 IST ──
+    # Kite revokes the access token at 6 AM IST sharp. Holding onto the
+    # cached /data/access_token.json past 6 AM means any consumer
+    # (lifespan resume, /api/status, manual checks) could see a stale
+    # "logged in" state while the ticker is actually dead. This thread
+    # deletes the file + stops the engine + clears the session at 6 AM
+    # so the dashboard correctly displays "logged out, waiting" between
+    # 06:00 and the 08:50 daemon refresh.
+    try:
+        import threading as _th
+        _th.Thread(
+            target=_stale_token_reaper,
+            daemon=True,
+            name="stale-token-reaper",
+        ).start()
+    except Exception as _e:
+        print(f"[STARTUP] stale-token-reaper spawn failed: {_e}")
+
     # ── Engine self-heal monitor (Layer 3 of bulletproof auto-login) ──
     # During market hours (09:15-15:30 IST), if engine is detected
     # dead (None or running=False), attempt automatic recovery:
@@ -365,6 +383,90 @@ def _start_engine_with_token(api_key: str, access_token: str, api_secret: str = 
         return True, f"Engine started with access_token {access_token[:8]}..."
     except Exception as e:
         return False, str(e)
+
+
+def _stale_token_reaper():
+    """Reap the stale Kite access token at 06:00 IST daily.
+
+    Kite revokes the access token at 6 AM IST sharp. Past that moment
+    the cached /data/access_token.json file holds a dead string — but
+    any consumer (lifespan auto-resume on a container restart, the
+    /api/status check, position_watcher reads, etc.) could still pick
+    it up and silently treat the dashboard as "logged in" while the
+    ticker is in fact dead. The user sees stale data without warning.
+
+    This thread fires at 06:00 IST (window 06:00-06:10 to cover sleep
+    drift) and performs three clean-up actions:
+      1. Deletes /data/access_token.json so the file is gone.
+      2. Stops the engine (its internal access_token is dead anyway —
+         no ticks flow pre-market, monitoring is moot).
+      3. Clears the in-memory session dict so /api/status correctly
+         shows logged-out.
+
+    The 08:50 in-process daemon then performs a fresh Kite login and
+    starts a new engine with the new token. Between 06:00 and 08:50
+    the dashboard displays a truthful "logged out, waiting for
+    auto-login" state instead of a zombie one.
+
+    Crash safety: outer try/except, never propagates errors.
+    """
+    global engine
+    import time as _t
+    from datetime import datetime as _dt
+    import pytz as _pytz
+
+    _IST = _pytz.timezone("Asia/Kolkata")
+    token_file = _data_dir / "access_token.json"
+    last_reap_date = None
+
+    print("[TOKEN-REAPER] Started — will wipe stale Kite token at 06:00 IST daily")
+
+    while True:
+        try:
+            now = _dt.now(_IST)
+            today_str = now.strftime("%Y-%m-%d")
+
+            # Already reaped today? Check again later.
+            if last_reap_date == today_str:
+                _t.sleep(300)
+                continue
+
+            # In the 06:00 - 06:10 IST reap window?
+            t_min = now.hour * 60 + now.minute
+            if 6 * 60 <= t_min <= 6 * 60 + 10:
+                # 1. Delete cached token file
+                if token_file.exists():
+                    try:
+                        token_file.unlink()
+                        print(f"[TOKEN-REAPER] Deleted {token_file.name} at "
+                              f"{now.strftime('%H:%M:%S')} IST — Kite revoked at 6 AM")
+                    except Exception as e:
+                        print(f"[TOKEN-REAPER] delete failed: {e}")
+                else:
+                    print(f"[TOKEN-REAPER] {token_file.name} already absent — nothing to reap")
+
+                # 2. Stop the engine — internal token is dead
+                if engine is not None:
+                    try:
+                        engine.stop()
+                        engine = None
+                        print("[TOKEN-REAPER] Stopped engine — 08:50 daemon will restart it fresh")
+                    except Exception as e:
+                        print(f"[TOKEN-REAPER] engine stop failed: {e}")
+
+                # 3. Clear in-memory session
+                session["api_key"] = None
+                session["api_secret"] = None
+                session["access_token"] = None
+                session["kite"] = None
+
+                last_reap_date = today_str
+                _t.sleep(60)
+            else:
+                _t.sleep(60)
+        except Exception as e:
+            print(f"[TOKEN-REAPER] loop error: {e}")
+            _t.sleep(60)
 
 
 def _engine_selfheal_monitor():
