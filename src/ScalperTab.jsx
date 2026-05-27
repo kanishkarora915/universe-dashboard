@@ -18,6 +18,7 @@ import { createChart, LineSeries } from "lightweight-charts";
 import SmartSLLadder from "./components/SmartSLLadder";
 import CapitalTracker from "./components/CapitalTracker";
 import PositionHealthCard from "./components/PositionHealthCard";
+import StructureBadge from "./StructureBadge";
 import ProfitTrailBadge from "./components/ProfitTrailBadge";
 import WatcherControls from "./components/WatcherControls";
 import WatcherStatusBadge from "./components/WatcherStatusBadge";
@@ -531,11 +532,15 @@ export default function ScalperTab() {
       {/* Header */}
       <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "16px 20px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
-          <div>
-            <div style={{ color: ORANGE, fontSize: 15, fontWeight: 900 }}>⚡ SCALPER MODE — Independent</div>
-            <div style={{ color: "#777", fontSize: 11, marginTop: 2 }}>
-              Own capital · Live tick LTP (1s) · Manual exit · Smart SL toggle
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div>
+              <div style={{ color: ORANGE, fontSize: 15, fontWeight: 900 }}>⚡ SCALPER MODE — Independent</div>
+              <div style={{ color: "#777", fontSize: 11, marginTop: 2 }}>
+                Own capital · Live tick LTP (2s) · Manual exit · Smart SL toggle
+              </div>
             </div>
+            {/* Phase 6 — live structure badge per index */}
+            <StructureBadge indices={["NIFTY", "BANKNIFTY"]} />
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
             {/* PDF Export Buttons */}
