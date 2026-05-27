@@ -730,6 +730,17 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
                         f"{sg_decision.get('reason', '')}"
                     )
                     return False
+                # If LIVE mode with a real mode-A/B decision, stash tuning
+                # for log_scalp_trade() to apply downstream. Only stash on
+                # 'live' — shadow doesn't change behavior.
+                if (sg.master_mode() == "live"
+                        and sg_decision.get("mode") in ("aligned", "counter_trend")
+                        and sg_decision.get("tuning")):
+                    _pending_structure_tuning[(idx, action_str)] = {
+                        "mode": sg_decision["mode"],
+                        "tuning": sg_decision["tuning"],
+                        "alignment": sg_decision.get("alignment"),
+                    }
         except Exception as _e:
             # NEVER let structure gate exception block a legit trade
             print(f"[SCALPER] structure_gate error (allow): {_e}")
@@ -957,6 +968,31 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
         print(f"[SCALPER] EXPIRY config: SL={sl_pct*100:.1f}% T1={t1_pct*100:.1f}% "
               f"T2={t2_pct*100:.1f}% qty×{qty_mult} hold≤{cfg.get('max_hold_min')}m")
 
+    # ── STRUCTURE-MODE TUNING (Phase 4 — 2026-05-27) ──
+    # If G14 (structure_gate) chose Mode A (aligned) or Mode B (counter-
+    # trend), apply that mode's size/SL/T1/T2/hold params. Stored by
+    # should_enter_scalp() keyed by (idx, action). Default tuning unchanged
+    # when not present (e.g. STRUCTURE_MODE=off or 'shadow').
+    structure_mode_for_trade = None
+    try:
+        _st = _pending_structure_tuning.pop((idx, action), None)
+        if _st and _st.get("tuning"):
+            _t = _st["tuning"]
+            structure_mode_for_trade = _st["mode"]
+            old_sl, old_t1, old_t2 = sl_pct, t1_pct, t2_pct
+            sl_pct = _t.get("sl_pct", sl_pct) or sl_pct
+            t1_pct = _t.get("t1_pct", t1_pct) or t1_pct
+            if _t.get("t2_pct") is not None:
+                t2_pct = _t.get("t2_pct") or t2_pct
+            # qty_mult is applied later (multiplied with health qty_mult)
+            qty_mult = qty_mult * (_t.get("size_mult", 1.0) or 1.0)
+            print(f"[SCALPER] STRUCTURE-{structure_mode_for_trade.upper()} tuning — "
+                  f"SL {old_sl*100:.1f}%→{sl_pct*100:.1f}% "
+                  f"T1 {old_t1*100:.1f}%→{t1_pct*100:.1f}% "
+                  f"size×{_t.get('size_mult', 1.0)}")
+    except Exception as _e:
+        print(f"[SCALPER] structure tuning apply error (default): {_e}")
+
     # ── ADAPTIVE MARKET-HEALTH — exit-side tuning (2026-05-22) ──
     # Bigger targets when the market is AGGRESSIVE, smaller size when
     # DEFENSIVE. Reads the cached health level set by should_enter_scalp
@@ -1073,6 +1109,19 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
     trade_id = cursor.lastrowid
     conn.commit()
     conn.close()
+
+    # ── Track structure mode for this trade (Phase 4 — 2026-05-27) ──
+    # Used by check_scalper_exits to run structural-trail break check on
+    # Mode A trades. Stored in-memory keyed by trade_id; cleaned up on close.
+    if structure_mode_for_trade is not None:
+        _trade_structure_mode[trade_id] = {
+            "mode": structure_mode_for_trade,
+            "entry_spot": entry_spot or 0,
+            "entry_time": ist_now().isoformat(),
+            "direction": "BULL" if "CE" in action else "BEAR",
+        }
+        print(f"[SCALPER] STRUCTURE-MODE tracked for #{trade_id}: "
+              f"{structure_mode_for_trade} @ spot {entry_spot}")
 
     print(f"[SCALPER] OPENED #{trade_id}: {action} {idx} {strike} @ ₹{entry_price} | qty {qty} | capital used ₹{capital_used:,.0f} (of ₹{capital:,.0f}) | SL ₹{sl_price} T1 ₹{t1_price}")
 
@@ -1360,6 +1409,17 @@ def get_market_close_status():
 _sl_breach_count: dict = {}
 
 
+# Structure-mode handoff (Phase 4 — 2026-05-27)
+# should_enter_scalp() populates this when G14 (structure_gate) returns a
+# Mode A or Mode B decision. log_scalp_trade() consumes + clears it to
+# apply mode-specific size/SL/T1/T2/hold tuning. Keyed by (idx, action).
+_pending_structure_tuning: dict = {}
+
+# Per-trade mode + entry_spot — populated by log_scalp_trade, read by
+# check_scalper_exits for structural-trail break detection (Mode A only).
+_trade_structure_mode: dict = {}   # trade_id → {"mode": "aligned"/"counter_trend", "entry_spot": float}
+
+
 def check_scalper_exits(chains):
     """Monitor open scalper trades — quick exit logic.
     Smart SL applied if enabled in smart_sl_config (else static SL)."""
@@ -1533,6 +1593,56 @@ def check_scalper_exits(chains):
                     pass
             except Exception:
                 pass
+
+        # ─── STRUCTURE-TRAIL break (Phase 4 — 2026-05-27) ───
+        # Only for Mode A (aligned) trades. If post-entry candles formed
+        # a new LL (in BULL trade) or new HH (in BEAR trade), trend is
+        # broken — exit at MARKET (not at premium SL). Captures the move
+        # break before the % SL fires, locking better exit prices.
+        structure_break_exit = False
+        structure_break_reason = None
+        _struct_info = _trade_structure_mode.get(t["id"])
+        if _struct_info and _struct_info.get("mode") == "aligned":
+            try:
+                import structure_gate as sg
+                import structure_trail as st_trail
+                if sg.master_mode() == "live":
+                    cached = sg.get_cached_structure(idx)
+                    if cached:
+                        # Build candle list from historical loader (cached too)
+                        import historical_loader as hl
+                        # Reuse the structure_gate's source — fetch 5m candles
+                        # via historical_loader (which caches 30 min).
+                        kite = None
+                        try:
+                            from main import session as _s
+                            kite = _s.get("kite") if _s else None
+                        except Exception:
+                            pass
+                        if kite is not None:
+                            candles_5m = hl.load_index_history(kite, idx, "5minute", days=2)
+                            decision = st_trail.should_exit_on_break(
+                                candles_5m=candles_5m,
+                                trade_direction=_struct_info.get("direction", "BULL"),
+                                entry_spot=_struct_info.get("entry_spot"),
+                                entry_ts=_struct_info.get("entry_time"),
+                            )
+                            if decision.get("should_exit"):
+                                structure_break_exit = True
+                                structure_break_reason = (
+                                    f"STRUCTURE_BREAK: {decision.get('reason', '')}"
+                                )
+            except Exception as _e:
+                # Never block on trail error
+                print(f"[SCALPER] structure_trail check error #{t['id']}: {_e}")
+
+        if structure_break_exit and new_status == "OPEN":
+            new_status = "STRUCTURE_BREAK"
+            exit_price = current_ltp
+            exit_reason = structure_break_reason
+            sl_reason_text = structure_break_reason
+            print(f"[SCALPER] {structure_break_reason} · trade #{t['id']} "
+                  f"{idx} {action} {strike} @ ₹{exit_price}")
 
         # ─── B2.5 + B3.8: REVERSAL & VELOCITY pre-emptive exits ───
         # Run BEFORE SL/T1/T2 — if market context says exit, do it at LIVE
@@ -1757,6 +1867,7 @@ def check_scalper_exits(chains):
         conn2 = _conn()
         if new_status != "OPEN":
             _sl_breach_count.pop(t["id"], None)  # clean wick counter on close
+            _trade_structure_mode.pop(t["id"], None)  # clean structure-mode tracking
             final_pnl = round((exit_price - entry) * t["qty"], 2)
             conn2.execute("""
                 UPDATE scalper_trades SET
