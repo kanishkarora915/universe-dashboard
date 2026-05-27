@@ -1892,6 +1892,42 @@ async def structure_state(idx: str = "NIFTY"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/premium-swing/diagnostics")
+async def premium_swing_diagnostics():
+    """Premium swing detector config snapshot — Phase 5."""
+    try:
+        import premium_swing_detector as psd
+        return psd.diagnostics()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/premium-swing/analyze")
+async def premium_swing_analyze(payload: dict):
+    """Analyze a list of candles for the day's-first-bottom-reversal pattern.
+
+    POST body:
+      {
+        "candles": [{"ts":..., "open":..., "high":..., "low":..., "close":..., "volume":...}, ...],
+        "side": "bottom" | "top"  (default "bottom")
+      }
+
+    Returns the pattern verdict + entry zone + suggested SL/target.
+    Useful for off-line backtesting and for the dashboard to query
+    "is this strike showing a reversal right now?" given fetched data.
+    """
+    try:
+        import premium_swing_detector as psd
+        candles = payload.get("candles") or []
+        side = (payload.get("side") or "bottom").lower()
+        today_only = bool(payload.get("today_only", False))
+        if side == "top":
+            return psd.detect_first_top_reversal(candles, today_only=today_only)
+        return psd.detect_first_bottom_reversal(candles, today_only=today_only)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/structure/diagnostics")
 async def structure_diagnostics():
     """Module config + gate state snapshot.
