@@ -220,6 +220,18 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         print(f"[STARTUP] autologin daemon spawn failed: {_e}")
 
+    # ── Structure refresh thread (Phase 2 — 2026-05-27) ──
+    # Background thread refreshes per-index trend structure every 5 min
+    # via Kite REST history. Only does work when STRUCTURE_MODE != off,
+    # so default-OFF deployment has zero cost. The cached verdicts feed
+    # the G14 (scalper) + G0f (main) entry gates.
+    try:
+        import structure_gate as _sg
+        _sg.start_refresh_thread(lambda: engine)
+        print("[STARTUP] structure-refresh thread spawned")
+    except Exception as _e:
+        print(f"[STARTUP] structure-refresh spawn failed: {_e}")
+
     # ── Stale-token reaper — wipes the cached Kite token at 06:00 IST ──
     # Kite revokes the access token at 6 AM IST sharp. Holding onto the
     # cached /data/access_token.json past 6 AM means any consumer
@@ -1882,14 +1894,24 @@ async def structure_state(idx: str = "NIFTY"):
 
 @app.get("/api/structure/diagnostics")
 async def structure_diagnostics():
-    """Module config snapshot — fractal bars, min swings, supported indices."""
+    """Module config + gate state snapshot.
+
+    Includes: price_structure config, historical_loader cache state, and
+    (Phase 2+) structure_gate master mode + per-index cached verdicts.
+    """
     try:
         import price_structure as ps
         import historical_loader as hl
-        return {
+        out = {
             "price_structure": ps.diagnostics(),
             "historical_loader": hl.diagnostics(),
         }
+        try:
+            import structure_gate as sg
+            out["structure_gate"] = sg.diagnostics()
+        except Exception as e:
+            out["structure_gate"] = {"error": str(e)}
+        return out
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 

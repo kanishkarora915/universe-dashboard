@@ -708,6 +708,32 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
             # NEVER let theta_gate exception block legit entries
             print(f"[SCALPER] theta_gate error (allow): {_e}")
 
+    # ── G14: STRUCTURE GATE (Phase 2 — 2026-05-27) ──
+    # Multi-timeframe HH/HL/LH/LL check via price_structure module.
+    # Decides MODE A (aligned trend) / MODE B (counter-trend scalp) / SKIP.
+    # Default master flag STRUCTURE_MODE=off → no behavior change. Failures
+    # fail-safe (allow trade). Tuning (size/SL/T1/hold) returned for the
+    # caller to apply downstream — log_scalp_trade reads it via the same
+    # structure_gate cache.
+    if engine is not None:
+        try:
+            import structure_gate as sg
+            if sg.master_mode() != "off" and sg.scalper_enabled():
+                sg_decision = sg.evaluate_entry(
+                    engine=engine, idx=idx,
+                    proposed_action=action_str,
+                    source="scalper.should_enter_scalp",
+                )
+                if not sg_decision.get("allow", True):
+                    print(
+                        f"[SCALPER] REJECT entry (G14 structure): "
+                        f"{sg_decision.get('reason', '')}"
+                    )
+                    return False
+        except Exception as _e:
+            # NEVER let structure gate exception block a legit trade
+            print(f"[SCALPER] structure_gate error (allow): {_e}")
+
     # ── G13: EARLY-MOVE ENTRY GATE (2026-05-22) ──
     # Aggregator of 5 leading detectors. In 'veto'/'full' mode it can
     # BLOCK a scalper entry if the leading-indicator panel says BLOCKED
