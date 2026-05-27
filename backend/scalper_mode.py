@@ -708,6 +708,18 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
             # NEVER let theta_gate exception block legit entries
             print(f"[SCALPER] theta_gate error (allow): {_e}")
 
+    # ── G15: TIME-OF-DAY BLEED GATE (2026-05-27) ──
+    # 60-day audit revealed 13:30-14:00 IST has 19% WR and lost ₹1.87L
+    # alone (worst single 30-min window). Lunch-end chop traps traders
+    # with false moves. Skip this hour entirely.
+    # Env: SCALPER_SKIP_BLEED_HOURS (default off — explicit opt-in).
+    if os.environ.get("SCALPER_SKIP_BLEED_HOURS", "off").lower() == "on":
+        hour_min = now.hour * 60 + now.minute
+        if 13 * 60 + 30 <= hour_min < 14 * 60:
+            print(f"[SCALPER] REJECT entry (G15): 13:30-14:00 IST is bleed zone "
+                  f"(historical WR 19%, -₹1.87L damage)")
+            return False
+
     # ── G14: STRUCTURE GATE (Phase 2 — 2026-05-27) ──
     # Multi-timeframe HH/HL/LH/LL check via price_structure module.
     # Decides MODE A (aligned trend) / MODE B (counter-trend scalp) / SKIP.
@@ -1650,6 +1662,21 @@ def check_scalper_exits(chains):
         reversal_exit = False
         reversal_reason = None
 
+        # ── MIN-HOLD GUARD (2026-05-27) ──
+        # 60-day audit: 38 PREMATURE_REVERSAL trades held only 3.3 min avg
+        # then got OI-reversal-exited at -0.7%. Trade didn't get chance to
+        # develop. ₹3.1L lost in this category.
+        # Fix: skip reversal/velocity exits if trade hasn't held minimum
+        # time. Min SL/T1/T2 logic still runs normally — just OI-based
+        # premature exit suppressed.
+        # Env: SCALPER_REVERSAL_MIN_HOLD_MIN (default 0 = current behaviour;
+        #      recommend 5 to filter premature exits)
+        try:
+            _rev_min_hold = int(os.environ.get("SCALPER_REVERSAL_MIN_HOLD_MIN", "0") or 0)
+        except Exception:
+            _rev_min_hold = 0
+        _reversal_blocked_by_min_hold = (_rev_min_hold > 0 and (hold_sec / 60) < _rev_min_hold)
+
         # B2.5: OI delta reversal trigger
         try:
             from oi_delta_tracker import assess as _oi_assess
@@ -1707,6 +1734,15 @@ def check_scalper_exits(chains):
                                            f"(profit {profit_now_pct:+.1f}%)")
             except Exception:
                 pass
+
+        # Honour min-hold guard: suppress reversal-exit if trade is too young.
+        # This filters the 38 PREMATURE_REVERSAL trades (₹3.1L damage in 60d).
+        if reversal_exit and _reversal_blocked_by_min_hold:
+            print(f"[SCALPER] REVERSAL suppressed by min-hold #{t['id']} "
+                  f"(hold {hold_sec/60:.1f}m < {_rev_min_hold}m threshold) — "
+                  f"would have been: {reversal_reason}")
+            reversal_exit = False
+            reversal_reason = None
 
         if reversal_exit:
             new_status = "REVERSAL_EXIT"
