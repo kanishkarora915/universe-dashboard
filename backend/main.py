@@ -339,14 +339,27 @@ async def lifespan(app: FastAPI):
         engine.stop()
 
 
+# Engine-swap lock — serializes engine creation/destruction. Without this
+# two concurrent callers (e.g. lifespan + daemon + manual login race) could
+# each tear down the old engine and create a new one, leaving a leaked
+# engine alive in the background. With it, swaps are atomic.
+import threading as _engine_swap_threading
+_engine_swap_lock = _engine_swap_threading.Lock()
+
+
 def _start_engine_with_token(api_key: str, access_token: str, api_secret: str = "") -> tuple:
     """Start MarketEngine with given Kite credentials.
 
     Shared by: lifespan auto-resume, /api/auto-login handler, /api/callback
     handler, and the in-process auto-login daemon. Returns (ok, message).
-    Stops any existing engine first to avoid duplicate WS subscriptions.
+    Serialized via _engine_swap_lock — concurrent calls wait, preventing
+    the dual-engine overlap that froze the dashboard after manual login.
     """
     global engine
+    # Acquire swap lock with timeout — concurrent callers wait their turn.
+    # 15 sec is enough for stop()'s 3-sec thread-wait + start()'s init.
+    if not _engine_swap_lock.acquire(timeout=15):
+        return False, "engine swap in progress — try again"
     try:
         kite = KiteConnect(api_key=api_key)
         kite.set_access_token(access_token)
@@ -362,14 +375,15 @@ def _start_engine_with_token(api_key: str, access_token: str, api_secret: str = 
         except Exception:
             pass
 
-        # Tear down old engine BEFORE creating a new one — without this,
-        # token-refresh on a running engine leaks the old WS thread + all
-        # background pulse threads (they keep running with stale auth).
+        # Tear down old engine BEFORE creating a new one. stop() now
+        # blocks ~3 sec waiting for background threads to notice
+        # self.running=False and exit — no more dual-engine overlap.
         if engine is not None:
             try:
-                engine.stop()
+                engine.stop(wait_sec=3.0)
             except Exception as _e:
                 print(f"[ENGINE-RESTART] stop() of old engine failed: {_e}")
+            engine = None  # release reference so old engine can be GC'd
 
         engine = MarketEngine(api_key=api_key, access_token=access_token, loop=event_loop)
         engine.start()
@@ -383,6 +397,8 @@ def _start_engine_with_token(api_key: str, access_token: str, api_secret: str = 
         return True, f"Engine started with access_token {access_token[:8]}..."
     except Exception as e:
         return False, str(e)
+    finally:
+        _engine_swap_lock.release()
 
 
 def _stale_token_reaper():
@@ -686,6 +702,22 @@ def _autologin_daemon():
     if missing:
         print(f"[AUTOLOGIN-DAEMON] DISABLED — missing env vars: {missing}")
         print(f"[AUTOLOGIN-DAEMON] Set them on Render to enable in-process auto-login.")
+        # CRITICAL Telegram alert — without env vars the daemon is silently
+        # dead. Used to manifest as "engine never started" with no clear
+        # cause until reading Render logs. Now you get a Telegram ping
+        # immediately on container start.
+        try:
+            import telegram_alerts
+            if telegram_alerts.is_enabled():
+                telegram_alerts.send(
+                    f"🚨 AUTOLOGIN DISABLED — missing env vars on Render:\n"
+                    f"  {', '.join(missing)}\n\n"
+                    f"Set these in Render dashboard → Settings → Environment\n"
+                    f"Then restart container to activate daemon.",
+                    key="autologin_env_missing",  # throttled — 1/hour
+                )
+        except Exception as _e:
+            print(f"[AUTOLOGIN-DAEMON] env-missing telegram alert failed: {_e}")
         return
 
     try:
@@ -754,13 +786,23 @@ def _autologin_daemon():
                 _t.sleep(20)
                 continue
 
-            # Already logged in today? Don't re-login.
+            # Already logged in today? Verify engine is actually running.
+            # OLD BUG: daemon skipped retry if cache.date == today, even
+            # when engine had failed to start — leaving a "logged in but
+            # dead" zombie state till self-heal. Now we ALSO check that
+            # the engine is alive; a dead engine forces a fresh attempt.
             if token_cache.exists():
                 try:
                     cached = json.loads(token_cache.read_text())
                     if cached.get("date") == today_str:
-                        _t.sleep(60)
-                        continue
+                        if engine is not None and getattr(engine, "running", False):
+                            _t.sleep(60)
+                            continue
+                        # Today's token but no live engine — retry.
+                        print(
+                            f"[AUTOLOGIN-DAEMON] Today's token cached but engine NOT "
+                            f"running — forcing fresh attempt #{daily_attempt_count + 1}"
+                        )
                 except Exception:
                     pass
 
@@ -1226,6 +1268,146 @@ async def autologin_status(limit: int = 50):
         return {"count": len(attempts), "attempts": attempts}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/auto-login/diagnostics")
+async def autologin_diagnostics():
+    """Live, comprehensive auto-login health snapshot.
+
+    Use this to debug "why is login failing today" without reading Render
+    logs. Returns:
+      • Required env vars: which are set vs missing (values masked)
+      • Daemon thread: alive or dead
+      • Login window: currently inside, next window time
+      • Token cache: file exists, age, today vs stale
+      • Engine: running or not, since when
+      • Last attempt: when, source, status, error
+      • Recommendations: actionable next steps
+    """
+    import threading as _th
+    from datetime import datetime as _dt
+    import pytz as _pytz
+
+    _IST = _pytz.timezone("Asia/Kolkata")
+    now = _dt.now(_IST)
+    today = now.strftime("%Y-%m-%d")
+
+    # ── Env vars ──
+    required = ["KITE_USER_ID", "KITE_PASSWORD", "KITE_TOTP_SECRET",
+                "KITE_API_KEY", "KITE_API_SECRET"]
+    optional = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]
+    env_vars = {}
+    for k in required + optional:
+        v = os.environ.get(k, "")
+        if v:
+            mask = v[:4] + "..." + v[-2:] if len(v) > 8 else "***"
+            env_vars[k] = {"set": True, "preview": mask}
+        else:
+            env_vars[k] = {"set": False}
+    missing_required = [k for k in required if not os.environ.get(k)]
+
+    # ── Daemon thread ──
+    daemon_alive = False
+    for t in _th.enumerate():
+        if t.name == "autologin-daemon" and t.is_alive():
+            daemon_alive = True
+            break
+
+    # ── Login window ──
+    now_minutes = now.hour * 60 + now.minute
+    win_start = 8 * 60 + 50
+    win_end = 9 * 60 + 15
+    in_window = win_start <= now_minutes <= win_end
+    if in_window:
+        next_window_in_sec = 0
+    elif now_minutes < win_start:
+        next_window_in_sec = (win_start - now_minutes) * 60
+    else:
+        # Past window today — next window is tomorrow 08:50
+        tomorrow_window = (24 * 60 - now_minutes) + win_start
+        next_window_in_sec = tomorrow_window * 60
+
+    # ── Token cache file ──
+    token_file = _data_dir / "access_token.json"
+    cache_info = {"exists": False}
+    if token_file.exists():
+        try:
+            data = json.loads(token_file.read_text())
+            cache_info = {
+                "exists": True,
+                "date": data.get("date"),
+                "is_today": data.get("date") == today,
+                "login_time": data.get("login_time"),
+                "token_preview": (data.get("access_token", "")[:8] + "...") if data.get("access_token") else "",
+            }
+        except Exception as e:
+            cache_info = {"exists": True, "error": str(e)}
+
+    # ── Engine state ──
+    engine_info = {"running": False}
+    if engine is not None:
+        engine_info = {
+            "running": bool(getattr(engine, "running", False)),
+            "has_ticker": bool(getattr(engine, "ticker", None)),
+            "spot_tokens": list(getattr(engine, "spot_tokens", {}).keys()),
+        }
+
+    # ── Last attempts (last 5) ──
+    last_attempts = []
+    try:
+        from council import storage
+        last_attempts = storage.get_recent_autologin_attempts(limit=5)
+    except Exception as e:
+        last_attempts = [{"error": str(e)}]
+
+    # ── Recommendations ──
+    recommendations = []
+    if missing_required:
+        recommendations.append({
+            "severity": "critical",
+            "message": f"Required env vars missing: {missing_required}. Set them on Render → daemon will activate.",
+        })
+    if not daemon_alive and not missing_required:
+        recommendations.append({
+            "severity": "critical",
+            "message": "Daemon thread not running despite env vars set. Container may need restart.",
+        })
+    if cache_info.get("exists") and not cache_info.get("is_today"):
+        recommendations.append({
+            "severity": "info",
+            "message": "Cached token is from a previous day. 6 AM reaper or 8:50 daemon will refresh.",
+        })
+    if cache_info.get("is_today") and not engine_info.get("running"):
+        recommendations.append({
+            "severity": "warning",
+            "message": "Today's token cached but engine NOT running. Engine-start failure — daemon should retry on next cycle.",
+        })
+    if engine_info.get("running") and cache_info.get("is_today"):
+        recommendations.append({
+            "severity": "ok",
+            "message": "Healthy — today's token + engine running.",
+        })
+    if not env_vars.get("TELEGRAM_BOT_TOKEN", {}).get("set"):
+        recommendations.append({
+            "severity": "warning",
+            "message": "Telegram alerts disabled — set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID to receive failure notifications.",
+        })
+
+    return {
+        "now_ist": now.isoformat(),
+        "env_vars": env_vars,
+        "missing_required": missing_required,
+        "daemon": {"alive": daemon_alive},
+        "login_window": {
+            "in_window_now": in_window,
+            "window": "08:50-09:15 IST",
+            "next_window_in_sec": next_window_in_sec,
+        },
+        "token_cache": cache_info,
+        "engine": engine_info,
+        "last_attempts": last_attempts,
+        "recommendations": recommendations,
+    }
 
 
 @app.get("/api/auto-login/summary")
@@ -3107,20 +3289,36 @@ async def scalper_capital_usage():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-@app.get("/api/scalper/live-prices")
-async def scalper_live_prices():
-    """Zero-latency live LTP per open scalper trade. Pulls direct from engine.chains
-    (in-memory, no DB hit). Returns just {trade_id: ltp, pnl_rupees, pnl_pct}.
-    Frontend should poll this every 1s for real-trading-app feel."""
-    if not engine:
-        return JSONResponse({"error": "Engine not running"}, status_code=400)
+def _fetch_scalper_open_trades_sync():
+    """Sync DB read for scalper live-prices — runs in thread executor.
+
+    Pulled out so the async endpoint can offload via asyncio.to_thread()
+    and not block the FastAPI event loop. With ~10 users polling at 2s,
+    inline sync sqlite was eating 75-750ms of event loop per second,
+    causing dashboard freeze under load.
+    """
+    import scalper_mode
+    conn = scalper_mode._conn()
     try:
-        import scalper_mode
-        conn = scalper_mode._conn()
         rows = conn.execute(
             "SELECT id, idx, strike, action, entry_price, qty FROM scalper_trades WHERE status='OPEN'"
         ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
         conn.close()
+
+
+@app.get("/api/scalper/live-prices")
+async def scalper_live_prices():
+    """Zero-latency live LTP per open scalper trade. Pulls direct from engine.chains
+    (in-memory, no DB hit on the hot path). Returns {trade_id: ltp, pnl_rupees, pnl_pct}.
+    Frontend polls every 2s. The DB read is offloaded to a thread so the
+    event loop stays free for other concurrent requests."""
+    if not engine:
+        return JSONResponse({"error": "Engine not running"}, status_code=400)
+    try:
+        import asyncio
+        rows = await asyncio.to_thread(_fetch_scalper_open_trades_sync)
         out = []
         import time as _time
         ts = int(_time.time() * 1000)
@@ -3151,10 +3349,14 @@ async def trades_live_prices():
     if not engine or not hasattr(engine, "trade_manager") or not engine.trade_manager:
         return {"prices": [], "ts": 0}
     try:
+        import asyncio
         import time as _time
         ts = int(_time.time() * 1000)
+        # Offload sync sqlite read to thread executor — keeps FastAPI
+        # event loop free for other concurrent requests under load.
+        open_trades = await asyncio.to_thread(engine.trade_manager.get_open_trades)
         out = []
-        for t in engine.trade_manager.get_open_trades():
+        for t in open_trades:
             chain = engine.chains.get(t.get("idx"), {})
             strike_data = chain.get(t.get("strike"), {})
             side_key = "ce_ltp" if "CE" in (t.get("action") or "") else "pe_ltp"

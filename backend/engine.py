@@ -1327,16 +1327,48 @@ class MarketEngine:
             print(f"[ENGINE] Trap scanner init failed: {e}")
             self.trap_scanner = None
 
-    def stop(self):
-        self.running = False
-        if hasattr(self, 'trap_scanner') and self.trap_scanner:
-            self.trap_scanner.stop()
+    def stop(self, wait_sec: float = 3.0):
+        """Stop engine cleanly.
+
+        OLD BUG: stop() returned immediately. Background watcher threads
+        (verdict loop, candle builder, position watcher, premium velocity,
+        trap scanner) all loop on `while self.running:` with internal
+        sleeps. They exit at their next iteration — up to 60 sec later.
+        Meanwhile _start_engine_with_token() would already have built a
+        new MarketEngine, causing dual-engine overlap: two WS subscriptions
+        on the same tokens, two DB writers, and the OLD engine's threads
+        still hitting Kite with the OLD access_token (403 storm).
+
+        Fix: close the ticker first (kills WS), set running=False (signals
+        all loops to exit), then sleep `wait_sec` to give threads time to
+        notice the flag and exit. Not a join() (threads are daemon=True
+        and we don't track them all), but enough to clear the overlap
+        window in practice.
+        """
+        # Close ticker FIRST — stops new ticks and WS auth attempts
         if self.ticker:
             try:
                 self.ticker.close()
             except Exception:
                 pass
-        print("[ENGINE] Market engine stopped.")
+            self.ticker = None
+        # Flag-flip — every `while self.running:` loop exits on next check
+        self.running = False
+        if hasattr(self, 'trap_scanner') and self.trap_scanner:
+            try:
+                self.trap_scanner.stop()
+            except Exception:
+                pass
+        # Give threads up to wait_sec to notice the flag. Most loops sleep
+        # 1-5 sec, so 3 sec catches the majority. Caller (engine swap)
+        # uses a lock that holds till stop() returns — no new engine
+        # spawns during this window.
+        try:
+            import time as _t
+            _t.sleep(max(0.1, wait_sec))
+        except Exception:
+            pass
+        print(f"[ENGINE] Market engine stopped (waited {wait_sec:.1f}s for threads).")
 
     def register_ws(self, ws):
         with self._ws_lock:

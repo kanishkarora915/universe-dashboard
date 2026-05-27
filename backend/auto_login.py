@@ -66,6 +66,24 @@ def kite_login():
 
     session = requests.Session()
 
+    # Browser-like headers — Kite's anti-bot detection rejects naked
+    # requests.Session() calls. Mimicking a real Chrome request avoids
+    # silent CAPTCHA challenges and "Invalid request" rejections that
+    # caused the daily 8:50 AM login failures.
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    })
+
     # Step 1: POST credentials
     print(f"[AUTO-LOGIN] Step 1: Logging in as {USER_ID}...")
     login_resp = session.post("https://kite.zerodha.com/api/login", data={
