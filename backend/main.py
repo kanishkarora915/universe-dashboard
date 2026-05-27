@@ -1795,6 +1795,105 @@ async def early_move_verdict(idx: str = "BANKNIFTY", min_agree: int = 2):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/structure/state")
+async def structure_state(idx: str = "NIFTY"):
+    """Live market-structure verdict per timeframe (Phase 1 — shadow mode).
+
+    Returns HH/HL/LH/LL structure analysis for the given index across
+    5-min, 15-min, and 1-hour timeframes, plus Elder's Triple Screen
+    alignment verdict. Pulls historical candles from Kite REST API
+    (cached 30 min) — needs valid Kite session.
+
+    This is SHADOW endpoint — for visibility only. No trade logic uses
+    the verdict yet. Will be wired in Phase 2.
+
+    Query params:
+        idx: NIFTY | BANKNIFTY (default NIFTY)
+    """
+    if not engine or not session.get("kite"):
+        return JSONResponse(
+            {"error": "Engine or Kite session not ready"}, status_code=400
+        )
+    if idx not in ("NIFTY", "BANKNIFTY"):
+        return JSONResponse(
+            {"error": f"unsupported index: {idx}"}, status_code=400
+        )
+    try:
+        import asyncio
+        import price_structure as ps
+        import historical_loader as hl
+
+        # Offload sync Kite REST calls to thread executor
+        def _fetch_all():
+            kite = session["kite"]
+            return {
+                "5m": hl.load_index_history(kite, idx, "5minute", days=2),
+                "15m": hl.load_index_history(kite, idx, "15minute", days=2),
+                "1h": hl.load_index_history(kite, idx, "60minute", days=5),
+            }
+
+        candles_by_tf = await asyncio.to_thread(_fetch_all)
+
+        # Detect structure on each timeframe
+        structures = {
+            tf: ps.detect_structure(candles)
+            for tf, candles in candles_by_tf.items()
+        }
+
+        # Multi-TF alignment (Elder's Triple Screen)
+        alignment = ps.align_timeframes(structures)
+
+        # Compact response — full swings only on request for payload size
+        def _slim(s):
+            return {
+                "verdict": s["verdict"],
+                "confidence": s["confidence"],
+                "reason": s["reason"],
+                "last_high": s["last_high"],
+                "last_low": s["last_low"],
+                "prev_high": s["prev_high"],
+                "prev_low": s["prev_low"],
+                "swing_high_count": len(s["swing_highs"]),
+                "swing_low_count": len(s["swing_lows"]),
+            }
+
+        result = {
+            "idx": idx,
+            "structures": {tf: _slim(s) for tf, s in structures.items()},
+            "alignment": alignment,
+            "candle_counts": {tf: len(c) for tf, c in candles_by_tf.items()},
+        }
+
+        # Shadow log — phase 1 visibility
+        print(
+            f"[STRUCTURE_SHADOW] {idx} "
+            f"5m={structures['5m']['verdict']}({structures['5m']['confidence']}) "
+            f"15m={structures['15m']['verdict']}({structures['15m']['confidence']}) "
+            f"1h={structures['1h']['verdict']}({structures['1h']['confidence']}) "
+            f"→ alignment={alignment['direction']}/{alignment['conviction']} "
+            f"({alignment['reason']})"
+        )
+
+        return result
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/structure/diagnostics")
+async def structure_diagnostics():
+    """Module config snapshot — fractal bars, min swings, supported indices."""
+    try:
+        import price_structure as ps
+        import historical_loader as hl
+        return {
+            "price_structure": ps.diagnostics(),
+            "historical_loader": hl.diagnostics(),
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/scalper/health")
 async def scalper_health_status():
     """Adaptive market-health → scalper aggression level.
