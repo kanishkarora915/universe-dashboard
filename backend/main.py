@@ -603,6 +603,8 @@ def _engine_selfheal_monitor():
 
             recovered = False
             recovery_method = None
+            cached_err = None       # NEW: capture cached-path failure
+            fresh_err = None        # NEW: capture fresh-path failure
             attempt_start = time.time()
 
             # ── Path 1: Try cached token ──
@@ -619,7 +621,14 @@ def _engine_selfheal_monitor():
                             recovered = True
                             recovery_method = "cached_token"
                             print(f"[SELFHEAL] Recovered via cached token: {msg}")
+                        else:
+                            cached_err = f"engine start failed: {msg}"
+                    else:
+                        cached_err = "cached file missing api_key/access_token fields"
+                else:
+                    cached_err = "no access_token.json file"
             except Exception as e:
+                cached_err = f"exception: {str(e)[:150]}"
                 print(f"[SELFHEAL] cached-token path failed: {e}")
 
             # ── Path 2: Full Kite login (if cached failed) ──
@@ -628,7 +637,11 @@ def _engine_selfheal_monitor():
                     import auto_login as al
                     required = ["KITE_USER_ID", "KITE_PASSWORD", "KITE_TOTP_SECRET",
                                 "KITE_API_KEY", "KITE_API_SECRET"]
-                    if all(os.environ.get(k) for k in required):
+                    missing = [k for k in required if not os.environ.get(k)]
+                    if missing:
+                        fresh_err = f"missing env vars: {missing}"
+                        print(f"[SELFHEAL] fresh-login skipped — {fresh_err}")
+                    else:
                         access_token = al.kite_login()
                         api_key = os.environ["KITE_API_KEY"]
                         api_secret = os.environ.get("KITE_API_SECRET", "")
@@ -637,20 +650,31 @@ def _engine_selfheal_monitor():
                             recovered = True
                             recovery_method = "fresh_kite_login"
                             print(f"[SELFHEAL] Recovered via fresh login: {msg}")
-                    else:
-                        print("[SELFHEAL] fresh-login skipped — Kite creds env vars not set")
+                        else:
+                            fresh_err = f"engine start failed after kite_login: {msg}"
                 except Exception as e:
-                    print(f"[SELFHEAL] fresh-login path failed: {e}")
+                    # Capture FULL exception including type
+                    fresh_err = f"{type(e).__name__}: {str(e)[:200]}"
+                    print(f"[SELFHEAL] fresh-login path failed: {fresh_err}")
 
             duration_ms = int((time.time() - attempt_start) * 1000)
 
             # ── Log + notify ──
             if council_storage:
                 try:
+                    # NEW: capture SPECIFIC error messages so we can debug
+                    # without reading Render logs
+                    if recovered:
+                        err_msg = None
+                    else:
+                        err_msg = (
+                            f"CACHED[{cached_err or 'unknown'}] | "
+                            f"FRESH[{fresh_err or 'unknown'}]"
+                        )[:500]
                     council_storage.log_autologin_attempt(
                         trigger_source="self_heal",
                         status="success" if recovered else "failed",
-                        error=None if recovered else "Both cached + fresh paths failed",
+                        error=err_msg,
                         duration_ms=duration_ms,
                         extra={"method": recovery_method} if recovered else None,
                     )
@@ -793,10 +817,37 @@ def _autologin_daemon():
                 _t.sleep(3600)
                 continue
 
-            # Outside login window — short sleep, check again
+            # Outside login window — check if container just restarted mid-day
+            # with no live token. In that case fire login NOW (don't wait till
+            # tomorrow's 8:50 window). Common when Render restarts container
+            # at 11 AM or 2 PM — daemon would otherwise sleep until tomorrow.
             if not _in_window(now):
-                _t.sleep(20)
-                continue
+                # Market-hours check: 9:15 to 15:30 IST
+                market_hours = (
+                    (now.hour == 9 and now.minute >= 15) or
+                    (10 <= now.hour <= 14) or
+                    (now.hour == 15 and now.minute <= 30)
+                )
+                # Force-fire condition: in market hours + engine dead + no fresh token
+                force_fire = False
+                if market_hours and (engine is None or not getattr(engine, "running", False)):
+                    if token_cache.exists():
+                        try:
+                            cached = json.loads(token_cache.read_text())
+                            if cached.get("date") != today_str:
+                                force_fire = True  # token from previous day
+                        except Exception:
+                            force_fire = True
+                    else:
+                        force_fire = True  # no token at all
+                if not force_fire:
+                    _t.sleep(20)
+                    continue
+                # Fall through to attempt (outside normal window)
+                print(
+                    f"[AUTOLOGIN-DAEMON] FORCE-FIRE: outside 8:50 window but "
+                    f"market-hours + engine dead + no fresh token. Attempting login."
+                )
 
             # Already logged in today? Verify engine is actually running.
             # OLD BUG: daemon skipped retry if cache.date == today, even
@@ -1420,6 +1471,83 @@ async def autologin_diagnostics():
         "last_attempts": last_attempts,
         "recommendations": recommendations,
     }
+
+
+@app.post("/api/auto-login/force")
+async def autologin_force():
+    """Force Kite login NOW — bypasses all timing/window checks.
+
+    Use cases:
+      • Container restarted mid-day with no fresh token
+      • Daemon's 8:50 window passed but engine still dead
+      • Manually testing the login flow
+      • Recovery after Kite session blip
+
+    Returns detailed result so you can SEE the actual error if it fails
+    (vs the generic 'Both paths failed' in self-heal logs).
+    """
+    import time as _time
+    try:
+        import auto_login as al
+        required = ["KITE_USER_ID", "KITE_PASSWORD", "KITE_TOTP_SECRET",
+                    "KITE_API_KEY", "KITE_API_SECRET"]
+        missing = [k for k in required if not os.environ.get(k)]
+        if missing:
+            return JSONResponse({
+                "ok": False,
+                "error": f"missing env vars: {missing}",
+                "stage": "validation",
+            }, status_code=400)
+
+        start = _time.time()
+        try:
+            access_token = al.kite_login()
+        except Exception as e:
+            return JSONResponse({
+                "ok": False,
+                "error": f"{type(e).__name__}: {str(e)}",
+                "stage": "kite_login",
+                "duration_ms": int((_time.time() - start) * 1000),
+            }, status_code=500)
+
+        api_key = os.environ["KITE_API_KEY"]
+        api_secret = os.environ.get("KITE_API_SECRET", "")
+        ok, msg = _start_engine_with_token(api_key, access_token, api_secret)
+        duration_ms = int((_time.time() - start) * 1000)
+
+        if not ok:
+            return JSONResponse({
+                "ok": False,
+                "error": msg,
+                "stage": "engine_start",
+                "duration_ms": duration_ms,
+                "access_token_preview": access_token[:8] if access_token else None,
+            }, status_code=500)
+
+        # Log success
+        try:
+            from council import storage
+            storage.log_autologin_attempt(
+                trigger_source="force_manual",
+                status="success",
+                access_token_preview=access_token[:8] if access_token else "",
+                duration_ms=duration_ms,
+            )
+        except Exception:
+            pass
+
+        return {
+            "ok": True,
+            "message": f"Engine started with fresh token {access_token[:8]}…",
+            "duration_ms": duration_ms,
+            "stage": "complete",
+        }
+    except Exception as e:
+        return JSONResponse({
+            "ok": False,
+            "error": f"unexpected: {type(e).__name__}: {str(e)}",
+            "stage": "outer",
+        }, status_code=500)
 
 
 @app.get("/api/auto-login/summary")
