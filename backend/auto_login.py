@@ -91,12 +91,28 @@ def kite_login():
         "password": PASSWORD,
     })
 
+    # Capture response details for debugging — Kite sometimes returns
+    # HTML/CAPTCHA challenges instead of JSON (anti-bot detection).
     if login_resp.status_code != 200:
-        raise Exception(f"Login failed: {login_resp.status_code} — {login_resp.text[:200]}")
+        raise Exception(
+            f"Step 1 HTTP {login_resp.status_code} — "
+            f"headers={dict(login_resp.headers)} — "
+            f"body[:400]={login_resp.text[:400]}"
+        )
 
-    login_data = login_resp.json()
+    # Try to parse JSON — if Kite returned HTML/non-JSON, expose what they sent
+    try:
+        login_data = login_resp.json()
+    except Exception as je:
+        raise Exception(
+            f"Step 1 non-JSON response (status {login_resp.status_code}, "
+            f"content-type='{login_resp.headers.get('content-type', '?')}', "
+            f"body_len={len(login_resp.text)}): "
+            f"body[:500]={login_resp.text[:500]!r}"
+        )
+
     if login_data.get("status") != "success":
-        raise Exception(f"Login failed: {login_data}")
+        raise Exception(f"Step 1 failed: {login_data}")
 
     request_id = login_data["data"]["request_id"]
     print(f"[AUTO-LOGIN] Step 1 OK — request_id: {request_id[:10]}...")
