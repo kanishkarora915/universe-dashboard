@@ -720,6 +720,66 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
                   f"(historical WR 19%, -₹1.87L damage)")
             return False
 
+    # ── G16: ANTI COUNTER-TREND GATE (2026-06-03 — always on) ──
+    # Today (Jun 3): scalper took 3 PE entries (13:31/13:58 #241 #242 lost
+    # ₹26k) during a 1,267-pt BANKNIFTY rally because 5-min OI flips
+    # showed brief CE-fall/PE-rise during minor pullbacks. The 1hr trend
+    # was clearly UP. Conviction was only 55% (right at threshold).
+    #
+    # Rule: if spot moved ≥ 0.4% in last 30 min in one direction AND the
+    # proposed trade is OPPOSITE direction AND probability < 65, REJECT.
+    # This blocks weak-conviction counter-trend chases without touching
+    # high-conviction reversal calls (≥65% can still buy reversals).
+    #
+    # Env overrides:
+    #   ANTI_COUNTER_DISABLED=1        kill switch
+    #   ANTI_COUNTER_MOVE_PCT=0.4      threshold % move (default 0.4)
+    #   ANTI_COUNTER_PROB_BYPASS=65    prob ≥ this skips the gate
+    if engine is not None and os.environ.get("ANTI_COUNTER_DISABLED", "").strip() not in ("1", "true", "on"):
+        try:
+            move_thresh = float(os.environ.get("ANTI_COUNTER_MOVE_PCT", "0.4"))
+            prob_bypass = float(os.environ.get("ANTI_COUNTER_PROB_BYPASS", "65"))
+            hist = getattr(engine, "_spot_history", {}).get(idx, []) or []
+            if hist and win_pct < prob_bypass:
+                # Spot 30 min ago vs now
+                import time as _t
+                from datetime import datetime as _dt, timedelta as _td
+                # Find the tick closest to 30 min ago
+                cutoff = now - _td(minutes=30)
+                cutoff_iso = cutoff.isoformat()
+                ref = None
+                for h in hist:
+                    if h.get("t", "") <= cutoff_iso:
+                        ref = h
+                    else:
+                        break
+                # Fallback: oldest tick if hist < 30 min
+                if ref is None and hist:
+                    ref = hist[0]
+                cur_ltp = hist[-1].get("ltp", 0) if hist else 0
+                ref_ltp = ref.get("ltp", 0) if ref else 0
+                if ref_ltp > 0 and cur_ltp > 0:
+                    move_pct = (cur_ltp - ref_ltp) / ref_ltp * 100
+                    # Rally up & wants PE = counter-trend bearish
+                    if move_pct >= move_thresh and "PE" in action_str:
+                        print(
+                            f"[SCALPER] REJECT entry (G16 anti-counter): "
+                            f"spot +{move_pct:.2f}% last 30m, BUY PE counter-trend "
+                            f"@ {win_pct}% (need ≥{prob_bypass}% to override)"
+                        )
+                        return False
+                    # Selloff down & wants CE = counter-trend bullish
+                    if move_pct <= -move_thresh and "CE" in action_str:
+                        print(
+                            f"[SCALPER] REJECT entry (G16 anti-counter): "
+                            f"spot {move_pct:.2f}% last 30m, BUY CE counter-trend "
+                            f"@ {win_pct}% (need ≥{prob_bypass}% to override)"
+                        )
+                        return False
+        except Exception as _e:
+            # NEVER let G16 block a legit trade on its own error
+            print(f"[SCALPER] G16 anti-counter error (allow): {_e}")
+
     # ── G14: STRUCTURE GATE (Phase 2 — 2026-05-27) ──
     # Multi-timeframe HH/HL/LH/LL check via price_structure module.
     # Decides MODE A (aligned trend) / MODE B (counter-trend scalp) / SKIP.
