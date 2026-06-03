@@ -2698,12 +2698,28 @@ class MarketEngine:
             bear_count = sum(1 for d in directions if d == "BEARISH")
             total_tf = len(directions)
 
+            # ── ALL_* CONFLUENCE NEUTRALIZED 2026-06-03 (data audit) ──
+            # 445-trade audit revealed:
+            #   • ALL_BULLISH appeared in 19 trades, 32% WR, -₹136,611
+            #   • ALL_BEARISH appeared in 17 trades, 29% WR, -₹206,337
+            #   • Multi-TF as keyword: 59 trades, 39% WR, -₹324,660
+            # Full timeframe alignment is a TRAILING signal — by the time
+            # 5m+15m+1h all agree, the move is already mature → reversal
+            # imminent. The +15 pt boost was actively pushing the system
+            # into top/bottom catches.
+            # MOSTLY_* (partial alignment) keeps the +8 pt boost because
+            # partial agreement = early-stage move = good entry signal.
+            # Override via env: MULTITF_ALL_PTS=15 to restore old behavior.
+            try:
+                _all_pts = int(os.environ.get("MULTITF_ALL_PTS", "0"))
+            except (TypeError, ValueError):
+                _all_pts = 0
             if bull_count == total_tf and total_tf >= 2:
                 confluence = "ALL_BULLISH"
-                conf_score = 15
+                conf_score = _all_pts  # was 15 — now 0 (extreme = contrarian)
             elif bear_count == total_tf and total_tf >= 2:
                 confluence = "ALL_BEARISH"
-                conf_score = 15
+                conf_score = _all_pts  # was 15 — now 0
             elif bull_count > bear_count:
                 confluence = "MOSTLY_BULLISH"
                 conf_score = 8

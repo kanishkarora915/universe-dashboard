@@ -1771,10 +1771,19 @@ def check_scalper_exits(chains):
         except Exception:
             pass
 
-        # B3.8: Premium velocity collapse (theta winning / direction wrong)
-        # Only fires if currently profitable enough to make exit worthwhile (>+2%)
-        # or if velocity warning is HIGH severity.
-        if not reversal_exit:
+        # B3.8: Premium velocity collapse (DISABLED 2026-06-03 by data audit)
+        # 445-trade audit revealed VELOCITY_EXIT:
+        #   • 34 trades, 3% win rate, -₹344,936 net loss
+        #   • Average loss per fire: -₹10,145
+        #   • Worst exit category after WATCHER_EXIT
+        # Theta decay alone is NOT a reason to exit a recoverable trade.
+        # The math: a -3% premium drop in 10 min ≠ trade is dead. Most of
+        # these recovered if held to TRAIL_EXIT (99% WR, +₹13k avg) or
+        # T1_HIT (100% WR, +₹30k avg). Velocity exit was cutting flowers,
+        # watering weeds.
+        #
+        # Re-enable via env if needed for testing: VELOCITY_EXIT_ENABLED=on
+        if not reversal_exit and os.environ.get("VELOCITY_EXIT_ENABLED", "off").lower() == "on":
             try:
                 from premium_velocity import register as _pv_reg, push as _pv_push, assess as _pv_assess
                 sid = f"SCALPER:{t['id']}"
@@ -1782,12 +1791,8 @@ def check_scalper_exits(chains):
                 # If first time seeing this trade, register
                 if pv and pv.get("samples", 0) == 0:
                     _pv_reg(sid, entry, t.get("entry_spot", 0) or 0, action)
-                # Push current sample (need spot — try inferring; otherwise skip)
-                # Spot is not directly available here; skip push if missing
-                # (engine.py pushes premium velocity globally already via watcher)
                 if pv and pv.get("severity") == "HIGH":
                     profit_now_pct = ((current_ltp - entry) / entry * 100) if entry > 0 else 0
-                    # Only act if not deep in loss (else SL handles) and not big win (else T1 handles)
                     if -5 <= profit_now_pct <= 12:
                         reversal_exit = True
                         reversal_reason = (f"VELOCITY_EXIT: {pv.get('warning', 'velocity collapse')} "
