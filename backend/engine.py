@@ -5002,7 +5002,7 @@ class MarketEngine:
                     print(f"[REJECTION] capture error: {e}")
             threading.Thread(target=_capture_rejection, daemon=True, name="rejection-capture").start()
 
-        # Auto-trade: SL/target check every 5s (lightweight), verdict every 60s (heavy, background)
+        # Auto-trade: SL/target check every 5s (lightweight), verdict every 30s (heavy, background)
         if hasattr(self, 'trade_manager') and self.trade_manager and now - self.trade_manager._last_sl_check >= 5:
             self.trade_manager._last_sl_check = now
             # Split exceptions: SL monitor error must NOT block verdict scheduling
@@ -5011,8 +5011,19 @@ class MarketEngine:
             except Exception as e:
                 print(f"[TRADE] check_and_update error: {e}")
 
-            # Verdict check every 60s — always attempted, independent of SL monitor
-            if now - self.trade_manager._last_verdict_check >= 60:
+            # ── DECISION SPEED FIX (2026-06-03) ──
+            # Verdict cycle dropped 60s → 30s so Main mode catches fast moves
+            # like today's BANKNIFTY +1267-pt rally that scalper caught 8 trades
+            # on but Main missed entirely. 30s strikes balance:
+            #   • verdict computation cost (~200ms) still <1% CPU
+            #   • signal-to-pending latency halved (60s → 30s)
+            #   • pending-to-fire latency unchanged (relies on momentum confirm)
+            # Override via VERDICT_CYCLE_SEC env if needed.
+            try:
+                _vc = int(os.environ.get("VERDICT_CYCLE_SEC", "30"))
+            except (TypeError, ValueError):
+                _vc = 30
+            if now - self.trade_manager._last_verdict_check >= _vc:
                 try:
                     threading.Thread(target=self._background_verdict_check, daemon=True).start()
                     self.trade_manager._last_verdict_check = now  # Only advance after successful start
@@ -5056,11 +5067,16 @@ class MarketEngine:
             except Exception as e:
                 print(f"[TRADE] check_position_alerts error: {e}")
 
-            # Clear stale pending entries per-index (>5 min old)
+            # Clear stale pending entries per-index — synced with PENDING_TTL_SEC
+            # (default 90s, was 300s). Faster expiry = faster fresh signal cycle.
+            try:
+                _stale_ttl = int(os.environ.get("PENDING_TTL_SEC", "90"))
+            except (TypeError, ValueError):
+                _stale_ttl = 90
             now_ts = time.time()
             for pidx in list(self.trade_manager._pending_entry.keys()):
                 pt = self.trade_manager._pending_entry_time.get(pidx, 0)
-                if now_ts - pt > 300:
+                if now_ts - pt > _stale_ttl:
                     print(f"[TRADE] Pending {pidx} expired ({now_ts - pt:.0f}s old) — clearing")
                     self.trade_manager._pending_entry.pop(pidx, None)
                     self.trade_manager._pending_entry_time.pop(pidx, None)
@@ -5348,22 +5364,33 @@ class MarketEngine:
                             continue
 
                         age = time.time() - self.trade_manager._pending_entry_time.get(idx, 0)
-                        # ENTRY TIMING FIX (A7): Tiered confirmation based on confidence
-                        # High confidence (>75%) = INSTANT entry (no wait)
-                        # Medium confidence (60-75%) = 0.2% confirmation (was 0.5%)
-                        # Low confidence (<60%) = 0.5% confirmation (was 0.5%)
-                        # Result: Catch real moves earlier, avoid late peak entries
+                        # ENTRY TIMING FIX v2 (2026-06-03) — loosened thresholds.
+                        # Today's 1267-pt BANKNIFTY rally: verdict was 60% but
+                        # premium move was already saturating by time the 0.2%
+                        # confirm fired. New tiers catch the rally earlier:
+                        #   prob ≥ 65 → INSTANT (was 75)
+                        #   prob 55–65 → 0.1% confirm (was 0.2% at 60–75)
+                        #   prob < 55  → 0.3% confirm (was 0.5%)
+                        # Pending TTL 120s → 90s so stuck pendings clear faster.
+                        # Override via PROB_INSTANT_FIRE / PENDING_TTL_SEC envs.
                         prob = pending.get("probability", 0)
-                        if prob >= 75:
+                        try:
+                            _instant_at = int(os.environ.get("PROB_INSTANT_FIRE", "65"))
+                        except (TypeError, ValueError):
+                            _instant_at = 65
+                        if prob >= _instant_at:
                             confirm_threshold = 1.0  # instant — no wait
-                        elif prob >= 60:
-                            confirm_threshold = 1.002  # 0.2% confirmation
+                        elif prob >= 55:
+                            confirm_threshold = 1.001  # 0.1% confirmation
                         else:
-                            confirm_threshold = 1.005  # 0.5% (default)
+                            confirm_threshold = 1.003  # 0.3% confirmation
                         momentum_confirmed = locked_ltp >= pending["entry_price"] * confirm_threshold
                         signal_reversed = locked_ltp < pending["entry_price"] * 0.98
-                        # Reduced 5min → 2min expiry (faster cycle, catch fresh signals)
-                        pending_expired = age > 120
+                        try:
+                            _pending_ttl = int(os.environ.get("PENDING_TTL_SEC", "90"))
+                        except (TypeError, ValueError):
+                            _pending_ttl = 90
+                        pending_expired = age > _pending_ttl
 
                         if momentum_confirmed:
                             # ── A2: OI Shift Detector — block if trade against shifted wall ──
