@@ -551,33 +551,27 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
                 return False
             # Else: allow — other gates (overconviction, BNF threshold, G16) still apply
 
-        # FIX F: BANKNIFTY CE bad-hour filter
-        # Audit: BANKNIFTY CE = -₹204k net, but profitability is highly
-        # hour-dependent. By 1-hour bucket:
-        #   09:00  6 trades, 33% WR, -₹7,770
-        #   10:00  9 trades, 44% WR, +₹18,247
-        #   11:00  9 trades, 33% WR, -₹82,268   ← bad
-        #   12:00  8 trades, 75% WR, +₹59,313   ← good
-        #   13:00 16 trades, 38% WR, -₹172,952  ← worst (partly bleed-zone)
-        #   14:00  9 trades, 78% WR, +₹30,867   ← best
-        #   15:00  3 trades, 33% WR, -₹49,806   ← bad
-        # → Block BANKNIFTY CE during 11/13/15 hour windows.
-        # Backtest: blocks 28 trades, saves ₹407k losses vs ₹102k wins
-        # blocked = net +₹305k improvement.
-        # NIFTY CE unaffected (it's +₹56k profitable across all hours).
-        # Override:
-        #   BNF_CE_BAD_HOURS_DISABLED=1     kill switch
-        #   BNF_CE_BAD_HOURS=11,13,15       comma-separated hour list
+        # FIX F was: BANKNIFTY CE bad-hour filter (REMOVED 2026-06-03)
+        # User principle: "bad hours nahi hoti, bad decision/detection hoti
+        # hai". Hour-blocking is the lazy fix — same hour can produce
+        # massive winners or losers depending on the SETUP, not the clock.
+        # Reverted in favor of damage-control approach (EARLY_CUT + lower
+        # breakeven trigger) which:
+        #   • Saves ₹829k by limiting loss size (vs ₹305k by blocking)
+        #   • Doesn't block any winning trades
+        #   • Applies to ALL setups in ALL hours
+        # Env still available for emergency: BNF_CE_BAD_HOURS=11,13,15 to
+        # re-enable hour filter; default empty = off.
         if (idx == "BANKNIFTY" and is_ce
-                and os.environ.get("BNF_CE_BAD_HOURS_DISABLED", "").strip() not in ("1","true","on")):
+                and os.environ.get("BNF_CE_BAD_HOURS", "").strip()):
             try:
-                bad_hrs = [int(h.strip()) for h in os.environ.get("BNF_CE_BAD_HOURS", "11,13,15").split(",")]
+                bad_hrs = [int(h.strip()) for h in os.environ.get("BNF_CE_BAD_HOURS", "").split(",") if h.strip()]
                 if now.hour in bad_hrs:
-                    print(f"[SCALPER] REJECT (BNF-CE bad-hour): "
-                          f"hour {now.hour} historically -₹ for BANKNIFTY CE")
+                    print(f"[SCALPER] REJECT (BNF-CE bad-hour override): "
+                          f"hour {now.hour} blocked by BNF_CE_BAD_HOURS env")
                     return False
-            except Exception as _e:
-                print(f"[SCALPER] BNF-CE bad-hour error (allow): {_e}")
+            except Exception:
+                pass
 
         # FIX E: Streak overconfidence handler (scalper-specific)
         # Audit: SCALPER after 2 consecutive wins:
@@ -1798,12 +1792,54 @@ def check_scalper_exits(chains):
         try:
             import os as _os_be
             if _os_be.environ.get("SCALPER_BREAKEVEN_LOCK", "on").lower() == "on":
-                be_trigger = float(_os_be.environ.get("SCALPER_BREAKEVEN_TRIGGER", "4"))
+                # DEFAULT CHANGED 2026-06-03: 4% → 3% (data-driven)
+                # 445-trade audit: 34 losing trades peaked between +3-5%
+                # then died at -5% SL (₹395k loss). Lowering trigger to
+                # +3% catches them at breakeven instead. The remaining
+                # +5%+ peaked trades still hit the PEAK_TRAIL SL.
+                # User principle: "bad trade ko bade loss me convert na
+                # hone dena = smart".
+                be_trigger = float(_os_be.environ.get("SCALPER_BREAKEVEN_TRIGGER", "3"))
                 if cur_profit_pct >= be_trigger and sl < entry:
                     sl = entry
                     t["sl_price"] = sl
                     print(f"[SCALPER] BREAKEVEN #{t['id']}: profit {cur_profit_pct:+.1f}% "
-                          f"≥ {be_trigger}% — SL locked to entry ₹{entry} (trade now risk-free)")
+                          f"≥ {be_trigger}% — SL locked to entry ₹{entry} (risk-free)")
+        except Exception:
+            pass
+
+        # ─── EARLY-WARNING ADAPTIVE SL (2026-06-03 — damage control) ───
+        # User principle: "bad detection ko bade loss me convert na hone
+        # dena = smart". Audit found 19 loss trades that NEVER went
+        # positive (avg -₹13k loss = ₹246k total). These are the trades
+        # where setup was wrong from tick 1 — letting them ride to -5%
+        # default SL is irrational. Cut them at -2.5%.
+        # Logic: if no positive peak in first 3 min AND already at -2%,
+        # exit immediately at -2.5% (small loss). Saves ~₹434k estimated.
+        # Env:
+        #   EARLY_CUT_DISABLED=1            kill switch
+        #   EARLY_CUT_WINDOW_MIN=3          observation window (default 3)
+        #   EARLY_CUT_TRIGGER=-2.5          loss % to trigger early cut
+        try:
+            import os as _os_ec
+            if _os_ec.environ.get("EARLY_CUT_DISABLED", "").strip() not in ("1","true","on"):
+                ec_window = float(_os_ec.environ.get("EARLY_CUT_WINDOW_MIN", "3")) * 60
+                ec_trigger = float(_os_ec.environ.get("EARLY_CUT_TRIGGER", "-2.5"))
+                hold_min = hold_sec / 60
+                # Trade is in first 3 min, peak never went positive, currently > 2% loss
+                peak_pct = peak_profit_pct_local
+                if (hold_sec >= 60 and hold_sec <= ec_window
+                        and peak_pct <= 0.5  # never reached even +0.5%
+                        and cur_profit_pct <= ec_trigger
+                        and new_status == "OPEN"):
+                    new_status = "EARLY_CUT"
+                    exit_price = current_ltp
+                    exit_reason = (f"EARLY_CUT: setup wrong from start "
+                                   f"(peak {peak_pct:+.1f}%, now {cur_profit_pct:+.1f}%, "
+                                   f"hold {hold_min:.1f}m) — small loss not big loss")
+                    sl_reason_text = exit_reason
+                    print(f"[SCALPER] EARLY_CUT · #{t['id']} {idx} {action} {strike} · "
+                          f"never positive, cut at {cur_profit_pct:+.1f}%")
         except Exception:
             pass
 
