@@ -485,17 +485,38 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         if is_ce and _ce_bias:
             effective_threshold += _ce_bias
 
-        # FIX C: 13:30-14:00 IST bleed-zone — UNIVERSAL skip
-        # Audit: 26% WR, -₹256,943 (worst 30-min window)
-        # Was previously env-flagged (G15 SCALPER_SKIP_BLEED_HOURS); now
-        # default ON because data is overwhelming. Override with
-        # BLEED_HOURS_SKIP=off if you want to test trading this window.
+        # FIX C: 13:30-14:00 IST bleed-zone — SMART CONDITIONAL block
+        # User insight: "worst window nahi, worst decision making" — big
+        # moves DO happen in this window; small pullbacks within bigger
+        # trends look like reversals to the system → bad entries.
+        # Audit deep-dive of 40 trades in this window:
+        #   WINNERS (10, ₹+138k): 60% NIFTY, avg conviction 34/66 (clear),
+        #     Multi-TF MOSTLY_* (partial alignment = early move)
+        #   LOSERS (29, ₹-395k): 69% BANKNIFTY, avg conviction 47/53 (mixed),
+        #     Multi-TF ALL_BEARISH/ALL_BULLISH (saturated = top/bottom)
+        # → Block only loss-prone setups, allow conviction-clear ones.
+        # Backtest: universal block +₹257k vs smart block +₹207k.
+        # ₹50k cost saves 17 winning trades from being blocked.
+        # BLEED_HOURS_MODE: smart (default) | strict | off
         hour_min = now.hour * 60 + now.minute
-        if os.environ.get("BLEED_HOURS_SKIP", "on").lower() != "off":
-            if 13 * 60 + 30 <= hour_min < 14 * 60:
-                print(f"[SCALPER] REJECT entry (Step 2 bleed-zone): "
-                      f"13:30-14:00 IST is -₹257k loss zone (26% WR)")
+        _bleed_mode = os.environ.get("BLEED_HOURS_MODE", "smart").lower()
+        if _bleed_mode != "off" and 13 * 60 + 30 <= hour_min < 14 * 60:
+            if _bleed_mode == "strict":
+                print(f"[SCALPER] REJECT (bleed-strict): 13:30-14:00 universal block")
                 return False
+            # SMART MODE: block only the loss-prone setups
+            # Rule 1: BANKNIFTY needs higher conviction (75%+) in this window
+            # Rule 2: Multi-TF ALL_* alignment = saturated move = reversal risk
+            reasoning_list = verdict_data.get('reasons') or []
+            reasoning_text = ' '.join(str(r) for r in reasoning_list).lower() if isinstance(reasoning_list, list) else str(reasoning_list).lower()
+            is_saturated_tf = ('all_bullish' in reasoning_text or 'all_bearish' in reasoning_text)
+            if idx == 'BANKNIFTY' and win_pct < 75:
+                print(f"[SCALPER] REJECT (bleed-smart): BANKNIFTY in 13:30 zone needs ≥75% (got {win_pct}%)")
+                return False
+            if is_saturated_tf:
+                print(f"[SCALPER] REJECT (bleed-smart): Multi-TF ALL_* in 13:30 zone = saturated move risk")
+                return False
+            # Else: allow — other gates (overconviction, BNF threshold, G16) still apply
 
         # FIX D: Over-conviction cap (both modes)
         # Audit: prob 80+% → MAIN 42% WR -₹111k, SCALPER 32% WR -₹42k

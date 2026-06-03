@@ -1494,11 +1494,24 @@ class TradeManager:
         # MAIN-mode specific fixes. Env-overridable, all default-safe.
         try:
             import os as _os
-            # FIX C: 13:30-14:00 IST bleed-zone — universal skip
-            # Audit: 13:30-14:00 = 26% WR, -₹257k (worst window across both modes)
-            if _os.environ.get("BLEED_HOURS_SKIP", "on").lower() != "off":
-                hm = now.hour * 60 + now.minute
-                if 13 * 60 + 30 <= hm < 14 * 60:
+            # FIX C: 13:30-14:00 IST bleed-zone — SMART CONDITIONAL block
+            # See scalper_mode.py for full reasoning. Big moves DO happen
+            # in this window; we only block the loss-prone setups:
+            #   • BANKNIFTY with conviction < 75%
+            #   • Multi-TF ALL_BULLISH/ALL_BEARISH (saturated alignment)
+            # BLEED_HOURS_MODE: smart (default) | strict | off
+            _bleed_mode = _os.environ.get("BLEED_HOURS_MODE", "smart").lower()
+            hm = now.hour * 60 + now.minute
+            if _bleed_mode != "off" and 13 * 60 + 30 <= hm < 14 * 60:
+                if _bleed_mode == "strict":
+                    return False
+                # SMART: BANKNIFTY high bar
+                if idx == "BANKNIFTY" and win_pct < 75:
+                    return False
+                # SMART: Multi-TF saturated alignment in this window = reversal risk
+                reasons = verdict_data.get("reasons") or []
+                reasons_txt = ' '.join(str(r) for r in reasons).lower() if isinstance(reasons, list) else str(reasons).lower()
+                if 'all_bullish' in reasons_txt or 'all_bearish' in reasons_txt:
                     return False
 
             # FIX D: Over-conviction cap
