@@ -190,6 +190,17 @@ async def lifespan(app: FastAPI):
                         _tr.attach_engine(engine)
                     except Exception as _e:
                         print(f"[TRINITY] attach_engine failed: {_e}")
+                    # ── WS CONTRACT SMOKE TEST (post-engine.start) ──
+                    # Schedules a single check 30s after engine.start to verify
+                    # ticks are flowing. On failure → Telegram alert + log.
+                    # This catches "engine started but ticker silent" regressions
+                    # introduced by any future code change.
+                    try:
+                        import ws_contract as _wsc
+                        _wsc.schedule_startup_smoke_test(lambda: engine)
+                        print("[STARTUP] ws_contract smoke test scheduled")
+                    except Exception as _wse:
+                        print(f"[STARTUP] ws_contract schedule failed: {_wse}")
                     print(f"[STARTUP] Engine auto-resumed from cached token {access_token[:8]}…")
             else:
                 print("[STARTUP] access_token.json present but missing fields — manual login needed")
@@ -405,6 +416,15 @@ def _start_engine_with_token(api_key: str, access_token: str, api_secret: str = 
             _tr.attach_engine(engine)
         except Exception as _e:
             print(f"[TRINITY] attach_engine failed: {_e}")
+
+        # ── WS CONTRACT SMOKE TEST (every engine swap) ──
+        # Re-armed for every new engine instance so login + self-heal +
+        # manual /api/auto-login/force all get verified 30s after start.
+        try:
+            import ws_contract as _wsc
+            _wsc.schedule_startup_smoke_test(lambda: engine)
+        except Exception as _wse:
+            print(f"[ENGINE-RESTART] ws_contract schedule failed: {_wse}")
 
         return True, f"Engine started with access_token {access_token[:8]}..."
     except Exception as e:
@@ -1214,6 +1234,41 @@ async def ws_force_reconnect():
         return {"status": "success", "message": "Ticker restart triggered"}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/ws/contract")
+async def ws_contract_snapshot():
+    """WS health contract — runs all invariants and returns pass/fail per check.
+
+    Used by:
+      • Manual debugging ("kya thik hai abhi?")
+      • External uptime monitors (alert on ok=false)
+      • Pre-deploy sanity checks (CI smoke test)
+
+    The contract layer (ws_contract.py) is immutable infrastructure: it
+    defines what "WS healthy" means in ONE place so future upgrades can
+    never silently regress the tick path.
+    """
+    try:
+        import ws_contract as _wsc
+        return _wsc.snapshot(engine)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/ws/contract/run")
+async def ws_contract_run_now():
+    """Force a contract check NOW (also fires Telegram alert on failure).
+    Useful after a manual change to verify nothing broke without waiting
+    for the 30s scheduled smoke test.
+    """
+    if engine is None:
+        return JSONResponse({"ok": False, "error": "engine is None"}, status_code=400)
+    try:
+        import ws_contract as _wsc
+        return _wsc.assert_healthy_or_alert(engine, context="manual_run")
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 @app.get("/api/cache/stats")

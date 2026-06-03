@@ -4537,8 +4537,22 @@ class MarketEngine:
 
         def on_connect(ws, response):
             print(f"[TICKER] Connected. Subscribing {len(self._subscribe_tokens)} tokens...")
-            ws.subscribe(self._subscribe_tokens)
-            ws.set_mode(ws.MODE_FULL, self._subscribe_tokens)
+            # Route through ws_contract.safe_subscribe so silent subscribe
+            # no-ops get verified by the contract layer (smoke test 30s later
+            # will detect missing prices + alert + force restart).
+            try:
+                from ws_contract import safe_subscribe as _safe_sub
+                r = _safe_sub(ws, self._subscribe_tokens)
+                if r.get("error"):
+                    print(f"[TICKER] safe_subscribe error: {r['error']}")
+                else:
+                    print(f"[TICKER] subscribed={r['subscribed']} mode_set={r['mode_set']} took={r['took_sec']}s")
+            except Exception as _ce:
+                # Hard fallback to original behaviour — contract is OPT-IN,
+                # never block ticker connect on import failure.
+                print(f"[TICKER] ws_contract unavailable ({_ce}); using raw subscribe")
+                ws.subscribe(self._subscribe_tokens)
+                ws.set_mode(ws.MODE_FULL, self._subscribe_tokens)
 
         def on_close(ws, code, reason):
             print(f"[TICKER] Closed: {code} — {reason}. Will auto-reconnect.")
