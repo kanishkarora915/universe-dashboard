@@ -461,6 +461,70 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
     except Exception:
         pass
 
+    # ── STEP 2 SURGICAL FIXES (2026-06-03 — 445-trade audit) ──
+    # Data-driven threshold tuning per context. All env-overridable.
+    # No new module — just bias the existing effective_threshold.
+    try:
+        # FIX A: BANKNIFTY scalper threshold bias
+        # Audit: SCALPER BANKNIFTY = -₹50,586 (loses money baseline)
+        # Audit: SCALPER NIFTY     = +₹284,655 (clear winner)
+        # → Raise BNF entry bar so we trade fewer BNF, more NIFTY by mix.
+        if idx == "BANKNIFTY":
+            effective_threshold += int(os.environ.get("SCALPER_BNF_THRESHOLD_BIAS", "5"))
+
+        # FIX B was: Scalper CE side bias (+3 pts for CE entries)
+        # DROPPED 2026-06-03 — backtest showed it BLOCKED MORE WINS THAN
+        # LOSSES (₹73k wins blocked vs only ₹22k losses = net -₹51k).
+        # The CE-loses-money insight is real, but the losses come from
+        # SPECIFIC conditions (BANKNIFTY + late entries + counter-trend),
+        # not generic "low conviction CE". The BNF threshold + bleed-zone
+        # + overconviction cap already catch those. A blanket CE penalty
+        # here would over-block.
+        # Override available: set SCALPER_CE_THRESHOLD_BIAS=N to enable.
+        _ce_bias = int(os.environ.get("SCALPER_CE_THRESHOLD_BIAS", "0"))
+        if is_ce and _ce_bias:
+            effective_threshold += _ce_bias
+
+        # FIX C: 13:30-14:00 IST bleed-zone — UNIVERSAL skip
+        # Audit: 26% WR, -₹256,943 (worst 30-min window)
+        # Was previously env-flagged (G15 SCALPER_SKIP_BLEED_HOURS); now
+        # default ON because data is overwhelming. Override with
+        # BLEED_HOURS_SKIP=off if you want to test trading this window.
+        hour_min = now.hour * 60 + now.minute
+        if os.environ.get("BLEED_HOURS_SKIP", "on").lower() != "off":
+            if 13 * 60 + 30 <= hour_min < 14 * 60:
+                print(f"[SCALPER] REJECT entry (Step 2 bleed-zone): "
+                      f"13:30-14:00 IST is -₹257k loss zone (26% WR)")
+                return False
+
+        # FIX D: Over-conviction cap (both modes)
+        # Audit: prob 80+% → MAIN 42% WR -₹111k, SCALPER 32% WR -₹42k
+        # Extreme conviction = market exhaustion = reversal imminent.
+        # Block fresh entries above 85% unless capit confirms reversal.
+        overconv_cap = float(os.environ.get("OVERCONVICTION_BLOCK", "85"))
+        if win_pct >= overconv_cap:
+            # capitulation reversal-confirmation can bypass
+            try:
+                from capitulation_engine import get_live_state as _gls
+                cs = _gls() or {}
+                _cidx = (cs.get("results") or {}).get(idx, {})
+                _cb = (_cidx.get("bullish") or {}).get("score", 0)
+                _cz = (_cidx.get("bearish") or {}).get("score", 0)
+                if is_ce and _cb >= 5:
+                    pass  # capit strongly confirms bull → allow
+                elif (not is_ce) and _cz >= 5:
+                    pass
+                else:
+                    print(f"[SCALPER] REJECT entry (Step 2 overconv-cap): "
+                          f"win_pct {win_pct}% ≥ {overconv_cap}% — "
+                          f"extreme conviction = top/bottom risk (audit -₹150k)")
+                    return False
+            except Exception:
+                pass
+    except Exception as _e:
+        # NEVER let surgical-fix logic block a legit trade on its own error
+        print(f"[SCALPER] Step 2 fix error (allow): {_e}")
+
     if win_pct < effective_threshold:
         return False
     today_iso = now.strftime("%Y-%m-%d")

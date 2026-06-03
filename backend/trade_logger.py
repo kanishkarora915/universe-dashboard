@@ -1490,6 +1490,41 @@ class TradeManager:
         if win_pct < min_prob:
             return False
 
+        # ── STEP 2 SURGICAL FIXES (2026-06-03 — 445-trade audit) ──
+        # MAIN-mode specific fixes. Env-overridable, all default-safe.
+        try:
+            import os as _os
+            # FIX C: 13:30-14:00 IST bleed-zone — universal skip
+            # Audit: 13:30-14:00 = 26% WR, -₹257k (worst window across both modes)
+            if _os.environ.get("BLEED_HOURS_SKIP", "on").lower() != "off":
+                hm = now.hour * 60 + now.minute
+                if 13 * 60 + 30 <= hm < 14 * 60:
+                    return False
+
+            # FIX D: Over-conviction cap
+            # Audit: MAIN prob 80+% = 42% WR, -₹111k (extreme = exhaustion)
+            # Block 85%+ unless capit confirms reversal (same logic as scalper).
+            overconv_cap = float(_os.environ.get("OVERCONVICTION_BLOCK", "85"))
+            if win_pct >= overconv_cap:
+                try:
+                    from capitulation_engine import get_live_state as _gls
+                    cs = _gls() or {}
+                    _cidx = (cs.get("results") or {}).get(idx, {})
+                    _cb = (_cidx.get("bullish") or {}).get("score", 0)
+                    _cz = (_cidx.get("bearish") or {}).get("score", 0)
+                    is_ce_main = "CE" in action
+                    if is_ce_main and _cb >= 5:
+                        pass  # capit strongly confirms → allow
+                    elif (not is_ce_main) and _cz >= 5:
+                        pass
+                    else:
+                        return False
+                except Exception:
+                    pass
+        except Exception:
+            # NEVER let surgical-fix block a legit trade on its own error
+            pass
+
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         conn = _conn()
 
