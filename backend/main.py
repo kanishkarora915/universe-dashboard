@@ -1473,6 +1473,161 @@ async def autologin_diagnostics():
     }
 
 
+@app.get("/api/engine/deep-state")
+async def engine_deep_state():
+    """Deep engine internal state — for diagnosing 'running but no ticks' bugs.
+
+    Exposes:
+      - WebSocket ticker connection state
+      - Subscribe tokens count + sample
+      - Spot prices loaded (REST initial fetch)
+      - Chain data populated counts
+      - Last tick timestamp + age
+      - Initial data fetch errors if any
+    """
+    if engine is None:
+        return JSONResponse({"error": "engine is None"}, status_code=503)
+
+    try:
+        import time as _t
+        out = {
+            "engine_running": getattr(engine, "running", False),
+            "ticker_exists": bool(getattr(engine, "ticker", None)),
+            "ticker_is_connected": None,
+            "spot_tokens_count": len(getattr(engine, "spot_tokens", {})),
+            "spot_tokens_sample": dict(getattr(engine, "spot_tokens", {})),
+            "subscribe_tokens_count": len(getattr(engine, "_subscribe_tokens", []) or []),
+            "subscribe_tokens_sample": (getattr(engine, "_subscribe_tokens", []) or [])[:5],
+            "prices_count": len(getattr(engine, "prices", {})),
+            "prices_sample": {
+                str(tok): {"ltp": v.get("ltp"), "oi": v.get("oi")}
+                for tok, v in list(getattr(engine, "prices", {}).items())[:5]
+            },
+            "chain_strikes_count": {
+                idx: len(getattr(engine, "chains", {}).get(idx, {}))
+                for idx in ("NIFTY", "BANKNIFTY")
+            },
+            "last_tick_time": getattr(engine, "_last_tick_time", None),
+            "last_tick_age_sec": None,
+            "nearest_expiry": {
+                idx: str(getattr(engine, "nearest_expiry", {}).get(idx, ""))
+                for idx in ("NIFTY", "BANKNIFTY")
+            },
+        }
+        # Ticker connection check
+        try:
+            t = getattr(engine, "ticker", None)
+            if t is not None:
+                # KiteTicker has is_connected() method
+                try:
+                    out["ticker_is_connected"] = t.is_connected()
+                except Exception:
+                    # Fallback: check the ws object directly
+                    ws = getattr(t, "ws", None)
+                    out["ticker_is_connected"] = (
+                        ws is not None and getattr(ws, "state", None) == 1
+                    )
+        except Exception as e:
+            out["ticker_check_error"] = str(e)
+
+        # Tick age
+        if out["last_tick_time"]:
+            out["last_tick_age_sec"] = round(_t.time() - out["last_tick_time"], 1)
+
+        # Spot prices for NIFTY / BANKNIFTY (the key debug data)
+        spot_prices = {}
+        for idx in ("NIFTY", "BANKNIFTY"):
+            tok = getattr(engine, "spot_tokens", {}).get(idx)
+            if tok:
+                p = getattr(engine, "prices", {}).get(tok, {})
+                spot_prices[idx] = {
+                    "token": tok,
+                    "ltp": p.get("ltp", 0),
+                    "has_data": tok in getattr(engine, "prices", {}),
+                }
+        out["spot_prices"] = spot_prices
+
+        # Try fetching a fresh quote via REST to verify Kite session works
+        try:
+            kite = getattr(engine, "kite", None)
+            if kite is not None:
+                test_symbols = ["NSE:NIFTY 50", "NSE:NIFTY BANK"]
+                t_start = _t.time()
+                test_quotes = kite.quote(test_symbols)
+                out["rest_quote_test"] = {
+                    "ok": True,
+                    "duration_ms": int((_t.time() - t_start) * 1000),
+                    "results": {
+                        sym: {
+                            "last_price": q.get("last_price", 0),
+                            "instrument_token": q.get("instrument_token"),
+                        }
+                        for sym, q in test_quotes.items()
+                    },
+                }
+        except Exception as e:
+            out["rest_quote_test"] = {"ok": False, "error": str(e)[:300]}
+
+        return out
+    except Exception as e:
+        import traceback
+        return JSONResponse({
+            "error": str(e),
+            "traceback": traceback.format_exc()[:1500],
+        }, status_code=500)
+
+
+@app.post("/api/engine/reconnect-ticker")
+async def engine_reconnect_ticker():
+    """Force the ticker to reconnect + re-subscribe. Use when ticks are
+    stale or stuck."""
+    if engine is None:
+        return JSONResponse({"error": "engine is None"}, status_code=503)
+    try:
+        # Close existing ticker
+        old_ticker = getattr(engine, "ticker", None)
+        if old_ticker is not None:
+            try:
+                old_ticker.close()
+            except Exception:
+                pass
+            engine.ticker = None
+
+        # Re-build subscriptions (in case tokens changed)
+        try:
+            engine._build_subscriptions()
+        except Exception as e:
+            return JSONResponse({
+                "ok": False,
+                "stage": "rebuild_subscriptions",
+                "error": str(e),
+            }, status_code=500)
+
+        # Re-fetch initial data
+        try:
+            engine._fetch_initial_data()
+        except Exception as e:
+            print(f"[RECONNECT] initial fetch failed: {e}")
+
+        # Reconnect ticker
+        try:
+            engine._connect_ticker()
+        except Exception as e:
+            return JSONResponse({
+                "ok": False,
+                "stage": "connect_ticker",
+                "error": str(e),
+            }, status_code=500)
+
+        return {
+            "ok": True,
+            "message": "Ticker reconnect initiated",
+            "subscribe_tokens": len(getattr(engine, "_subscribe_tokens", []) or []),
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.post("/api/auto-login/force")
 async def autologin_force():
     """Force Kite login NOW — bypasses all timing/window checks.
