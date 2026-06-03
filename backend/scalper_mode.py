@@ -279,6 +279,39 @@ def set_scalper_config(capital=None, nifty_qty=None, banknifty_qty=None,
     return updated
 
 
+def _last_n_outcomes(n: int = 2) -> list:
+    """Return the last N closed scalper trade outcomes (today only).
+    Returns list of 'WIN' / 'LOSS' / 'BE'. Empty list if fewer than N.
+
+    Used by streak-overconfidence handler (Fix 2 from 445-trade audit).
+    Today-only because cross-day streak isn't behavioral — yesterday's
+    wins don't cause today's first trade to over-fire.
+    """
+    try:
+        from datetime import datetime
+        import pytz as _pytz
+        _IST = _pytz.timezone("Asia/Kolkata")
+        today_iso = datetime.now(_IST).strftime("%Y-%m-%d")
+        conn = sqlite3.connect(str(SCALPER_DB), timeout=2.0)
+        cur = conn.execute(
+            "SELECT pnl_rupees FROM scalper_trades "
+            "WHERE substr(entry_time,1,10) = ? "
+            "AND COALESCE(status,'') NOT IN ('OPEN','') "
+            "AND exit_time IS NOT NULL "
+            "ORDER BY exit_time DESC LIMIT ?",
+            (today_iso, n)
+        )
+        rows = cur.fetchall()
+        conn.close()
+        out = []
+        for r in rows:
+            p = r[0] or 0
+            out.append('WIN' if p > 0 else 'LOSS' if p < 0 else 'BE')
+        return out
+    except Exception:
+        return []
+
+
 _scalper_pragma_done = False
 def _conn():
     global _scalper_pragma_done
@@ -517,6 +550,63 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
                 print(f"[SCALPER] REJECT (bleed-smart): Multi-TF ALL_* in 13:30 zone = saturated move risk")
                 return False
             # Else: allow — other gates (overconviction, BNF threshold, G16) still apply
+
+        # FIX F: BANKNIFTY CE bad-hour filter
+        # Audit: BANKNIFTY CE = -₹204k net, but profitability is highly
+        # hour-dependent. By 1-hour bucket:
+        #   09:00  6 trades, 33% WR, -₹7,770
+        #   10:00  9 trades, 44% WR, +₹18,247
+        #   11:00  9 trades, 33% WR, -₹82,268   ← bad
+        #   12:00  8 trades, 75% WR, +₹59,313   ← good
+        #   13:00 16 trades, 38% WR, -₹172,952  ← worst (partly bleed-zone)
+        #   14:00  9 trades, 78% WR, +₹30,867   ← best
+        #   15:00  3 trades, 33% WR, -₹49,806   ← bad
+        # → Block BANKNIFTY CE during 11/13/15 hour windows.
+        # Backtest: blocks 28 trades, saves ₹407k losses vs ₹102k wins
+        # blocked = net +₹305k improvement.
+        # NIFTY CE unaffected (it's +₹56k profitable across all hours).
+        # Override:
+        #   BNF_CE_BAD_HOURS_DISABLED=1     kill switch
+        #   BNF_CE_BAD_HOURS=11,13,15       comma-separated hour list
+        if (idx == "BANKNIFTY" and is_ce
+                and os.environ.get("BNF_CE_BAD_HOURS_DISABLED", "").strip() not in ("1","true","on")):
+            try:
+                bad_hrs = [int(h.strip()) for h in os.environ.get("BNF_CE_BAD_HOURS", "11,13,15").split(",")]
+                if now.hour in bad_hrs:
+                    print(f"[SCALPER] REJECT (BNF-CE bad-hour): "
+                          f"hour {now.hour} historically -₹ for BANKNIFTY CE")
+                    return False
+            except Exception as _e:
+                print(f"[SCALPER] BNF-CE bad-hour error (allow): {_e}")
+
+        # FIX E: Streak overconfidence handler (scalper-specific)
+        # Audit: SCALPER after 2 consecutive wins:
+        #   • 48 trades, 35% WR, -₹104,070 net (worse than baseline 47% WR)
+        # Cooldown timing DOESN'T help (35 of 48 within 10min were neutral).
+        # The REAL pattern: relaxed conviction + BANKNIFTY chasing.
+        # Fix: after 2W streak, raise threshold +5 AND block BANKNIFTY.
+        # Backtest: blocks 30 trades, saves ₹368k losses vs ₹182k wins
+        # blocked = net +₹186k. Best per-fix ROI of the bunch.
+        # Override:
+        #   STREAK_HANDLER_DISABLED=1     kill switch
+        #   STREAK_THRESHOLD_BIAS=5       extra threshold after 2W (default 5)
+        #   STREAK_BLOCK_BNF=1            block BANKNIFTY after 2W (default 1)
+        if os.environ.get("STREAK_HANDLER_DISABLED", "").strip() not in ("1","true","on"):
+            try:
+                last_two = _last_n_outcomes(2)
+                if len(last_two) == 2 and last_two[0] == 'WIN' and last_two[1] == 'WIN':
+                    _streak_bias = int(os.environ.get("STREAK_THRESHOLD_BIAS", "5"))
+                    _streak_block_bnf = os.environ.get("STREAK_BLOCK_BNF", "1").strip() in ("1","true","on")
+                    if _streak_block_bnf and idx == "BANKNIFTY":
+                        print(f"[SCALPER] REJECT (streak): BANKNIFTY after 2 wins — "
+                              f"audit shows 35% WR + over-confidence chase")
+                        return False
+                    effective_threshold += _streak_bias
+                    print(f"[SCALPER] STREAK guard active (2W today): threshold "
+                          f"+{_streak_bias} (now {effective_threshold}%)")
+            except Exception as _e:
+                # NEVER block legit entry on streak handler error
+                print(f"[SCALPER] streak handler error (allow): {_e}")
 
         # FIX D: Over-conviction cap (both modes)
         # Audit: prob 80+% → MAIN 42% WR -₹111k, SCALPER 32% WR -₹42k
@@ -1814,12 +1904,17 @@ def check_scalper_exits(chains):
         # Fix: skip reversal/velocity exits if trade hasn't held minimum
         # time. Min SL/T1/T2 logic still runs normally — just OI-based
         # premature exit suppressed.
-        # Env: SCALPER_REVERSAL_MIN_HOLD_MIN (default 0 = current behaviour;
-        #      recommend 5 to filter premature exits)
+        # Env: SCALPER_REVERSAL_MIN_HOLD_MIN
+        # DEFAULT CHANGED 2026-06-03: 0 → 5 (data-driven)
+        # 445-trade audit: 107 fast exits (<3min) total, 58 were REVERSAL
+        # exits with -₹71k net loss. These are premature OI-flip panic
+        # exits — most would have recovered if held the original setup's
+        # natural exit (SL/T1/trail).
+        # Override via env to test other values: 0=off, 3-10 reasonable.
         try:
-            _rev_min_hold = int(os.environ.get("SCALPER_REVERSAL_MIN_HOLD_MIN", "0") or 0)
+            _rev_min_hold = int(os.environ.get("SCALPER_REVERSAL_MIN_HOLD_MIN", "5") or 5)
         except Exception:
-            _rev_min_hold = 0
+            _rev_min_hold = 5
         _reversal_blocked_by_min_hold = (_rev_min_hold > 0 and (hold_sec / 60) < _rev_min_hold)
 
         # B2.5: OI delta reversal trigger
@@ -1963,9 +2058,17 @@ def check_scalper_exits(chains):
             #   Side effect = SL_HIT will increment instead of T1_HIT,
             #                 but exit_reason makes the distinction clear.
             #
-            # Env-gated: T1_FLOOR_LOCK_ENABLED=on
+            # DEFAULT CHANGED 2026-06-03: off → on (data-driven Fix 3)
+            # 445-trade audit revealed:
+            #   • 31 T1_HIT scalper trades (avg +5%, +₹921k total) — capped
+            #   • Only 2 T2_HIT (T2 is 12% — too far without floor lock)
+            #   • 31 trades peaked between T1 and T2 (avg peak 19.5%)
+            # Those 31 mid-runners would have ridden to avg 19.5% if T1
+            # floor lock were on — locking in T1 as floor while letting
+            # price run to T2 or higher. Worst case = T1 profit (same as
+            # before). Best case = full runner captured.
             import os as _os
-            t1_lock_enabled = _os.environ.get("T1_FLOOR_LOCK_ENABLED", "off").lower() == "on"
+            t1_lock_enabled = _os.environ.get("T1_FLOOR_LOCK_ENABLED", "on").lower() != "off"
             if t1_lock_enabled and active_sl_used < t1:
                 # Lock SL to T1 — apply small buffer to avoid same-tick re-fire
                 new_floor_sl = round(t1 * 0.995, 2)  # T1 - 0.5% buffer
