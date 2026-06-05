@@ -821,32 +821,42 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         pass
 
     # ── GATE 11: ENTRY FILTERS (5-min trend + greeks + regime) ──
-    # Engine may not be passed (legacy call sites). When missing, gates skip.
+    # PERMISSIVE MODE (2026-06-05) — user concern: "system jaise pehle
+    # trades lera tha waise hi le, miss na kare. SL smart hai."
+    #
+    # Default: entry_filter logs WARNING but doesn't block. Damage
+    # control (EARLY_CUT + BREAKEVEN) handles bad-setup losses at exit
+    # side. This matches the May behavior when system was firing 10-25
+    # trades/day instead of 0.
+    # Override: ENTRY_FILTER_MODE=strict to restore old hard-block.
     if engine is not None and atm_strike is not None:
+        _ef_mode = os.environ.get("ENTRY_FILTER_MODE", "permissive").lower()
         try:
             from entry_filters import check_all_filters
             filters_ok, filter_reason, regime_info = check_all_filters(
                 engine, idx, int(atm_strike), action_str
             )
             if not filters_ok:
-                # CHOP regime blocked — but allow capit-confirmed override
-                # (capit ≥ 4 means high-conviction reversal, worth a shot)
-                if regime_info.get("regime") == "CHOP":
-                    capit_confirms_direction = (
-                        (is_ce and cap_bull >= 4) or
-                        (not is_ce and cap_bear >= 4)
-                    )
-                    if not capit_confirms_direction and not _allow_chop_health:
-                        print(f"[SCALPER] REJECT entry (G11): {filter_reason}")
-                        return False
+                if _ef_mode == "strict":
+                    # Old strict behaviour — hard block
+                    if regime_info.get("regime") == "CHOP":
+                        capit_confirms_direction = (
+                            (is_ce and cap_bull >= 4) or
+                            (not is_ce and cap_bear >= 4)
+                        )
+                        if not capit_confirms_direction and not _allow_chop_health:
+                            print(f"[SCALPER] REJECT entry (G11 strict): {filter_reason}")
+                            return False
+                        else:
+                            _chop_why = "capit-confirmed" if capit_confirms_direction else "health AGGRESSIVE"
+                            print(f"[SCALPER] CHOP override ({_chop_why}): {filter_reason}")
                     else:
-                        _chop_why = "capit-confirmed" if capit_confirms_direction else "health AGGRESSIVE"
-                        print(f"[SCALPER] CHOP override ({_chop_why}): {filter_reason}")
+                        print(f"[SCALPER] REJECT entry (G11 strict): {filter_reason}")
+                        return False
                 else:
-                    print(f"[SCALPER] REJECT entry (G11): {filter_reason}")
-                    return False
+                    # PERMISSIVE: log warning, let trade fire, trust damage control
+                    print(f"[SCALPER] G11 WARN (allow, damage-control will catch): {filter_reason}")
             else:
-                # All filters pass — log regime for telemetry
                 if regime_info.get("regime") == "BREAKOUT":
                     print(f"[SCALPER] BREAKOUT detected — {regime_info.get('reason')}")
         except Exception as _e:

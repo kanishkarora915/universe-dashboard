@@ -5517,24 +5517,30 @@ class MarketEngine:
                             except Exception as _e:
                                 pass
 
-                            # ── A12: Entry Filters (5-min trend + greeks + regime) ──
-                            # Final quality gate before main-trade entry. Rejects
-                            # counter-trend, deep OTM/ITM, and CHOP-regime entries.
-                            # CHOP can be overridden if winProbability >= 75 (high conviction).
+                            # ── A12: Entry Filters — PERMISSIVE MODE (2026-06-05) ──
+                            # User concern: "system jaise pehle trades lera tha waise
+                            # hi le, miss na kare. SL smart hai."
+                            # Default: WARN only — let trade fire, damage control catches
+                            # bad setups at exit side. Set ENTRY_FILTER_MODE=strict to
+                            # restore old hard-block.
                             try:
+                                _ef_mode = os.environ.get("ENTRY_FILTER_MODE", "permissive").lower()
                                 from entry_filters import check_all_filters
                                 ef_ok, ef_reason, ef_regime = check_all_filters(
                                     self, idx, int(pending_strike), action
                                 )
                                 if not ef_ok:
-                                    high_conv = v.get("winProbability", 0) >= 75
-                                    if ef_regime.get("regime") == "CHOP" and high_conv:
-                                        print(f"[TRADE] CHOP override (high conviction): {ef_reason}")
+                                    if _ef_mode == "strict":
+                                        high_conv = v.get("winProbability", 0) >= 75
+                                        if ef_regime.get("regime") == "CHOP" and high_conv:
+                                            print(f"[TRADE] CHOP override (high conviction): {ef_reason}")
+                                        else:
+                                            print(f"[TRADE] BLOCKED by A12 (strict): {ef_reason}")
+                                            self.trade_manager._pending_entry.pop(idx, None)
+                                            self.trade_manager._pending_entry_time.pop(idx, None)
+                                            continue
                                     else:
-                                        print(f"[TRADE] BLOCKED by A12 entry_filters: {ef_reason}")
-                                        self.trade_manager._pending_entry.pop(idx, None)
-                                        self.trade_manager._pending_entry_time.pop(idx, None)
-                                        continue
+                                        print(f"[TRADE] A12 WARN (allow, damage-control catches): {ef_reason}")
                                 else:
                                     if ef_regime.get("regime") == "BREAKOUT":
                                         print(f"[TRADE] BREAKOUT regime — {ef_regime.get('reason')}")
