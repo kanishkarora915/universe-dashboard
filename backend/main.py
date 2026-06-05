@@ -2901,6 +2901,21 @@ async def admin_disk_cleanup(body: dict = None):
                 _delete_old(["structured_log*", "*.log", "logs/*"], 7))
         elif action == "vacuum_dbs":
             results["steps"].append(_vacuum_dbs())
+        elif action == "prune_trap_data":
+            # CORRECT fix: keep engine alive, prune old data + vacuum.
+            # Trap engine is the BEST engine (61.9% WR, +₹6.4k avg) — must
+            # stay running. Drops all snapshots older than 14 days +
+            # reclaims disk space via VACUUM. Safe, idempotent, repeatable.
+            try:
+                from trap_engine import _purge_old, DB_PATH
+                if DB_PATH is None:
+                    # Trap engine not initialized yet — set path
+                    import trap_engine
+                    trap_engine.DB_PATH = str(_P(_data_dir) / "trap_data.db")
+                _purge_old(14)
+                results["steps"].append("trap_data: purged >14d rows + VACUUM")
+            except Exception as _e:
+                results["steps"].append(f"prune_trap_data error: {_e}")
         elif action == "drop_trap_data":
             # Trap engine data — shadow-only, not used in production trades.
             # Engine rebuilds from live ticks. Safe to delete.
