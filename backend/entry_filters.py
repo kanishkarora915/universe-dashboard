@@ -333,15 +333,65 @@ def check_all_filters(engine, idx: str, strike: int, action: str,
         "regime": "NORMAL", "reason": "regime check disabled"
     }
 
+    # ── STRUCTURE-AWARE OVERRIDE (2026-06-05) ──
+    # When price_structure module says 5m AND 15m agree with our action,
+    # the raw 5-min spot trend filter is OBSOLETE. Structure module uses
+    # Bill Williams HH/HL/LH/LL pattern (proper market microstructure),
+    # while check_5min_trend uses a naive first-vs-last spot snapshot
+    # that gets fooled by intraday range moves.
+    #
+    # Today's example: BANKNIFTY spot +0.5% day-on-day but 5m and 15m
+    # structure both DOWNTREND (pullback in progress). PE entries with
+    # 81% conviction got blocked by raw 5-min filter despite structure
+    # alignment. ZERO trades all morning.
+    #
+    # Logic: if 5m+15m structure agrees with action direction (both
+    # bearish for PE, both bullish for CE), SKIP the raw 5-min trend
+    # filter — structure is the better signal.
+    # Env: STRUCTURE_TRUMPS_TREND=on (default) | off
+    structure_overrides_trend = False
+    structure_note = ""
+    try:
+        import os as _os_sf
+        if _os_sf.environ.get("STRUCTURE_TRUMPS_TREND", "on").lower() != "off":
+            import price_structure as _ps
+            import historical_loader as _hl
+            candles_5m = _hl.get_candles(idx, "5minute") or []
+            candles_15m = _hl.get_candles(idx, "15minute") or []
+            if len(candles_5m) >= 20 and len(candles_15m) >= 10:
+                s5 = _ps.detect_structure(candles_5m)
+                s15 = _ps.detect_structure(candles_15m)
+                v5 = s5.get("verdict") if isinstance(s5, dict) else None
+                v15 = s15.get("verdict") if isinstance(s15, dict) else None
+                is_pe = "PE" in (action or "").upper()
+                is_ce = "CE" in (action or "").upper()
+                # PE aligned = both 5m and 15m DOWNTREND
+                if is_pe and v5 == "DOWNTREND" and v15 == "DOWNTREND":
+                    structure_overrides_trend = True
+                    structure_note = "5m+15m DOWNTREND confirm PE"
+                # CE aligned = both 5m and 15m UPTREND
+                elif is_ce and v5 == "UPTREND" and v15 == "UPTREND":
+                    structure_overrides_trend = True
+                    structure_note = "5m+15m UPTREND confirm CE"
+    except Exception:
+        pass  # fail-safe: fall through to normal filter logic
+
     # CHOP regime → block UNLESS verdict has special override (handled by caller)
     if enable_regime and regime_info["regime"] == "CHOP":
-        return False, f"CHOP regime — {regime_info['reason']}", regime_info
+        # Structure override also bypasses CHOP regime when alignment is clear
+        if structure_overrides_trend:
+            print(f"[ENTRY_FILTER] CHOP override (structure): {structure_note}")
+        else:
+            return False, f"CHOP regime — {regime_info['reason']}", regime_info
 
-    # 5-min trend filter
+    # 5-min trend filter — bypassed when structure agrees with action
     if enable_trend:
-        trend_ok, trend_reason = check_5min_trend(spot_history, action)
-        if not trend_ok:
-            return False, trend_reason, regime_info
+        if structure_overrides_trend:
+            print(f"[ENTRY_FILTER] 5-min trend skipped (structure): {structure_note}")
+        else:
+            trend_ok, trend_reason = check_5min_trend(spot_history, action)
+            if not trend_ok:
+                return False, trend_reason, regime_info
 
     # Greeks gate
     if enable_greeks:
