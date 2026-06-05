@@ -5391,7 +5391,8 @@ class MarketEngine:
                         # Override via PROB_INSTANT_FIRE / PENDING_TTL_SEC envs.
                         prob = pending.get("probability", 0)
                         try:
-                            _instant_at = int(os.environ.get("PROB_INSTANT_FIRE", "65"))
+                            # Default lowered 65→60 (2026-06-05): faster Main fires.
+                            _instant_at = int(os.environ.get("PROB_INSTANT_FIRE", "60"))
                         except (TypeError, ValueError):
                             _instant_at = 65
                         if prob >= _instant_at:

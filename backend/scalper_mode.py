@@ -38,8 +38,10 @@ SCALPER_DB = _data_dir / "scalper_trades.db"
 SCALPER_AUTO_TRADE_ENABLED = os.environ.get("SCALPER_AUTO_TRADE", "on").lower() != "off"
 
 # SCALPER CONFIG (tuned after 2026-05-04 -₹1.37L bleed)
-SCALPER_THRESHOLD = 55         # Raised 45→55 (avoid weak signals)
-SCALPER_DAILY_CAP = 15         # 15 trades/day
+SCALPER_THRESHOLD = 50         # Lowered 55→50 (2026-06-05, user: "fast scalper, small profits")
+                               # Backtest: prob 50-54% bucket = 8 trades, 57% WR, +₹85k untapped
+                               # Damage control (EARLY_CUT + BREAKEVEN) handles the small losses
+SCALPER_DAILY_CAP = 20         # Raised 15→20 (more shots for small-profit capture)
 SCALPER_SL_PCT = 0.08          # 8% SL (lowered 12→8 per user safety rule, B1.1)
 SCALPER_T1_PCT = 0.10          # 10% T1 (lowered 15→10 per profit-mgmt #1 — more reachable)
 SCALPER_T2_PCT = 0.20          # 20% T2 (lowered 30→20 — better R:R 1:2.5 with -8% SL)
@@ -915,7 +917,9 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
     if engine is not None and os.environ.get("ANTI_COUNTER_DISABLED", "").strip() not in ("1", "true", "on"):
         try:
             move_thresh = float(os.environ.get("ANTI_COUNTER_MOVE_PCT", "0.4"))
-            prob_bypass = float(os.environ.get("ANTI_COUNTER_PROB_BYPASS", "65"))
+            # Default lowered 65→60 (2026-06-05): faster fires when conviction
+            # is decent. Damage control catches the few bad ones at exit side.
+            prob_bypass = float(os.environ.get("ANTI_COUNTER_PROB_BYPASS", "60"))
             hist = getattr(engine, "_spot_history", {}).get(idx, []) or []
             if hist and win_pct < prob_bypass:
                 # Spot 30 min ago vs now
