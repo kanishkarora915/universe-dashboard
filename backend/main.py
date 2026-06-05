@@ -231,6 +231,19 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         print(f"[STARTUP] autologin daemon spawn failed: {_e}")
 
+    # ── Market context (200-day chart structure) refresh thread ──
+    # Pulls 200d daily candles via Kite REST, computes S/R zones,
+    # 200d trend, ATR. Caches per-index. Used as ADDITIVE bonus to
+    # verdict score — never blocks a trade based on chart alone.
+    # User principle (2026-06-05): "smart system no strict, strict only
+    # to not bleed losses".
+    try:
+        import market_context as _mc
+        _mc.start_refresh_thread(lambda: session.get("kite"))
+        print("[STARTUP] market-context refresh thread spawned")
+    except Exception as _e:
+        print(f"[STARTUP] market-context spawn failed: {_e}")
+
     # ── Structure refresh thread (Phase 2 — 2026-05-27) ──
     # Background thread refreshes per-index trend structure every 5 min
     # via Kite REST history. Only does work when STRUCTURE_MODE != off,
@@ -2257,6 +2270,57 @@ async def early_move_verdict(idx: str = "BANKNIFTY", min_agree: int = 2):
         if engine is None:
             return {"verdict": "NO_TRADE", "reason": "engine not running"}
         return aggregator.get_verdict(engine=engine, idx=idx, min_agree=min_agree)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/market-context")
+async def market_context_snapshot():
+    """200-day chart structure snapshot (per index).
+    Used by verdict layer as ADDITIVE bonus (never blocks).
+    Returns: trend_200d, S/R zones, ATR, swing counts."""
+    try:
+        import market_context as _mc
+        return _mc.diagnostics()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/market-context/refresh")
+async def market_context_refresh():
+    """Force-refresh 200-day market context for both indexes.
+    Useful after a deploy or when you want fresh data without waiting
+    for the 6hr cycle."""
+    if engine is None or not session.get("kite"):
+        return JSONResponse({"error": "engine/kite not ready"}, status_code=400)
+    try:
+        import market_context as _mc
+        kite = session["kite"]
+        out = {}
+        for idx in ("NIFTY", "BANKNIFTY"):
+            out[idx] = _mc.refresh_context(kite, idx)
+        return {"ok": True, "refreshed": out}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/market-context/score")
+async def market_context_score(idx: str = "NIFTY", action: str = "BUY CE"):
+    """Get the alignment bonus the verdict would receive for a proposed
+    (idx, action) right now. Negative bonus = chart contradicts (still
+    allowed to trade, just adjusted score). Positive = chart tailwind.
+    """
+    if engine is None:
+        return JSONResponse({"error": "engine not ready"}, status_code=400)
+    try:
+        import market_context as _mc
+        spot = engine.prices.get(engine.spot_tokens.get(idx), {}).get("ltp", 0)
+        return {
+            "idx": idx,
+            "action": action,
+            "spot": spot,
+            "context": _mc.get_context(idx, spot, action),
+        }
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 

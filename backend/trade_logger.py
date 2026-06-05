@@ -1500,7 +1500,7 @@ class TradeManager:
             #   • BANKNIFTY with conviction < 75%
             #   • Multi-TF ALL_BULLISH/ALL_BEARISH (saturated alignment)
             # BLEED_HOURS_MODE: smart (default) | strict | off
-            _bleed_mode = _os.environ.get("BLEED_HOURS_MODE", "smart").lower()
+            _bleed_mode = _os.environ.get("BLEED_HOURS_MODE", "off").lower()
             hm = now.hour * 60 + now.minute
             if _bleed_mode != "off" and 13 * 60 + 30 <= hm < 14 * 60:
                 if _bleed_mode == "strict":

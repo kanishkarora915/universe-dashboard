@@ -498,12 +498,14 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
     # Data-driven threshold tuning per context. All env-overridable.
     # No new module — just bias the existing effective_threshold.
     try:
-        # FIX A: BANKNIFTY scalper threshold bias
-        # Audit: SCALPER BANKNIFTY = -₹50,586 (loses money baseline)
-        # Audit: SCALPER NIFTY     = +₹284,655 (clear winner)
-        # → Raise BNF entry bar so we trade fewer BNF, more NIFTY by mix.
+        # FIX A: BANKNIFTY scalper threshold bias (RELAXED 2026-06-05)
+        # Audit said SCALPER BANKNIFTY = -₹50,586 baseline. But user
+        # principle: "smart not strict". A blanket +5 threshold hurts
+        # legitimate BNF setups. Now default 0 (no penalty) — let market
+        # context bonus + damage control handle it. Set env to 5 to
+        # restore previous behavior.
         if idx == "BANKNIFTY":
-            effective_threshold += int(os.environ.get("SCALPER_BNF_THRESHOLD_BIAS", "5"))
+            effective_threshold += int(os.environ.get("SCALPER_BNF_THRESHOLD_BIAS", "0"))
 
         # FIX B was: Scalper CE side bias (+3 pts for CE entries)
         # DROPPED 2026-06-03 — backtest showed it BLOCKED MORE WINS THAN
@@ -518,6 +520,12 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         if is_ce and _ce_bias:
             effective_threshold += _ce_bias
 
+        # FIX C2: Bleed-zone — RELAXED to OFF by default (2026-06-05)
+        # User: "smart not strict, strict only for loss-cap"
+        # Original intent: 13:30-14:00 had 26% WR + ₹257k losses.
+        # But damage control (EARLY_CUT + BREAKEVEN 3%) now handles the
+        # bad-decision losses at exit side. Don't double-block entries.
+        # Set BLEED_HOURS_MODE=smart or strict if you want to re-enable.
         # FIX C: 13:30-14:00 IST bleed-zone — SMART CONDITIONAL block
         # User insight: "worst window nahi, worst decision making" — big
         # moves DO happen in this window; small pullbacks within bigger
@@ -532,7 +540,7 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         # ₹50k cost saves 17 winning trades from being blocked.
         # BLEED_HOURS_MODE: smart (default) | strict | off
         hour_min = now.hour * 60 + now.minute
-        _bleed_mode = os.environ.get("BLEED_HOURS_MODE", "smart").lower()
+        _bleed_mode = os.environ.get("BLEED_HOURS_MODE", "off").lower()
         if _bleed_mode != "off" and 13 * 60 + 30 <= hour_min < 14 * 60:
             if _bleed_mode == "strict":
                 print(f"[SCALPER] REJECT (bleed-strict): 13:30-14:00 universal block")
