@@ -55,7 +55,13 @@ if not _SCALPER_DB.exists():
 # ── Env flags ──────────────────────────────────────────────────────────
 
 def is_enabled() -> bool:
-    return os.environ.get("DAILY_LOSS_CAP_ENABLED", "off").lower() == "on"
+    # DEFAULT CHANGED 2026-06-04: off → on
+    # Infrastructure audit found circuit breakers disabled despite the
+    # configured -₹15k daily limit. Without enforcement, a runaway loss
+    # day (like Apr 28 = -₹146k) goes unprotected. Enabling default-on
+    # gives loss-cap protection without requiring env-flag flips.
+    # Override: DAILY_LOSS_CAP_ENABLED=off to disable.
+    return os.environ.get("DAILY_LOSS_CAP_ENABLED", "on").lower() != "off"
 
 
 def is_shadow_enabled() -> bool:

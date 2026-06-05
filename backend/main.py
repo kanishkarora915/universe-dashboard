@@ -261,6 +261,122 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         print(f"[STARTUP] stale-token-reaper spawn failed: {_e}")
 
+    # ── Disk auto-prune daemon (2026-06-04) ──
+    # Runs once at startup + then daily at 5 AM IST (before token reaper).
+    # Calls the same logic as POST /api/admin/disk/cleanup actions
+    # all_safe + prune_council + prune_trap_data. Prevents the 4.3 GB
+    # disk-full incident from recurring — no manual intervention needed.
+    try:
+        import threading as _th, time as _time
+        import pytz as _pytz_dp
+        from datetime import datetime as _dt_dp
+
+        def _disk_auto_prune():
+            _IST_dp = _pytz_dp.timezone("Asia/Kolkata")
+            print("[DISK-PRUNE] daemon started — runs at 05:00 IST daily")
+            last_prune_date = None
+
+            def _do_prune():
+                """Run all safe prune actions; log result."""
+                try:
+                    # 1. WAL checkpoint all DBs
+                    import sqlite3 as _sq3
+                    from pathlib import Path as _PP
+                    count = 0
+                    for p in _PP(_data_dir).glob("*.db"):
+                        try:
+                            c = _sq3.connect(str(p), timeout=5.0)
+                            c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                            c.close()
+                            count += 1
+                        except Exception:
+                            pass
+                    print(f"[DISK-PRUNE] WAL checkpoint: {count} DBs")
+
+                    # 2. Council prune (14d engine_votes / verdicts / perf)
+                    council_path = _PP(_data_dir) / "council.db"
+                    if council_path.exists():
+                        from datetime import timedelta as _td_dp
+                        cutoff_14d = (_dt_dp.now(_IST_dp) - _td_dp(days=14)).isoformat()
+                        cutoff_30d = (_dt_dp.now(_IST_dp) - _td_dp(days=30)).isoformat()
+                        c = _sq3.connect(str(council_path), timeout=30.0)
+                        deleted = 0
+                        for tbl, col, cutoff in [
+                            ("engine_votes", "timestamp", cutoff_14d),
+                            ("council_verdicts", "timestamp", cutoff_14d),
+                            ("perf_samples", "iso", cutoff_14d),
+                            ("auto_login_attempts", "timestamp", cutoff_30d),
+                        ]:
+                            try:
+                                cur = c.execute(
+                                    f"DELETE FROM {tbl} WHERE {col} < ?", (cutoff,))
+                                deleted += cur.rowcount
+                            except Exception:
+                                pass
+                        c.commit()
+                        try:
+                            c.execute("VACUUM")
+                            c.commit()
+                        except Exception:
+                            pass
+                        c.close()
+                        print(f"[DISK-PRUNE] council.db: {deleted} rows deleted + VACUUM")
+
+                    # 3. Trap data prune (14d)
+                    try:
+                        import trap_engine
+                        if trap_engine.DB_PATH is None:
+                            trap_engine.DB_PATH = str(_PP(_data_dir) / "trap_data.db")
+                        trap_engine._purge_old(14)
+                    except Exception as _te:
+                        print(f"[DISK-PRUNE] trap_engine prune skipped: {_te}")
+
+                    # 4. Report final disk state
+                    import shutil as _sh
+                    usage = _sh.disk_usage(str(_data_dir))
+                    free_mb = usage.free / 1024 / 1024
+                    pct = (usage.total - usage.free) / usage.total * 100
+                    print(f"[DISK-PRUNE] done — free {free_mb:.0f} MB, used {pct:.1f}%")
+
+                    # 5. Telegram alert (silent except critical)
+                    try:
+                        import telegram_alerts
+                        if telegram_alerts.is_enabled() and pct > 80:
+                            telegram_alerts.send(
+                                f"⚠️ Disk still {pct:.0f}% after auto-prune. "
+                                f"Free: {free_mb:.0f} MB. Check manually.",
+                                key="disk_prune_warn")
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"[DISK-PRUNE] error: {e}")
+
+            # Run once at startup so any existing disk pressure clears
+            _time.sleep(60)  # let engine boot fully
+            _do_prune()
+
+            # Daily loop
+            while True:
+                try:
+                    now = _dt_dp.now(_IST_dp)
+                    today_iso = now.strftime("%Y-%m-%d")
+                    # Fire between 05:00 and 05:10 IST, once per day
+                    if (now.hour == 5 and now.minute < 10
+                            and last_prune_date != today_iso):
+                        _do_prune()
+                        last_prune_date = today_iso
+                except Exception as e:
+                    print(f"[DISK-PRUNE] loop error: {e}")
+                _time.sleep(60)  # check every minute
+
+        _th.Thread(
+            target=_disk_auto_prune,
+            daemon=True,
+            name="disk-auto-prune",
+        ).start()
+    except Exception as _e:
+        print(f"[STARTUP] disk auto-prune spawn failed: {_e}")
+
     # ── Engine self-heal monitor (Layer 3 of bulletproof auto-login) ──
     # During market hours (09:15-15:30 IST), if engine is detected
     # dead (None or running=False), attempt automatic recovery:
@@ -2901,6 +3017,56 @@ async def admin_disk_cleanup(body: dict = None):
                 _delete_old(["structured_log*", "*.log", "logs/*"], 7))
         elif action == "vacuum_dbs":
             results["steps"].append(_vacuum_dbs())
+        elif action == "prune_council":
+            # council.db growth audit (2026-06-04): 530 MB. Will be the next
+            # disk bomb if not pruned. Contains:
+            #   engine_votes        — 1 row per engine per verdict cycle
+            #   council_verdicts    — 1 row per verdict
+            #   perf_samples        — 1 row per 5-min sample
+            #   auto_login_attempts — 1 row per login attempt
+            #   engine_accuracy     — small, no prune needed
+            # Strategy: keep 14 days of votes/verdicts/perf, 30 days of
+            # login attempts (forensic value). VACUUM at end.
+            try:
+                from datetime import timedelta as _td
+                import pytz as _pytz
+                _IST = _pytz.timezone("Asia/Kolkata")
+                now_ist = datetime.now(_IST)
+                cutoff_14d = (now_ist - _td(days=14)).isoformat()
+                cutoff_30d = (now_ist - _td(days=30)).isoformat()
+                council_path = _P(_data_dir) / "council.db"
+                if not council_path.exists():
+                    results["steps"].append("council.db not found")
+                else:
+                    import sqlite3 as _sq
+                    c = _sq.connect(str(council_path), timeout=30.0)
+                    total_deleted = 0
+                    for table, col, cutoff in [
+                        ("engine_votes", "timestamp", cutoff_14d),
+                        ("council_verdicts", "timestamp", cutoff_14d),
+                        ("perf_samples", "iso", cutoff_14d),
+                        ("auto_login_attempts", "timestamp", cutoff_30d),
+                    ]:
+                        try:
+                            cur = c.execute(
+                                f"DELETE FROM {table} WHERE {col} < ?",
+                                (cutoff,))
+                            total_deleted += cur.rowcount
+                            results["steps"].append(
+                                f"{table}: deleted {cur.rowcount} rows older than {cutoff[:10]}")
+                        except Exception as _te:
+                            results["steps"].append(f"{table}: {_te}")
+                    c.commit()
+                    try:
+                        c.execute("VACUUM")
+                        c.commit()
+                        results["steps"].append("VACUUM complete")
+                    except Exception as _ve:
+                        results["steps"].append(f"VACUUM error: {_ve}")
+                    c.close()
+                    results["steps"].append(f"total deleted: {total_deleted}")
+            except Exception as _e:
+                results["steps"].append(f"prune_council error: {_e}")
         elif action == "prune_trap_data":
             # CORRECT fix: keep engine alive, prune old data + vacuum.
             # Trap engine is the BEST engine (61.9% WR, +₹6.4k avg) — must
