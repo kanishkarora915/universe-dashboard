@@ -2781,6 +2781,143 @@ async def db_migrations_status():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── EMERGENCY DISK ADMIN (2026-06-04) ─────────────────────────────────
+# Root-cause finding: Telegram alerts "Self-heal FAILED — cached + fresh
+# both failed" trace to OSError [Errno 28] No space left on device.
+# Render persistent disk filled with months of SQLite + WAL + structured
+# logs + backups. This blocks ALL writes including token cache writes →
+# auto-login can't persist new token → engine never starts.
+# These endpoints give visibility + safe targeted cleanup.
+
+@app.get("/api/admin/disk")
+async def admin_disk_usage():
+    """Per-file breakdown of /data — what's eating the persistent disk.
+    Returns total, free, per-file size (top 50 largest).
+    """
+    import shutil
+    from pathlib import Path as _P
+    try:
+        usage = shutil.disk_usage(str(_data_dir))
+        total_mb = usage.total / 1024 / 1024
+        free_mb = usage.free / 1024 / 1024
+        used_mb = total_mb - free_mb
+        pct = (used_mb / total_mb * 100) if total_mb > 0 else 0
+
+        # Recursive size scan
+        files = []
+        for p in _P(_data_dir).rglob("*"):
+            try:
+                if p.is_file():
+                    files.append({
+                        "path": str(p.relative_to(_data_dir)),
+                        "size_mb": round(p.stat().st_size / 1024 / 1024, 2),
+                        "modified_iso": datetime.fromtimestamp(p.stat().st_mtime).isoformat(),
+                    })
+            except Exception:
+                continue
+        files.sort(key=lambda x: -x["size_mb"])
+        return {
+            "total_mb": round(total_mb, 1),
+            "used_mb": round(used_mb, 1),
+            "free_mb": round(free_mb, 1),
+            "used_pct": round(pct, 1),
+            "is_critical": pct > 95,
+            "file_count": len(files),
+            "top_50_files": files[:50],
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/admin/disk/cleanup")
+async def admin_disk_cleanup(body: dict = None):
+    """SAFE targeted cleanup of /data. Pass {"action": "..."} with one of:
+
+      "wal_checkpoint"       — SQLite WAL/SHM truncation (no data loss).
+                               Often recovers 50-200 MB instantly.
+      "delete_backups_old"   — Delete any .backup / .bak / .sql.gz older
+                               than 7 days.
+      "delete_structured_logs_old" — Delete structured_logger output >7d.
+      "vacuum_dbs"           — VACUUM all .db files (reclaims deleted rows).
+                               SLOW but biggest recovery.
+      "all_safe"             — runs wal_checkpoint + delete_backups_old +
+                               delete_structured_logs_old (NO vacuum).
+
+    Returns the action result + freed_mb estimate.
+    """
+    import shutil, sqlite3, os, time
+    from pathlib import Path as _P
+    action = (body or {}).get("action", "")
+    if not action:
+        return JSONResponse({"error": "action required"}, status_code=400)
+    try:
+        before = shutil.disk_usage(str(_data_dir)).free
+        results = {"action": action, "steps": []}
+
+        def _wal_checkpoint():
+            count = 0
+            for p in _P(_data_dir).glob("*.db"):
+                try:
+                    c = sqlite3.connect(str(p), timeout=5.0)
+                    c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    c.close()
+                    count += 1
+                except Exception:
+                    pass
+            return f"checkpointed {count} DBs"
+
+        def _delete_old(patterns, days):
+            cutoff = time.time() - days * 86400
+            removed = 0
+            for pat in patterns:
+                for p in _P(_data_dir).rglob(pat):
+                    try:
+                        if p.is_file() and p.stat().st_mtime < cutoff:
+                            p.unlink()
+                            removed += 1
+                    except Exception:
+                        pass
+            return f"removed {removed} files matching {patterns} older than {days}d"
+
+        def _vacuum_dbs():
+            count = 0
+            for p in _P(_data_dir).glob("*.db"):
+                try:
+                    c = sqlite3.connect(str(p), timeout=30.0)
+                    c.execute("VACUUM")
+                    c.close()
+                    count += 1
+                except Exception:
+                    pass
+            return f"vacuumed {count} DBs"
+
+        if action == "wal_checkpoint":
+            results["steps"].append(_wal_checkpoint())
+        elif action == "delete_backups_old":
+            results["steps"].append(
+                _delete_old(["*.backup", "*.bak", "*.sql.gz", "backups/*"], 7))
+        elif action == "delete_structured_logs_old":
+            results["steps"].append(
+                _delete_old(["structured_log*", "*.log", "logs/*"], 7))
+        elif action == "vacuum_dbs":
+            results["steps"].append(_vacuum_dbs())
+        elif action == "all_safe":
+            results["steps"].append(_wal_checkpoint())
+            results["steps"].append(
+                _delete_old(["*.backup", "*.bak", "*.sql.gz", "backups/*"], 7))
+            results["steps"].append(
+                _delete_old(["structured_log*", "*.log", "logs/*"], 7))
+        else:
+            return JSONResponse({"error": f"unknown action: {action}"}, status_code=400)
+
+        after = shutil.disk_usage(str(_data_dir)).free
+        results["freed_mb"] = round((after - before) / 1024 / 1024, 1)
+        results["free_after_mb"] = round(after / 1024 / 1024, 1)
+        return results
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/backup/status")
 async def backup_status():
     """Backup daemon status — config, last run, DB count.
