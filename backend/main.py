@@ -2901,6 +2901,22 @@ async def admin_disk_cleanup(body: dict = None):
                 _delete_old(["structured_log*", "*.log", "logs/*"], 7))
         elif action == "vacuum_dbs":
             results["steps"].append(_vacuum_dbs())
+        elif action == "drop_trap_data":
+            # Trap engine data — shadow-only, not used in production trades.
+            # Engine rebuilds from live ticks. Safe to delete.
+            # As of 2026-06-04: this single file = 4.3 GB / 86% of disk.
+            removed = []
+            for name in ("trap_data.db", "trap_data.db-wal",
+                         "trap_data.db-shm", "trap_data.db-journal"):
+                p = _P(_data_dir) / name
+                try:
+                    if p.exists():
+                        size = p.stat().st_size
+                        p.unlink()
+                        removed.append(f"{name} ({size/1024/1024:.1f} MB)")
+                except Exception as _e:
+                    removed.append(f"{name}: ERROR {_e}")
+            results["steps"].append(f"dropped: {removed}")
         elif action == "all_safe":
             results["steps"].append(_wal_checkpoint())
             results["steps"].append(
