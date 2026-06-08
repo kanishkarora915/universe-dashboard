@@ -973,11 +973,11 @@ class MarketEngine:
                 except Exception as e:
                     print(f"[CACHE-POP] outer error: {e}")
 
-                # Real-time freshness: 3s → 1s (2026-05-14).
-                # If a cycle takes longer than 1s (chain rebuild can take
-                # 200-500ms), cycles naturally run back-to-back — no race,
-                # no overlap. Cache entries become at most 1s stale.
-                _time.sleep(1.0)
+                # 2026-06-08: bumped 1s → 3s. Load avg hit 12.85 on
+                # Render's 0.5-CPU container with 1s cadence + 22 threads.
+                # 3s is plenty fresh for non-trading UI (chain, OI, signals).
+                # Trade decisions use direct engine state, not this cache.
+                _time.sleep(3.0)
             print("[CACHE-POP] Stopped")
 
         t = threading.Thread(target=_populator_loop, daemon=True, name="cache-populator")

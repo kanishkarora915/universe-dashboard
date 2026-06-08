@@ -48,7 +48,11 @@ export default function EngineStatusBadge({ tab = "scalper" }) {
 
   useEffect(() => {
     fetchAll();
-    const iv = setInterval(fetchAll, 5000);
+    // 2026-06-08: 5s → 10s polling. Each tab fires 3 API calls × 12/min
+    // = 36 req/min per tab. With 2 tabs and other components, this was
+    // a chunk of the load avg 12.85 issue. 10s is fast enough for a
+    // status badge — user has time to refresh manually if they want.
+    const iv = setInterval(fetchAll, 10000);
     return () => clearInterval(iv);
   }, [tab]);
 
