@@ -229,10 +229,41 @@ def _load_history(kite, token: int, interval: str, days: int) -> List[Dict]:
         return []
 
 
-def _resolve_futures_token(kite, symbol: str) -> Optional[Dict]:
-    """Find the nearest-month futures contract for a symbol."""
+# Cache NFO instruments list — kite.instruments("NFO") is SLOW (~2-5s)
+# and returns thousands of contracts. Without caching, scanning 211
+# stocks calls this 211 times = 10-15 min of just instruments fetches.
+# 1-hour TTL — F&O contracts rarely change intra-day.
+_nfo_cache: Optional[List] = None
+_nfo_cache_ts: float = 0.0
+import threading as _th
+_nfo_cache_lock = _th.Lock()
+import time as _time_mod
+
+
+def _get_nfo_instruments(kite) -> List:
+    global _nfo_cache, _nfo_cache_ts
+    now = _time_mod.time()
+    with _nfo_cache_lock:
+        if _nfo_cache and (now - _nfo_cache_ts) < 3600:
+            return _nfo_cache
     try:
-        instruments = kite.instruments("NFO")
+        inst = kite.instruments("NFO")
+        with _nfo_cache_lock:
+            _nfo_cache = inst
+            _nfo_cache_ts = now
+        print(f"[STOCK-ANALYZE] NFO instruments cached: {len(inst)}")
+        return inst
+    except Exception as e:
+        print(f"[STOCK-ANALYZE] NFO fetch failed: {e}")
+        return _nfo_cache or []
+
+
+def _resolve_futures_token(kite, symbol: str) -> Optional[Dict]:
+    """Find the nearest-month futures contract for a symbol.
+    Uses module-level cache to avoid repeated 2-5s instruments() calls.
+    """
+    try:
+        instruments = _get_nfo_instruments(kite)
         candidates = []
         today = datetime.now(IST).date()
         for inst in instruments:
