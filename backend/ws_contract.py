@@ -290,7 +290,50 @@ def schedule_startup_smoke_test(engine_getter: Callable, delay_sec: Optional[int
                 if _smoke_test_armed.get(eid):
                     return
                 _smoke_test_armed[eid] = True
-            assert_healthy_or_alert(engine, context=f"smoke_test_after_{delay}s")
+            health = assert_healthy_or_alert(engine, context=f"smoke_test_after_{delay}s")
+
+            # ── PERMANENT FIX (2026-06-08) ──
+            # If contract is RED after delay (engine started but ticker
+            # silent), trigger process self-kill so Render auto-restarts
+            # with a fresh container. Only fires during market hours.
+            # Env: WS_CONTRACT_SELFKILL_ON_FAIL=on (default on)
+            if not health.get("ok"):
+                if os.environ.get("WS_CONTRACT_SELFKILL_ON_FAIL", "on").lower() != "off":
+                    # Market hours gate (9:15-15:30 IST, weekday)
+                    try:
+                        from datetime import datetime
+                        import pytz
+                        IST = pytz.timezone("Asia/Kolkata")
+                        now_ist = datetime.now(IST)
+                        is_weekday = now_ist.weekday() <= 4
+                        is_market = is_weekday and (
+                            (now_ist.hour == 9 and now_ist.minute >= 15) or
+                            (10 <= now_ist.hour <= 14) or
+                            (now_ist.hour == 15 and now_ist.minute <= 30)
+                        )
+                    except Exception:
+                        is_market = False
+                    if is_market:
+                        # Only self-kill on CRITICAL ticker failures
+                        critical_failures = set(health.get("failed_critical", []))
+                        ticker_failed = bool(
+                            critical_failures & {"ticker_connected", "recent_tick"}
+                        )
+                        if ticker_failed:
+                            _send_alert(
+                                f"💀 *WS Smoke Test FAIL — self-kill triggered*\n"
+                                f"Engine started but ticker silent {delay}s in.\n"
+                                f"Failed: {', '.join(critical_failures)}\n"
+                                f"Process exit → Render auto-restart.",
+                                key="smoke_test_selfkill",
+                            )
+                            _log_event(
+                                "ws_smoke_selfkill",
+                                failed=list(critical_failures),
+                            )
+                            time.sleep(2)
+                            import os as _ose
+                            _ose._exit(1)
         except Exception as e:
             _log_event("ws_contract_smoke_error", error=str(e))
 

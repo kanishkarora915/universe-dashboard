@@ -520,10 +520,12 @@ class MarketEngine:
         STAGE_COOLDOWN_SEC = 30
 
         # Stage durations (seconds of stale time before stage fires)
-        STAGE_2_AT = 45
-        STAGE_3_AT = 90
-        STAGE_4_AT = 150
-        STAGE_5_AT = 210
+        # 2026-06-08: tightened — full escalation in 90s (was 210s).
+        # Self-kill (Stage 6 in handler) fires 90s after Stage 5 = total 180s.
+        STAGE_2_AT = 30   # was 45
+        STAGE_3_AT = 60   # was 90
+        STAGE_4_AT = 90   # was 150
+        STAGE_5_AT = 120  # was 210
 
         def _send_telegram(msg, key):
             try:
@@ -745,27 +747,69 @@ class MarketEngine:
                                    stale_sec=round(stale_duration, 1))
                         _trigger_fresh_login()
 
-                    # ── Stage 5: CRITICAL — manual intervention ──
+                    # ── Stage 5: CRITICAL — alert Telegram ──
                     elif (current_stage == 4
                           and stale_duration >= STAGE_5_AT
                           and cooldown_ok):
                         current_stage = 5
                         last_action_ts = now
-                        print(f"[WS-WATCHDOG] STAGE 5 CRITICAL: all auto-recovery "
-                              f"failed (stale {stale_duration:.0f}s)")
+                        print(f"[WS-WATCHDOG] STAGE 5 CRITICAL: all 4 auto-recovery "
+                              f"stages failed (stale {stale_duration:.0f}s)")
                         _send_telegram(
-                            f"🚨 *WS CRITICAL — MANUAL ACTION NEEDED*\n"
-                            f"All 4 auto-recovery stages failed.\n"
-                            f"Stale {stale_duration:.0f}s. WS dead.\n"
-                            f"Login to dashboard manually NOW.",
+                            f"🚨 *WS Stage 5 CRITICAL*\n"
+                            f"Auto-recovery stages 1-4 failed.\n"
+                            f"Stale {stale_duration:.0f}s. Stage 6 in 90s "
+                            f"(process self-kill → Render auto-restart).",
                             key="ws_stage_5_critical"
                         )
                         _log_event("ws_stage_5_critical",
                                    stale_sec=round(stale_duration, 1))
 
-                    # ── Already at Stage 5 or post-action settle ──
-                    # Just keep checking; if recovery happens, healthy branch
-                    # will fire and reset state.
+                    # ── Stage 6: PROCESS SELF-KILL (2026-06-08) ──
+                    # Permanent fix for recurring WS dead-but-engine-running bug.
+                    # When all soft recoveries fail (token refresh, ticker
+                    # restart, resubscribe, fresh login), the only thing that
+                    # has historically worked is a full container restart on
+                    # Render (clears DNS cache, socket file descriptors,
+                    # KiteTicker internal state corruption).
+                    #
+                    # os._exit(1) bypasses Python's normal shutdown handlers
+                    # and exits the process immediately with non-zero status.
+                    # Render's service manager treats non-zero exit as crash
+                    # and auto-restarts the container — fresh DNS, fresh
+                    # sockets, fresh process state. ~30-60 sec total downtime.
+                    #
+                    # SAFETY: only fires during market hours (already gated by
+                    # is_market check at top of loop) AND only after 5 full
+                    # stages of soft recovery attempts (~5 minutes total).
+                    # Cannot accidentally fire — needs the system to be truly
+                    # stuck for minutes.
+                    STAGE_6_AT = STAGE_5_AT + 90  # 90s after Stage 5 fires
+                    if (current_stage == 5
+                            and stale_duration >= STAGE_6_AT
+                            and cooldown_ok):
+                        current_stage = 6
+                        last_action_ts = now
+                        print(f"[WS-WATCHDOG] STAGE 6 SELF-KILL: stages 1-5 all "
+                              f"failed (stale {stale_duration:.0f}s) — "
+                              f"triggering process exit for Render auto-restart")
+                        _send_telegram(
+                            f"💀 *WS Stage 6 SELF-KILL*\n"
+                            f"Stages 1-5 all failed.\n"
+                            f"Process exit triggered — Render will auto-restart.\n"
+                            f"Expected back online in 60-90 sec.",
+                            key="ws_stage_6_selfkill"
+                        )
+                        _log_event("ws_stage_6_selfkill",
+                                   stale_sec=round(stale_duration, 1))
+                        # Brief pause so Telegram fires before exit
+                        _time.sleep(2)
+                        import os as _os_exit
+                        _os_exit._exit(1)  # Bypass cleanup, immediate exit
+
+                    # ── Already at Stage 6 or post-action settle ──
+                    # If recovery happens organically, healthy branch fires
+                    # and resets state.
 
                 except Exception as e:
                     print(f"[WS-WATCHDOG] Loop error: {e}")
