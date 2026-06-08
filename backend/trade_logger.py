@@ -1517,7 +1517,7 @@ class TradeManager:
             # FIX D: Over-conviction cap
             # Audit: MAIN prob 80+% = 42% WR, -₹111k (extreme = exhaustion)
             # Block 85%+ unless capit confirms reversal (same logic as scalper).
-            overconv_cap = float(_os.environ.get("OVERCONVICTION_BLOCK", "85"))
+            overconv_cap = float(_os.environ.get("OVERCONVICTION_BLOCK", "90"))
             if win_pct >= overconv_cap:
                 try:
                     from capitulation_engine import get_live_state as _gls

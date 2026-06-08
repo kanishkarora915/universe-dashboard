@@ -595,7 +595,10 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         #   STREAK_HANDLER_DISABLED=1     kill switch
         #   STREAK_THRESHOLD_BIAS=5       extra threshold after 2W (default 5)
         #   STREAK_BLOCK_BNF=1            block BANKNIFTY after 2W (default 1)
-        if os.environ.get("STREAK_HANDLER_DISABLED", "").strip() not in ("1","true","on"):
+        # 2026-06-08 v2: DEFAULT OFF. After 2 wins blocking BNF caused
+        # follow-on big winners to be missed. Damage control catches losses.
+        # Set STREAK_HANDLER_ENABLED=on to re-enable.
+        if os.environ.get("STREAK_HANDLER_ENABLED", "").strip() in ("1","true","on"):
             try:
                 last_two = _last_n_outcomes(2)
                 if len(last_two) == 2 and last_two[0] == 'WIN' and last_two[1] == 'WIN':
@@ -616,7 +619,9 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         # Audit: prob 80+% → MAIN 42% WR -₹111k, SCALPER 32% WR -₹42k
         # Extreme conviction = market exhaustion = reversal imminent.
         # Block fresh entries above 85% unless capit confirms reversal.
-        overconv_cap = float(os.environ.get("OVERCONVICTION_BLOCK", "85"))
+        # 2026-06-08 v2: raised 85 → 90. Was blocking legitimate high-conv
+        # entries. Only extreme 90%+ now considered "top/bottom risk".
+        overconv_cap = float(os.environ.get("OVERCONVICTION_BLOCK", "90"))
         if win_pct >= overconv_cap:
             # capitulation reversal-confirmation can bypass
             try:
@@ -796,9 +801,11 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         pass
 
     # ── B2.6: CAPITULATION REVERSAL GATE ──
-    # If capitulation engine sees STRONG reversal AGAINST our direction, block.
-    # Prevents the 9:39–11:51 case today where 6 CE trades fired into a
-    # bearish capitulation that the engine had clearly flagged.
+    # 2026-06-08 v2: STRICTER bypass — only block when capit score >= 7
+    # (was 5). Score 5-6 is borderline and was blocking legitimate
+    # high-conviction entries during today's reversal. Damage control
+    # catches loss if direction was wrong.
+    # Env: CAPIT_REVERSAL_THRESHOLD=7 (default), set =5 to restore old strict.
     try:
         from capitulation_engine import get_live_state
         cap_state = get_live_state() or {}
@@ -807,15 +814,14 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         bear = idx_state.get("bearish") or {}
         bull_score = float(bull.get("score") or 0)
         bear_score = float(bear.get("score") or 0)
-        if is_ce and bear_score >= 5 and bear_score > bull_score:
+        capit_thr = float(os.environ.get("CAPIT_REVERSAL_THRESHOLD", "7"))
+        if is_ce and bear_score >= capit_thr and bear_score > bull_score:
             print(f"[SCALPER] REJECT entry (B2.6): {idx} BUY CE blocked — "
-                  f"BEARISH capitulation score {bear_score} (bull {bull_score}) — "
-                  f"verdict {bear.get('verdict')}")
+                  f"BEARISH capit {bear_score} (thr {capit_thr})")
             return False
-        if not is_ce and bull_score >= 5 and bull_score > bear_score:
+        if not is_ce and bull_score >= capit_thr and bull_score > bear_score:
             print(f"[SCALPER] REJECT entry (B2.6): {idx} BUY PE blocked — "
-                  f"BULLISH capitulation score {bull_score} (bear {bear_score}) — "
-                  f"verdict {bull.get('verdict')}")
+                  f"BULLISH capit {bull_score} (thr {capit_thr})")
             return False
     except Exception:
         pass
@@ -924,7 +930,11 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
     #   ANTI_COUNTER_DISABLED=1        kill switch
     #   ANTI_COUNTER_MOVE_PCT=0.4      threshold % move (default 0.4)
     #   ANTI_COUNTER_PROB_BYPASS=65    prob ≥ this skips the gate
-    if engine is not None and os.environ.get("ANTI_COUNTER_DISABLED", "").strip() not in ("1", "true", "on"):
+    # 2026-06-08 v2: DEFAULT NOW OFF. User feedback: "trades hi ruk gaye hai".
+    # G16 was blocking legitimate reversal entries during rallies — exactly
+    # the setups that catch 100+ pt swings. Damage control handles bad ones.
+    # Set ANTI_COUNTER_ENABLED=on to re-enable.
+    if engine is not None and os.environ.get("ANTI_COUNTER_ENABLED", "").strip() in ("1", "true", "on"):
         try:
             move_thresh = float(os.environ.get("ANTI_COUNTER_MOVE_PCT", "0.4"))
             # Default lowered 65→60 (2026-06-05): faster fires when conviction
