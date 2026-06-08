@@ -197,13 +197,14 @@ def _detect_tf_structure(candles: List[Dict], fractal: int = 2) -> str:
 
 
 # ── Per-stock scan ────────────────────────────────────────────────────
-def scan_one_deep(kite, stock: Dict) -> Optional[Dict]:
+def scan_one_deep(kite, stock: Dict, fast: bool = True) -> Optional[Dict]:
     """Comprehensive deep-dive analysis via stock_analyzer.
     Returns ~60-field dict — Use scan_one() for legacy summary format.
+    fast=True (default for bulk scan): skips intraday TF + futures fetch.
     """
     try:
         from stock_analyzer import analyze
-        return analyze(kite, stock)
+        return analyze(kite, stock, fast=fast)
     except Exception as e:
         print(f"[FNO-SCAN] deep analyze error for {stock.get('symbol')}: {e}")
         return None

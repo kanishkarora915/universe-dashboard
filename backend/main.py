@@ -2435,7 +2435,8 @@ async def fno_analyze_live(symbol: str):
         match = next((s for s in universe if s["symbol"].upper() == symbol.upper()), None)
         if not match:
             return JSONResponse({"ok": False, "error": f"symbol {symbol} not in F&O universe"}, status_code=404)
-        result = _sa.analyze(kite, match)
+        # Live click-to-detail = full analysis (intraday TFs + futures)
+        result = _sa.analyze(kite, match, fast=False)
         if not result:
             return JSONResponse({"ok": False, "error": "analysis failed"}, status_code=500)
         return {"ok": True, "deep": result}

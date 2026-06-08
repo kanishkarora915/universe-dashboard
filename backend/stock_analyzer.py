@@ -287,8 +287,13 @@ def _resolve_futures_token(kite, symbol: str) -> Optional[Dict]:
 
 
 # ── MAIN ANALYZE ─────────────────────────────────────────────────────
-def analyze(kite, stock: Dict) -> Optional[Dict]:
-    """Comprehensive analysis. Returns ~60-field dict or None on failure."""
+def analyze(kite, stock: Dict, fast: bool = False) -> Optional[Dict]:
+    """Comprehensive analysis. Returns ~60-field dict or None on failure.
+
+    fast=True: skip intraday TF + futures fetch (used by bulk scanner).
+              Cuts per-stock from ~6s to ~1.5s (4-5x faster scan).
+              Click-to-detail still calls with fast=False for full data.
+    """
     if kite is None or not stock.get("token"):
         return None
 
@@ -301,10 +306,15 @@ def analyze(kite, stock: Dict) -> Optional[Dict]:
         if not d_candles or len(d_candles) < 30:
             return None
 
-        # Intraday (best-effort; may fail for newly-listed)
-        d1h_candles = _load_history(kite, token, "60minute", days=15)
-        d15m_candles = _load_history(kite, token, "15minute", days=5)
-        d5m_candles = _load_history(kite, token, "5minute", days=2)
+        # Intraday — heavy if many stocks; skip in fast mode
+        if fast:
+            d1h_candles = []
+            d15m_candles = []
+            d5m_candles = []
+        else:
+            d1h_candles = _load_history(kite, token, "60minute", days=15)
+            d15m_candles = _load_history(kite, token, "15minute", days=5)
+            d5m_candles = _load_history(kite, token, "5minute", days=2)
 
         closes = [c["close"] for c in d_candles]
         cur = closes[-1]
@@ -489,9 +499,10 @@ def analyze(kite, stock: Dict) -> Optional[Dict]:
             "trend": vol_trend,
         }
 
-        # ── FUTURES ──
+        # ── FUTURES — skip in fast mode (bulk scanner) ──
         fut_block = None
-        try:
+        if not fast:
+          try:
             fut_inst = _resolve_futures_token(kite, symbol)
             if fut_inst:
                 fut_token = fut_inst["instrument_token"]
@@ -535,7 +546,7 @@ def analyze(kite, stock: Dict) -> Optional[Dict]:
                     "oi_buildup": fut_oi_buildup,
                     "lot_size": fut_inst.get("lot_size"),
                 }
-        except Exception as e:
+          except Exception as e:
             print(f"[STOCK-ANALYZE] futures block err for {symbol}: {e}")
 
         # ── PATTERNS ──
