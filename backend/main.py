@@ -2407,13 +2407,38 @@ async def fno_watchlist(top: int = 15):
 
 @app.get("/api/fno/stock/{symbol}")
 async def fno_stock_detail(symbol: str):
-    """Full scan detail for one F&O stock."""
+    """Full scan detail for one F&O stock — includes deep analysis."""
     try:
         import fno_scanner as _fno
         detail = _fno.get_stock_detail(symbol)
         if not detail:
             return JSONResponse({"ok": False, "error": f"no data for {symbol}"}, status_code=404)
-        return {"ok": True, "stock": detail}
+        # If deep analysis attached, return both summary + deep
+        deep = detail.pop("_deep", None) if isinstance(detail, dict) else None
+        return {"ok": True, "stock": detail, "deep": deep}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/fno/analyze/{symbol}")
+async def fno_analyze_live(symbol: str):
+    """Force fresh comprehensive analysis for one symbol (bypasses scan cache).
+    Calls stock_analyzer directly. Useful for on-demand deep dive.
+    """
+    if engine is None or not session.get("kite"):
+        return JSONResponse({"ok": False, "error": "engine/kite not ready"}, status_code=400)
+    try:
+        import fno_universe as _u
+        import stock_analyzer as _sa
+        kite = session["kite"]
+        universe = _u.get_fno_symbols(kite)
+        match = next((s for s in universe if s["symbol"].upper() == symbol.upper()), None)
+        if not match:
+            return JSONResponse({"ok": False, "error": f"symbol {symbol} not in F&O universe"}, status_code=404)
+        result = _sa.analyze(kite, match)
+        if not result:
+            return JSONResponse({"ok": False, "error": "analysis failed"}, status_code=500)
+        return {"ok": True, "deep": result}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 

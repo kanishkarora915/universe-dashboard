@@ -197,8 +197,21 @@ def _detect_tf_structure(candles: List[Dict], fractal: int = 2) -> str:
 
 
 # ── Per-stock scan ────────────────────────────────────────────────────
+def scan_one_deep(kite, stock: Dict) -> Optional[Dict]:
+    """Comprehensive deep-dive analysis via stock_analyzer.
+    Returns ~60-field dict — Use scan_one() for legacy summary format.
+    """
+    try:
+        from stock_analyzer import analyze
+        return analyze(kite, stock)
+    except Exception as e:
+        print(f"[FNO-SCAN] deep analyze error for {stock.get('symbol')}: {e}")
+        return None
+
+
 def scan_one(kite, stock: Dict) -> Optional[Dict]:
-    """Scan one stock — pull history, compute everything, return result dict."""
+    """Scan one stock — pull history, compute everything, return result dict.
+    Legacy summary format. Use scan_one_deep for full analysis."""
     try:
         from historical_loader import load_index_history
 
@@ -372,14 +385,51 @@ def run_full_scan(kite, max_symbols: Optional[int] = None) -> Dict:
     if max_symbols:
         universe = universe[:max_symbols]
 
-    print(f"[FNO-SCAN] starting full scan of {len(universe)} stocks")
+    use_deep = os.environ.get("FNO_DEEP_ANALYSIS", "on").lower() != "off"
+    print(f"[FNO-SCAN] starting {'DEEP' if use_deep else 'summary'} scan of {len(universe)} stocks")
     start = time.time()
     results = []
 
     for i, stock in enumerate(universe):
-        r = scan_one(kite, stock)
-        if r:
-            results.append(r)
+        if use_deep:
+            r_deep = scan_one_deep(kite, stock)
+            # Flatten deep analysis into the summary format for ranking compatibility
+            if r_deep:
+                pred = r_deep.get("prediction", {})
+                trend = r_deep.get("trend", {})
+                lvl = r_deep.get("levels", {})
+                p = r_deep.get("price", {})
+                vol = r_deep.get("volatility", {})
+                r = {
+                    "symbol": r_deep["symbol"],
+                    "current_price": p.get("price"),
+                    "prev_close": p.get("prev_close"),
+                    "moved_today_pct": p.get("moved_pct"),
+                    "trend_200d": trend.get("200d_trend", "RANGE"),
+                    "trend_strength": trend.get("200d_strength", 0),
+                    "atr_14d": vol.get("atr_14d"),
+                    "atr_pct": vol.get("atr_pct"),
+                    "nearest_support": lvl.get("nearest_support"),
+                    "nearest_resistance": lvl.get("nearest_resistance"),
+                    "dist_to_support_pct": lvl.get("dist_to_support_pct"),
+                    "dist_to_resistance_pct": lvl.get("dist_to_resistance_pct"),
+                    "day_structure": trend.get("struct_1d", "UNKNOWN"),
+                    "moved_in_atr_units": pred.get("moved_in_atr_units"),
+                    "remaining_atr_room": pred.get("room_atr_up") or pred.get("room_atr_down"),
+                    "predicted_direction": pred.get("direction"),
+                    "predicted_target": pred.get("target_3d"),
+                    "predicted_move_pct": round(((pred.get("target_3d") or 0) - p.get("price", 0)) / p.get("price", 1) * 100, 2) if pred.get("target_3d") and p.get("price") else None,
+                    "predicted_sl": pred.get("stop_loss"),
+                    "risk_reward": pred.get("risk_reward"),
+                    "confidence_score": pred.get("confidence_score"),
+                    "reason": pred.get("reason"),
+                    "_deep": r_deep,  # full data attached
+                }
+                results.append(r)
+        else:
+            r = scan_one(kite, stock)
+            if r:
+                results.append(r)
         if (i + 1) % 20 == 0:
             print(f"[FNO-SCAN] progress: {i+1}/{len(universe)}")
         # Tiny pause to not hammer Kite REST
