@@ -231,6 +231,17 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         print(f"[STARTUP] autologin daemon spawn failed: {_e}")
 
+    # ── F&O Scanner — daily 1-3 day swing analysis for ~190 F&O stocks ──
+    # User-requested 2026-06-08. Scans full F&O universe at 08:00 IST,
+    # caches result. Detects bull/bear setups, predicted target + R/R.
+    # Runs ONCE per day — minimal CPU impact.
+    try:
+        import fno_scanner as _fno
+        _fno.start_daily_scan_thread(lambda: session.get("kite"))
+        print("[STARTUP] fno-scanner daemon spawned")
+    except Exception as _e:
+        print(f"[STARTUP] fno-scanner spawn failed: {_e}")
+
     # ── Market context (200-day chart structure) refresh thread ──
     # Pulls 200d daily candles via Kite REST, computes S/R zones,
     # 200d trend, ATR. Caches per-index. Used as ADDITIVE bonus to
@@ -2376,6 +2387,65 @@ async def market_context_score(idx: str = "NIFTY", action: str = "BUY CE"):
             "spot": spot,
             "context": _mc.get_context(idx, spot, action),
         }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── F&O SCANNER ENDPOINTS ──────────────────────────────────────────
+@app.get("/api/fno/watchlist")
+async def fno_watchlist(top: int = 15):
+    """Ranked F&O watchlist: top bullish + top bearish setups for next
+    1-3 sessions. Built from latest 08:00 IST scan of ~190 F&O stocks."""
+    try:
+        import fno_scanner as _fno
+        ranked = _fno.ranked_watchlist(top_n=top)
+        meta = _fno.latest_scan_meta()
+        return {"ok": True, "meta": meta, **ranked}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/fno/stock/{symbol}")
+async def fno_stock_detail(symbol: str):
+    """Full scan detail for one F&O stock."""
+    try:
+        import fno_scanner as _fno
+        detail = _fno.get_stock_detail(symbol)
+        if not detail:
+            return JSONResponse({"ok": False, "error": f"no data for {symbol}"}, status_code=404)
+        return {"ok": True, "stock": detail}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/fno/scan")
+async def fno_scan_force(max_symbols: int = 0):
+    """Force a full F&O scan now. Useful after deploy or for manual refresh.
+    Pass max_symbols=N to limit (for testing). 0 = full universe."""
+    if engine is None or not session.get("kite"):
+        return JSONResponse({"ok": False, "error": "engine/kite not ready"}, status_code=400)
+    try:
+        import fno_scanner as _fno
+        kite = session["kite"]
+        # Run in background so request doesn't block
+        import threading
+        def _run():
+            try:
+                _fno.run_full_scan(kite, max_symbols=max_symbols or None)
+            except Exception as e:
+                print(f"[FNO-SCAN] background scan err: {e}")
+        threading.Thread(target=_run, daemon=True, name="fno-scan-manual").start()
+        return {"ok": True, "message": "scan started in background — check /api/fno/watchlist in 60-90s"}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/fno/universe")
+async def fno_universe_status():
+    """Diagnostic for F&O universe cache."""
+    try:
+        import fno_universe as _u
+        return _u.diagnostics()
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
