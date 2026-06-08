@@ -9,6 +9,7 @@ import WhyNoTradePanel from "./components/WhyNoTradePanel";
 import SmartBiasIndicator from "./components/SmartBiasIndicator";
 import ForecastCard from "./components/ForecastCard";
 import StructureBadge from "./StructureBadge";
+import EngineStatusBadge from "./EngineStatusBadge";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -394,6 +395,8 @@ export default function PnLTracker() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* Engine live indicator — WS + auto-trade health (2026-06-08) */}
+      <EngineStatusBadge tab="main" />
       {/* Phase 6 — live trend structure badge per index */}
       <StructureBadge indices={["NIFTY", "BANKNIFTY"]} />
 

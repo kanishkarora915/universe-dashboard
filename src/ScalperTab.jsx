@@ -26,6 +26,7 @@ import LivePositionChart from "./components/LivePositionChart";
 import ReversalCockpit from "./components/ReversalCockpit";
 import SmartBiasIndicator from "./components/SmartBiasIndicator";
 import ForecastCard from "./components/ForecastCard";
+import EngineStatusBadge from "./EngineStatusBadge";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -539,6 +540,8 @@ export default function ScalperTab() {
                 Own capital · Live tick LTP (2s) · Manual exit · Smart SL toggle
               </div>
             </div>
+            {/* Engine live indicator — WS + auto-trade health (2026-06-08) */}
+            <EngineStatusBadge tab="scalper" />
             {/* Phase 6 — live structure badge per index */}
             <StructureBadge indices={["NIFTY", "BANKNIFTY"]} />
           </div>
