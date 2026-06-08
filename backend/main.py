@@ -3727,6 +3727,37 @@ async def trap_verdict():
     return _get_or_cache("trap_verdict", lambda: engine.get_trap_verdict(), ttl=60)
 
 
+@app.get("/api/debug/verdict-compute")
+async def debug_verdict_compute():
+    """DEBUG (2026-06-08): force a fresh _compute_trap_verdict() call
+    and surface any exception. /api/trap/verdict returns stale cached
+    value when fresh compute raises — this endpoint bypasses the cache
+    so we can SEE the actual failure.
+    """
+    if engine is None:
+        return JSONResponse({"error": "engine is None"}, status_code=400)
+    import traceback as _tb
+    try:
+        # Use force_recompute=True to bypass the engine's 15s cache
+        result = engine.get_trap_verdict(force_recompute=True)
+        return {
+            "ok": True,
+            "result_keys": list(result.keys()) if isinstance(result, dict) else None,
+            "nifty_action": (result.get("nifty", {}) or {}).get("action"),
+            "nifty_prob": (result.get("nifty", {}) or {}).get("winProbability"),
+            "banknifty_action": (result.get("banknifty", {}) or {}).get("action"),
+            "banknifty_prob": (result.get("banknifty", {}) or {}).get("winProbability"),
+            "result": result,
+        }
+    except Exception as e:
+        return JSONResponse({
+            "ok": False,
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "traceback": _tb.format_exc().split("\n")[-15:],
+        }, status_code=500)
+
+
 @app.get("/api/trap/history")
 async def trap_history():
     """Get fingerprint history (last 7 days)."""
