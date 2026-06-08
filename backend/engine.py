@@ -520,12 +520,25 @@ class MarketEngine:
         STAGE_COOLDOWN_SEC = 30
 
         # Stage durations (seconds of stale time before stage fires)
-        # 2026-06-08: tightened — full escalation in 90s (was 210s).
-        # Self-kill (Stage 6 in handler) fires 90s after Stage 5 = total 180s.
-        STAGE_2_AT = 30   # was 45
-        STAGE_3_AT = 60   # was 90
-        STAGE_4_AT = 90   # was 150
-        STAGE_5_AT = 120  # was 210
+        # 2026-06-08 v2: BASICS-LEVEL fix. kiteconnect's KiteTicker uses
+        # Twisted reactor — a SINGLETON per Python process that can only
+        # run ONCE. Once disconnected (network blip / Kite server restart
+        # / overnight idle), ticker.connect() in same process silently
+        # fails because the reactor is dead. ONLY fix that works:
+        # new Python process = new reactor.
+        #
+        # Previous stages 1-4 (soft restart, resubscribe, token reload,
+        # fresh login) all run in the SAME process with the SAME dead
+        # reactor — they CANNOT work. They were cosmetic bandaids.
+        #
+        # New behavior: Stage 1 still tries soft restart (in case it's a
+        # transient blip), but stages 2-5 collapsed into one — at 60s
+        # stale, self-kill. Render auto-restarts → fresh process →
+        # fresh reactor → ticker connects.
+        STAGE_2_AT = 60   # collapsed: this is now self-kill threshold
+        STAGE_3_AT = 60   # (unused — kept for code compat)
+        STAGE_4_AT = 60   # (unused)
+        STAGE_5_AT = 60   # (unused)
 
         def _send_telegram(msg, key):
             try:
@@ -690,50 +703,28 @@ class MarketEngine:
                             print(f"[WS-WATCHDOG] Stage 1 FAILED: {e}")
                             _log_event("ws_stage_1_failed", error=str(e))
 
-                    # ── Stage 2: restart + force re-subscribe ──
-                    elif (current_stage == 1
-                          and stale_duration >= STAGE_2_AT
-                          and cooldown_ok):
+                    # ── Stages 2-4 COLLAPSED (2026-06-08 v2) ──
+                    # Per Twisted reactor analysis: soft restarts can't fix
+                    # a dead reactor in the same process. Jumping straight
+                    # to self-kill if Stage 1 restart didn't recover within
+                    # 60s. All branches below kept as no-ops for safety
+                    # (current_stage never reaches them now).
+                    elif False:  # disabled
                         current_stage = 2
                         last_action_ts = now
-                        print(f"[WS-WATCHDOG] STAGE 2: restart + force re-subscribe "
-                              f"(stale {stale_duration:.0f}s, Stage 1 didn't recover)")
-                        _send_telegram(
-                            f"⚠️ *WS Stage 2* — restart + resubscribe "
-                            f"(stale {stale_duration:.0f}s)",
-                            key="ws_stage_2"
-                        )
-                        _log_event("ws_stage_2_resubscribe",
-                                   stale_sec=round(stale_duration, 1))
                         try:
                             self._restart_ticker()
-                            _time.sleep(2)  # give ticker time to connect
+                            _time.sleep(2)
                             _force_resubscribe()
-                        except Exception as e:
-                            print(f"[WS-WATCHDOG] Stage 2 FAILED: {e}")
-                            _log_event("ws_stage_2_failed", error=str(e))
+                        except Exception:
+                            pass
 
-                    # ── Stage 3: reload token from /data cache ──
-                    elif (current_stage == 2
-                          and stale_duration >= STAGE_3_AT
-                          and cooldown_ok):
+                    elif False:  # disabled
                         current_stage = 3
                         last_action_ts = now
-                        print(f"[WS-WATCHDOG] STAGE 3: reload token from cache "
-                              f"(stale {stale_duration:.0f}s)")
-                        _send_telegram(
-                            f"⚠️ *WS Stage 3* — reloading cached token "
-                            f"(stale {stale_duration:.0f}s)",
-                            key="ws_stage_3"
-                        )
-                        _log_event("ws_stage_3_token_reload",
-                                   stale_sec=round(stale_duration, 1))
                         _reload_token_from_cache()
 
-                    # ── Stage 4: full fresh Kite login ──
-                    elif (current_stage == 3
-                          and stale_duration >= STAGE_4_AT
-                          and cooldown_ok):
+                    elif False:  # disabled — see Stage 2 collapse
                         current_stage = 4
                         last_action_ts = now
                         print(f"[WS-WATCHDOG] STAGE 4: full fresh Kite login "
@@ -747,21 +738,10 @@ class MarketEngine:
                                    stale_sec=round(stale_duration, 1))
                         _trigger_fresh_login()
 
-                    # ── Stage 5: CRITICAL — alert Telegram ──
-                    elif (current_stage == 4
-                          and stale_duration >= STAGE_5_AT
-                          and cooldown_ok):
+                    # ── Stage 5 also collapsed — direct path to self-kill ──
+                    elif False:  # disabled
                         current_stage = 5
                         last_action_ts = now
-                        print(f"[WS-WATCHDOG] STAGE 5 CRITICAL: all 4 auto-recovery "
-                              f"stages failed (stale {stale_duration:.0f}s)")
-                        _send_telegram(
-                            f"🚨 *WS Stage 5 CRITICAL*\n"
-                            f"Auto-recovery stages 1-4 failed.\n"
-                            f"Stale {stale_duration:.0f}s. Stage 6 in 90s "
-                            f"(process self-kill → Render auto-restart).",
-                            key="ws_stage_5_critical"
-                        )
                         _log_event("ws_stage_5_critical",
                                    stale_sec=round(stale_duration, 1))
 
@@ -784,28 +764,32 @@ class MarketEngine:
                     # stages of soft recovery attempts (~5 minutes total).
                     # Cannot accidentally fire — needs the system to be truly
                     # stuck for minutes.
-                    STAGE_6_AT = STAGE_5_AT + 90  # 90s after Stage 5 fires
-                    if (current_stage == 5
-                            and stale_duration >= STAGE_6_AT
+                    # ── ROOT-CAUSE FIX (2026-06-08 v2) ──
+                    # Per Twisted reactor analysis: soft restart (Stage 1)
+                    # may work for true transient blips. If it doesn't
+                    # recover within 60s, reactor is dead and ONLY new
+                    # process can fix it. Fire self-kill at 60s stale.
+                    STAGE_KILL_AT = 60  # was STAGE_5_AT + 90 = 210
+                    if (current_stage >= 1
+                            and stale_duration >= STAGE_KILL_AT
                             and cooldown_ok):
-                        current_stage = 6
                         last_action_ts = now
-                        print(f"[WS-WATCHDOG] STAGE 6 SELF-KILL: stages 1-5 all "
-                              f"failed (stale {stale_duration:.0f}s) — "
-                              f"triggering process exit for Render auto-restart")
+                        print(f"[WS-WATCHDOG] SELF-KILL: Stage 1 restart "
+                              f"didn't recover (stale {stale_duration:.0f}s). "
+                              f"Twisted reactor likely dead — process exit "
+                              f"for Render fresh-container restart.")
                         _send_telegram(
-                            f"💀 *WS Stage 6 SELF-KILL*\n"
-                            f"Stages 1-5 all failed.\n"
-                            f"Process exit triggered — Render will auto-restart.\n"
-                            f"Expected back online in 60-90 sec.",
-                            key="ws_stage_6_selfkill"
+                            f"💀 *WS SELF-KILL*\n"
+                            f"Soft restart failed (stale {stale_duration:.0f}s).\n"
+                            f"Reactor likely dead → process exit.\n"
+                            f"Render auto-restart in 60-90 sec.",
+                            key="ws_selfkill"
                         )
-                        _log_event("ws_stage_6_selfkill",
+                        _log_event("ws_selfkill",
                                    stale_sec=round(stale_duration, 1))
-                        # Brief pause so Telegram fires before exit
-                        _time.sleep(2)
+                        _time.sleep(2)  # let Telegram fire
                         import os as _os_exit
-                        _os_exit._exit(1)  # Bypass cleanup, immediate exit
+                        _os_exit._exit(1)  # Render auto-restarts
 
                     # ── Already at Stage 6 or post-action settle ──
                     # If recovery happens organically, healthy branch fires

@@ -274,6 +274,61 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         print(f"[STARTUP] stale-token-reaper spawn failed: {_e}")
 
+    # ── DAILY PROCESS RESTART daemon (2026-06-08 root-cause fix) ──
+    # Twisted reactor (used by kiteconnect KiteTicker) is a SINGLETON
+    # per Python process — cannot restart after disconnect. Overnight
+    # network blip / Kite WS server restart kills the reactor → next
+    # morning ticker.connect() silently fails despite valid token.
+    # ONLY fix: new process.
+    #
+    # This daemon fires os._exit(1) at 08:30 IST every trading day
+    # (before 8:50 auto-login, before 9:15 market open). Render
+    # auto-restarts → fresh Python process → fresh reactor → ticker
+    # connects clean every single morning. ZERO drift risk.
+    try:
+        import threading as _th
+        import time as _t_proc
+        import pytz as _pytz_proc
+        from datetime import datetime as _dt_proc
+
+        def _daily_restart_loop():
+            _IST = _pytz_proc.timezone("Asia/Kolkata")
+            last_restart_date = None
+            print("[DAILY-RESTART] daemon armed — fires at 08:30 IST weekdays")
+            while True:
+                try:
+                    now = _dt_proc.now(_IST)
+                    today_iso = now.strftime("%Y-%m-%d")
+                    # Weekday (Mon-Fri) + 08:30-08:35 window + not yet today
+                    is_weekday = now.weekday() <= 4
+                    in_window = (now.hour == 8 and 30 <= now.minute < 35)
+                    if is_weekday and in_window and last_restart_date != today_iso:
+                        print(f"[DAILY-RESTART] {now.isoformat()} — "
+                              f"firing daily process restart (Twisted reactor refresh)")
+                        try:
+                            import telegram_alerts
+                            if telegram_alerts.is_enabled():
+                                telegram_alerts.send(
+                                    "🔄 *Daily 8:30 IST process restart*\n"
+                                    "Fresh process for fresh Twisted reactor.\n"
+                                    "Back online in 60-90 sec.",
+                                    key="daily_restart",
+                                )
+                        except Exception:
+                            pass
+                        last_restart_date = today_iso
+                        _t_proc.sleep(2)
+                        import os as _os_dr
+                        _os_dr._exit(0)  # clean exit → Render restart
+                except Exception as e:
+                    print(f"[DAILY-RESTART] loop error: {e}")
+                _t_proc.sleep(30)  # check every 30s
+
+        _th.Thread(target=_daily_restart_loop, daemon=True,
+                   name="daily-restart").start()
+    except Exception as _e:
+        print(f"[STARTUP] daily-restart spawn failed: {_e}")
+
     # ── Disk auto-prune daemon (2026-06-04) ──
     # Runs once at startup + then daily at 5 AM IST (before token reaper).
     # Calls the same logic as POST /api/admin/disk/cleanup actions
