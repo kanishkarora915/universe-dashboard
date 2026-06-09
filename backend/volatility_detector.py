@@ -255,16 +255,25 @@ def build_recommendations(regime, time_window, vix, atr_ratio, expiry):
         rec["sl_multiplier"] = 0.7  # tighter SL on expiry (theta crush)
         rec["target_multiplier"] = 0.7  # smaller targets (less time)
         rec["qty_multiplier"] = 0.5
-        # User-configurable: allow PnL trades on expiry if user opts in.
-        # Default ON (safer), but can be overridden via env var or DB toggle.
-        # Env: ALLOW_PNL_ON_EXPIRY=1 → don't pause PnL on expiry days.
+        # 2026-06-09: DEFAULT FLIPPED — allow PnL on expiry by default.
+        # User: "aur volatile hai toh kya, let system trade, will see how
+        # smart it is and how fast react".
+        # Trust trade engine + damage control. Expiry-day risk handled by:
+        #   1. expiry_day_guard.py (surgical Tuesday NIFTY block, env on)
+        #   2. min_prob raised to 70% on expiry (this module)
+        #   3. qty multiplier 0.5 (this module)
+        #   4. EARLY_CUT / BREAKEVEN damage control (scalper_mode)
+        # Set BLOCK_PNL_ON_EXPIRY=1 to restore old "block all main" behavior.
         import os
-        allow_pnl_expiry = os.getenv("ALLOW_PNL_ON_EXPIRY", "").lower() in ("1", "true", "yes")
-        if not allow_pnl_expiry:
-            rec["main_pnl_allowed"] = False  # only scalper on expiry
-            rec["warnings"].append("EXPIRY DAY — main P&L paused, scalper only with tight SL")
+        block_pnl_expiry = os.getenv("BLOCK_PNL_ON_EXPIRY", "").lower() in ("1", "true", "yes")
+        if block_pnl_expiry:
+            rec["main_pnl_allowed"] = False
+            rec["warnings"].append("EXPIRY DAY — main P&L paused (legacy block)")
         else:
-            rec["warnings"].append("EXPIRY DAY — PnL allowed (user override) but min_prob 70%, qty 50%")
+            # Tightened threshold + smaller qty, but allow firing.
+            rec["min_probability"] = max(rec.get("min_probability", 50), 70)
+            rec["qty_multiplier"] = min(rec.get("qty_multiplier", 1.0), 0.5)
+            rec["warnings"].append("EXPIRY DAY — trading enabled, min_prob 70%, qty 50%")
 
     # ── Time-window adjustments ──
     if time_window == "OPENING_FIRST_5MIN":
