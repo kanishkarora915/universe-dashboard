@@ -86,16 +86,21 @@ BUYER_DEFAULTS = {
 
 
 def init_db():
+    # 2026-06-10: default changed HEDGER → BUYER
+    # System is designed for option buying. HEDGER default caused Main mode
+    # to use restrictive seller/hedger thresholds (10m cooldown, 30m max
+    # hold) and effectively block all entries. Fresh installs / DB resets
+    # now correctly start in BUYER mode.
     conn = sqlite3.connect(str(DB_PATH))
     conn.execute("""
         CREATE TABLE IF NOT EXISTS buyer_mode_state (
             id INTEGER PRIMARY KEY CHECK (id=1),
-            mode TEXT DEFAULT 'HEDGER',
+            mode TEXT DEFAULT 'BUYER',
             updated_at TEXT
         )
     """)
     conn.execute(
-        "INSERT OR IGNORE INTO buyer_mode_state (id, mode, updated_at) VALUES (1, 'HEDGER', ?)",
+        "INSERT OR IGNORE INTO buyer_mode_state (id, mode, updated_at) VALUES (1, 'BUYER', ?)",
         (datetime.now(IST).isoformat(),)
     )
     # Custom overrides table (advanced users can tune individual thresholds)
@@ -116,7 +121,7 @@ def get_mode():
     conn = sqlite3.connect(str(DB_PATH))
     try:
         row = conn.execute("SELECT mode FROM buyer_mode_state WHERE id=1").fetchone()
-        return row[0] if row else "HEDGER"
+        return row[0] if row else "BUYER"
     finally:
         conn.close()
 
