@@ -1315,9 +1315,11 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
     except Exception as _e:
         print(f"[SCALPER] smart_sl wrap failed (keeping legacy): {_e}")
 
-    # Lot size lookup (exchange-fixed) — current as of 2025
-    lot_sizes = {"NIFTY": 75, "BANKNIFTY": 35}
-    lot_size = lot_sizes.get(idx, 75)
+    # Lot size — VERIFIED 2026-06-10 against Kite live NFO instruments.
+    # NSE revised: NIFTY 75→65, BANKNIFTY 35→30 (current as of June 2026).
+    # OLD hardcoded 75/35 caused #267 to deploy with wrong qty calc.
+    lot_sizes = {"NIFTY": 65, "BANKNIFTY": 30}
+    lot_size = lot_sizes.get(idx, 65)
 
     user_qty = cfg.get("nifty_qty") if idx == "NIFTY" else cfg.get("banknifty_qty")
     if user_qty and user_qty > 0:

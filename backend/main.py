@@ -2500,7 +2500,7 @@ async def check_lot_sizes():
             out[name] = futures[:3] if futures else "no_active_futures"
 
         # Hardcoded values in scalper_mode.log_scalp_trade (line ~1319)
-        out["_hardcoded_in_scalper"] = {"NIFTY": 75, "BANKNIFTY": 35}
+        out["_hardcoded_in_scalper"] = {"NIFTY": 65, "BANKNIFTY": 30}
         out["_now"] = datetime.now(IST).isoformat()
         return out
     except Exception as e:
@@ -6724,7 +6724,7 @@ async def ai_risk_calc(payload: dict):
         risk_pct = float(payload.get("riskPct", 2)) / 100
         entry = float(payload.get("entry", 0))
         sl = float(payload.get("sl", 0))
-        lot_size = int(payload.get("lotSize", 75))
+        lot_size = int(payload.get("lotSize", 65))
 
         if entry <= 0 or sl <= 0 or sl >= entry:
             return {"error": "Invalid entry/SL. SL must be below entry."}
@@ -6759,7 +6759,7 @@ async def ai_scenario(payload: dict):
         gamma = float(payload.get("gamma", 0.018))
         theta = float(payload.get("theta", -3))
         hours_held = float(payload.get("hoursHeld", 1))
-        lot_size = int(payload.get("lotSize", 75))
+        lot_size = int(payload.get("lotSize", 65))
         lots = int(payload.get("lots", 1))
 
         spot_change = spot * spot_delta_pct
