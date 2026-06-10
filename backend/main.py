@@ -2466,6 +2466,48 @@ async def fno_scan_force(max_symbols: int = 0):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
+@app.get("/api/admin/check-lot-sizes")
+async def check_lot_sizes():
+    """Check current NIFTY/BANKNIFTY/FINNIFTY futures lot_size DIRECTLY from
+    Kite NFO instruments. Source of truth.
+    """
+    if not session.get("kite"):
+        return JSONResponse({"error": "kite not ready"}, status_code=400)
+    try:
+        kite = session["kite"]
+        instruments = kite.instruments("NFO")
+        from datetime import datetime
+        import pytz
+        IST = pytz.timezone("Asia/Kolkata")
+        today = datetime.now(IST).date()
+
+        out = {}
+        for name in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"):
+            futures = []
+            for inst in instruments:
+                if (inst.get("instrument_type") == "FUT"
+                        and inst.get("name", "").upper() == name):
+                    exp = inst.get("expiry")
+                    exp_date = exp.date() if hasattr(exp, "date") else exp
+                    if exp_date and exp_date >= today:
+                        futures.append({
+                            "tradingsymbol": inst.get("tradingsymbol"),
+                            "expiry": str(exp_date),
+                            "lot_size": inst.get("lot_size"),
+                            "tick_size": inst.get("tick_size"),
+                        })
+            futures.sort(key=lambda f: f["expiry"])
+            out[name] = futures[:3] if futures else "no_active_futures"
+
+        # Hardcoded values in scalper_mode.log_scalp_trade (line ~1319)
+        out["_hardcoded_in_scalper"] = {"NIFTY": 75, "BANKNIFTY": 35}
+        out["_now"] = datetime.now(IST).isoformat()
+        return out
+    except Exception as e:
+        import traceback
+        return JSONResponse({"error": str(e), "trace": traceback.format_exc()[-800:]}, status_code=500)
+
+
 @app.get("/api/fno/universe")
 async def fno_universe_status():
     """Diagnostic for F&O universe cache."""
