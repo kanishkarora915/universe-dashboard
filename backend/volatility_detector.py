@@ -276,18 +276,21 @@ def build_recommendations(regime, time_window, vix, atr_ratio, expiry):
             rec["warnings"].append("EXPIRY DAY — trading enabled, min_prob 70%, qty 50%")
 
     # ── Time-window adjustments ──
+    # 2026-06-10: REMOVED min_prob raises (60 was blocking Main mode).
+    # User principle: smart not strict — trust damage control on exit.
+    # Kept qty_multipliers (smaller position size during chop is sensible).
+    # Kept target_multiplier expand on power hour (catch bigger moves).
     if time_window == "OPENING_FIRST_5MIN":
         rec["trade_allowed"] = False
         rec["warnings"].append("First 5 min — wait for stabilization")
     elif time_window == "LUNCH_CHOP":
-        # TUNED: 70 was over-blocking valid lunch trades. 60 keeps quality
-        # bar high while capturing post-lunch trend setups.
-        rec["min_probability"] = max(rec["min_probability"], 60)  # was 70
-        rec["qty_multiplier"] *= 0.6
-        rec["warnings"].append("Lunch chop — higher conviction needed (60%+)")
+        # min_prob NOT raised (was forcing 60 — blocked legit setups)
+        rec["qty_multiplier"] *= 0.6  # smaller position is sensible safety
+        rec["warnings"].append("Lunch chop — smaller qty (entries still allowed)")
     elif time_window == "POWER_HOUR":
-        rec["min_probability"] = max(rec["min_probability"], 60)
+        # min_prob NOT raised (was forcing 60 — blocked Main mode 14:00+)
         rec["target_multiplier"] *= 1.3  # bigger moves possible
+        rec["warnings"].append("Power hour — bigger targets possible")
     elif time_window in ("PRE_MARKET", "POST_MARKET", "CLOSING"):
         rec["trade_allowed"] = False
         rec["warnings"].append(f"{time_window} — no new trades")
