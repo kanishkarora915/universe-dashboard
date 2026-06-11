@@ -3216,8 +3216,47 @@ async def admin_calibration_audit(days: int = 60):
     """
     import sqlite3 as _sql
     from pathlib import Path as _P
-    out = {"days_window": days, "scalper": {}, "main": {}, "errors": []}
+    out = {"days_window": days, "scalper": {}, "main": {}, "errors": [], "diagnostics": {}}
     _data_dir = _P("/data") if _P("/data").is_dir() else _P(__file__).parent
+    out["diagnostics"]["data_dir"] = str(_data_dir)
+
+    def _diag_db(db_path: str, table: str):
+        """Returns {exists, total_rows, closed_rows, columns, sample_entry_time}."""
+        info = {"path": db_path, "exists": _P(db_path).exists()}
+        if not info["exists"]:
+            return info
+        try:
+            c = _sql.connect(db_path)
+            cols = [r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()]
+            info["columns"] = cols
+            info["total_rows"] = c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            info["closed_rows"] = c.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE status='CLOSED'"
+            ).fetchone()[0]
+            # Sample entry_time format
+            time_col = "entry_time" if "entry_time" in cols else (
+                "open_time" if "open_time" in cols else None)
+            if time_col:
+                row = c.execute(
+                    f"SELECT {time_col} FROM {table} WHERE status='CLOSED' "
+                    f"ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                info["latest_entry_time"] = row[0] if row else None
+                info["time_col_used"] = time_col
+            # Probability column detection
+            for pc in ("probability", "entry_probability", "win_probability"):
+                if pc in cols:
+                    info["prob_col"] = pc
+                    break
+            c.close()
+        except Exception as e:
+            info["error"] = str(e)
+        return info
+
+    out["diagnostics"]["scalper_db"] = _diag_db(
+        str(_data_dir / "scalper_trades.db"), "scalper_trades")
+    out["diagnostics"]["main_db"] = _diag_db(
+        str(_data_dir / "trades.db"), "trades")
 
     def _bucket_query(rows):
         result = []
@@ -3283,43 +3322,55 @@ async def admin_calibration_audit(days: int = 60):
     except Exception as e:
         out["errors"].append(f"scalper: {e}")
 
-    # ── MAIN side ──
+    # ── MAIN side (column-name-aware) ──
     try:
         db = str(_data_dir / "trades.db")
         if not _P(db).exists():
             db = "trades.db"
         c = _sql.connect(db)
+        m_diag = out["diagnostics"]["main_db"]
+        time_col = m_diag.get("time_col_used", "entry_time")
+        prob_col = m_diag.get("prob_col", "probability")
         rows = c.execute(f"""
-            SELECT DATE(entry_time) d, SUM(pnl_rupees) pnl, COUNT(*) n
+            SELECT DATE({time_col}) d, SUM(pnl_rupees) pnl, COUNT(*) n
             FROM trades
-            WHERE status='CLOSED' AND entry_time >= date('now','-{days} days')
+            WHERE status='CLOSED' AND {time_col} >= date('now','-{days} days')
             GROUP BY d HAVING pnl <= -15000 ORDER BY pnl ASC
         """).fetchall()
         out["main"]["loss_15k_days"] = [
             {"date": r[0], "pnl": round(r[1], 0), "n_trades": r[2]} for r in rows
         ]
         out["main"]["loss_15k_days_count"] = len(rows)
-        # WR by bucket (main uses entry_probability not probability)
         rows = c.execute(f"""
             SELECT
                 CASE
-                    WHEN entry_probability < 50 THEN '<50'
-                    WHEN entry_probability < 55 THEN '50-54'
-                    WHEN entry_probability < 60 THEN '55-59'
-                    WHEN entry_probability < 65 THEN '60-64'
-                    WHEN entry_probability < 70 THEN '65-69'
-                    WHEN entry_probability < 80 THEN '70-79'
+                    WHEN {prob_col} < 50 THEN '<50'
+                    WHEN {prob_col} < 55 THEN '50-54'
+                    WHEN {prob_col} < 60 THEN '55-59'
+                    WHEN {prob_col} < 65 THEN '60-64'
+                    WHEN {prob_col} < 70 THEN '65-69'
+                    WHEN {prob_col} < 80 THEN '70-79'
                     ELSE '80+'
                 END as bucket,
                 COUNT(*) as n,
                 SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
                 SUM(pnl_rupees) as total
             FROM trades
-            WHERE status='CLOSED' AND entry_probability > 0
-              AND entry_time >= date('now','-30 days')
+            WHERE status='CLOSED' AND {prob_col} > 0
+              AND {time_col} >= date('now','-30 days')
             GROUP BY bucket ORDER BY bucket
         """).fetchall()
         out["main"]["wr_by_bucket_30d"] = _bucket_query(rows)
+        # Worst 10 days
+        rows = c.execute(f"""
+            SELECT DATE({time_col}) d, SUM(pnl_rupees) pnl, COUNT(*) n
+            FROM trades
+            WHERE status='CLOSED' AND {time_col} >= date('now','-{days} days')
+            GROUP BY d ORDER BY pnl ASC LIMIT 10
+        """).fetchall()
+        out["main"]["worst_10_days"] = [
+            {"date": r[0], "pnl": round(r[1], 0), "n_trades": r[2]} for r in rows
+        ]
         c.close()
     except Exception as e:
         out["errors"].append(f"main: {e}")
