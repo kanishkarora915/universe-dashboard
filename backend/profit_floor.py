@@ -113,11 +113,14 @@ PROFIT_FLOOR_BANDS_NIFTY = [
     (100.0, 1.750),
 ]
 
-# BANKNIFTY bands (shifted +1% to escape bid-ask spread noise)
+# BANKNIFTY bands — 2026-06-11 v3 lowered after #269 + today's ₹33k loss
+# Both trades peaked +2.0-2.3% (just below old +2.5% threshold) → no lock fired
+# New threshold +1.8% catches these while still escaping pure noise.
+# ₹900 BANKNIFTY entry × +1.8% = ₹16.20 move = clearly above bid-ask spread.
 PROFIT_FLOOR_BANDS_BANKNIFTY = [
-    (2.5,   1.000),   # +2.5% peak → BREAKEVEN (was +1.5% — too noisy on BNF)
-    (3.5,   1.010),   # +3.5% peak → +1% locked
-    (4.5,   1.020),   # +4.5% peak → +2% locked
+    (1.8,   1.000),   # +1.8% peak → BREAKEVEN (was +2.5% — slipped through twice)
+    (2.8,   1.010),   # +2.8% peak → +1% locked
+    (4.0,   1.020),   # +4.0% peak → +2% locked
     (6.0,   1.025),
     (9.0,   1.040),
     (13.0,  1.060),
