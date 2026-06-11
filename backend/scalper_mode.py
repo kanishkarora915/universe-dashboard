@@ -1337,28 +1337,54 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
         qty = scaled_lots * lot_size
         lots = scaled_lots
 
-    # ── OVERCONFIDENCE PENALTY (2026-06-11 — data-driven) ──
-    # 60d audit: scalper trades at 80+% verdict prob had 20% WR
-    # (₹-69,268 total loss). 70-79% bucket: 46% WR (₹-52,723 loss).
-    # Sweet spot is 65-69% (63.6% WR, +₹1,04,880 profit).
-    # Action: trades above 75% verdict get HALVED size — the
-    # "raw_prob inverse" warning the engine documents.
-    # Override: SCALPER_OVERCONF_DISABLED=1, SCALPER_OVERCONF_THRESHOLD=75
+    # ── TIERED CONVICTION SIZING (2026-06-11 v2 — data-driven) ──
+    # 60d audit revealed asymmetric WR/PnL by verdict bucket:
+    #   55-59%:  37.5% WR  -₹54k    UNDER-confidence trap
+    #   60-64%:  60.0% WR  -₹25k    decent WR but ratio bad
+    #   65-69%:  63.6% WR  +₹105k   ⭐ SWEET SPOT (boost size!)
+    #   70-79%:  46.4% WR  -₹53k    OVER-confidence trap
+    #   80+%:    20.0% WR  -₹69k    HEAVY over-confidence trap
+    #
+    # Strategy: boost sweet spot, penalize over/under confidence.
+    # Override: SCALPER_TIERED_SIZING_DISABLED=1
     try:
         import os as _os_oc
-        if _os_oc.environ.get("SCALPER_OVERCONF_DISABLED", "").strip() not in ("1","true","on"):
-            oc_threshold = int(_os_oc.environ.get("SCALPER_OVERCONF_THRESHOLD", "75"))
-            oc_multiplier = float(_os_oc.environ.get("SCALPER_OVERCONF_MULT", "0.5"))
-            if probability and probability >= oc_threshold:
-                oc_qty = int(qty * oc_multiplier)
-                oc_lots = max(1, oc_qty // lot_size)
-                old_qty = qty
-                qty = oc_lots * lot_size
-                lots = oc_lots
-                print(f"[SCALPER] OVERCONF_PENALTY · prob={probability}% ≥ {oc_threshold}% "
-                      f"→ qty {old_qty} → {qty} ({oc_multiplier}x)")
+        if _os_oc.environ.get("SCALPER_TIERED_SIZING_DISABLED", "").strip() not in ("1","true","on"):
+            if probability and probability > 0:
+                p = probability
+                # Tiered multiplier from audit data
+                if 65 <= p <= 69:
+                    conv_mult = 1.5     # SWEET SPOT — boost
+                    tier_label = "SWEET_SPOT"
+                elif 60 <= p <= 64:
+                    conv_mult = 1.0     # decent
+                    tier_label = "DECENT"
+                elif 70 <= p <= 74:
+                    conv_mult = 1.0     # mild over-trap
+                    tier_label = "MILD_OVER"
+                elif 75 <= p <= 79:
+                    conv_mult = 0.7     # over-trap zone
+                    tier_label = "OVER_TRAP"
+                elif p >= 80:
+                    conv_mult = 0.5     # heavy over-trap (was OVERCONF)
+                    tier_label = "HEAVY_OVER"
+                elif 55 <= p <= 59:
+                    conv_mult = 0.7     # under-trap
+                    tier_label = "UNDER_TRAP"
+                else:
+                    conv_mult = 0.5     # very low, cautious
+                    tier_label = "VERY_LOW"
+
+                if conv_mult != 1.0:
+                    new_qty = int(qty * conv_mult)
+                    new_lots = max(1, new_qty // lot_size)
+                    old_qty = qty
+                    qty = new_lots * lot_size
+                    lots = new_lots
+                    print(f"[SCALPER] CONV_TIER · prob={p}% [{tier_label}] "
+                          f"× {conv_mult} → qty {old_qty} → {qty}")
     except Exception as _oc_e:
-        print(f"[SCALPER] overconf penalty error (allow): {_oc_e}")
+        print(f"[SCALPER] tiered sizing error (allow): {_oc_e}")
 
     # ── HARD CAPITAL ENFORCEMENT ──
     # Total committed (open trades) + this trade MUST NOT exceed user's capital.
@@ -2143,6 +2169,52 @@ def check_scalper_exits(chains):
                   f"would have been: {reversal_reason}")
             reversal_exit = False
             reversal_reason = None
+
+        # ─── 3-TIER PEAK-BASED SUPPRESSION (2026-06-11 — let runners run) ───
+        # User feedback: "200 wins × ₹1.25k = ₹2.5L vs 200 losses × ₹1k = ₹2L.
+        # Net ₹50k = death by thousand wins. Need bigger wins per trade."
+        #
+        # Today's data: REVERSAL_EXIT 12 trades, avg peak +2.77%, avg exit +2%.
+        # System exits at +2% when trades could have run to +5-10%.
+        #
+        # Logic (env-overridable):
+        #   Peak <+2%:        Exit normal (don't ride scratches)
+        #   Peak +2% to +5%:  Only exit if giveback > 1.5pp from peak
+        #   Peak >=+5%:       NEVER exit via REVERSAL (trust profit_floor)
+        #
+        # Estimated impact: 3x improvement on REVERSAL_EXIT category
+        # (₹90k today → ₹270k if rides held to +5-8% peak avg)
+        if reversal_exit:
+            try:
+                import os as _os_rs
+                if _os_rs.environ.get("SCALPER_REVERSAL_SMART_DISABLED", "").strip() not in ("1","true","on"):
+                    # Compute peak/profit context
+                    peak_local = max(t.get("peak_ltp", entry) or entry, current_ltp)
+                    peak_pct_local = ((peak_local - entry) / entry * 100) if entry > 0 else 0
+                    curr_profit_local = ((current_ltp - entry) / entry * 100) if entry > 0 else 0
+                    giveback_pp = peak_pct_local - curr_profit_local
+
+                    runner_threshold = float(_os_rs.environ.get("SCALPER_REVERSAL_RUNNER_PEAK", "5.0"))
+                    mid_peak_min = float(_os_rs.environ.get("SCALPER_REVERSAL_MID_PEAK_MIN", "2.0"))
+                    mid_max_giveback = float(_os_rs.environ.get("SCALPER_REVERSAL_MID_MAX_GIVEBACK", "1.5"))
+
+                    if peak_pct_local >= runner_threshold:
+                        # RUNNER ZONE — never kill via reversal
+                        print(f"[SCALPER] REVERSAL_SUPPRESS · #{t['id']} {idx} {action}: "
+                              f"RUNNER (peak +{peak_pct_local:.1f}% ≥ {runner_threshold}%) — "
+                              f"trust profit_floor + trail. Would have: {reversal_reason}")
+                        reversal_exit = False
+                        reversal_reason = None
+                    elif peak_pct_local >= mid_peak_min and giveback_pp < mid_max_giveback:
+                        # MID ZONE — small giveback, hold
+                        print(f"[SCALPER] REVERSAL_SUPPRESS · #{t['id']} {idx} {action}: "
+                              f"HEALTHY (peak +{peak_pct_local:.1f}%, giveback {giveback_pp:.1f}pp < {mid_max_giveback}pp) — "
+                              f"let it ride. Would have: {reversal_reason}")
+                        reversal_exit = False
+                        reversal_reason = None
+                    # else: peak < +2% OR giveback >= 1.5pp → exit normal (small win/scratch)
+            except Exception as _rs_e:
+                print(f"[SCALPER] reversal smart suppress error (allow exit): {_rs_e}")
 
         if reversal_exit:
             new_status = "REVERSAL_EXIT"
