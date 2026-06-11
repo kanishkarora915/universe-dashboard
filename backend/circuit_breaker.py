@@ -55,16 +55,17 @@ if not _SCALPER_DB.exists():
 # ── Env flags ──────────────────────────────────────────────────────────
 
 def is_enabled() -> bool:
-    # 2026-06-11: DEFAULT FLIPPED on → off.
-    # User feedback: circuit breaker tripping after 3 small losses (₹15k cap)
-    # was locking entries for 30 min, missing valid signals mid-morning.
-    # Per-trade loss limits now handled by damage control layer:
-    #   - EARLY_CUT (3min, -2.5% trigger)
-    #   - PEAK_GIVEBACK (lock peak profit)
-    #   - BREAKEVEN at +3% peak
-    #   - profit_floor at +1.5% peak (NEW 2026-06-11)
-    # Set DAILY_LOSS_CAP_ENABLED=on to restore the daily cap.
-    return os.environ.get("DAILY_LOSS_CAP_ENABLED", "off").lower() == "on"
+    # 2026-06-11 v3 — RESTORED ON (data-driven flip).
+    # 60d audit showed 16 days with loss ≥ ₹15k (27% of trading days).
+    # Worst: May 4 = -₹1,02,217 in single day (27 trades).
+    #        Apr 28 = -₹1,46,837 combined scalper+main.
+    # Per-trade damage control (EARLY_CUT, profit_floor) catches
+    # individual bad trades but NOT runaway-day patterns where 10+
+    # losses cascade. Daily cap is the second-line defense.
+    # Raised limit ₹15k → ₹20k (gives 33% more rope before tripping
+    # — addresses original complaint of "tripping on 3 small losses").
+    # Override: DAILY_LOSS_CAP_ENABLED=off to disable.
+    return os.environ.get("DAILY_LOSS_CAP_ENABLED", "on").lower() == "on"
 
 
 def is_shadow_enabled() -> bool:
@@ -72,15 +73,20 @@ def is_shadow_enabled() -> bool:
 
 
 def daily_loss_limit(tab: str) -> float:
-    """Per-tab daily loss limit (negative number — represents max loss)."""
+    """Per-tab daily loss limit (negative number — represents max loss).
+
+    2026-06-11: raised default 15k → 20k. Gives 33% more rope to avoid
+    the original "tripping on 3 small losses by lunch" complaint, while
+    still capping runaway days (worst was -₹1.02L single day).
+    """
     if tab.upper() == "MAIN":
-        v = os.environ.get("DAILY_LOSS_LIMIT_MAIN", "15000")
+        v = os.environ.get("DAILY_LOSS_LIMIT_MAIN", "20000")
     else:
-        v = os.environ.get("DAILY_LOSS_LIMIT_SCALPER", "15000")
+        v = os.environ.get("DAILY_LOSS_LIMIT_SCALPER", "20000")
     try:
         return float(v)
     except ValueError:
-        return 15000
+        return 20000
 
 
 def consecutive_loss_limit() -> int:

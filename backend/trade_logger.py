@@ -855,14 +855,15 @@ class TradeManager:
             # All env-toggleable for safety.
             # ════════════════════════════════════════════════
 
-            # ── EARLY_CUT — first 3 min "never positive" detection ──
-            # If hold 60s–3min AND peak <+0.5% AND now ≤-2.5% → exit at -2.5%
-            # Catches the "wrong direction from tick 1" pattern.
+            # ── EARLY_CUT — "never positive" detection ──
+            # 2026-06-11 v2: window extended 3 → 10 min (60d data audit).
+            # 14 NEVER_POSITIVE trades held 22+ min before SL_HIT (-₹3.08L
+            # leak). Slipped past 3-min window because bled slowly.
             try:
                 import os as _os_ec
                 if (_os_ec.environ.get("MAIN_EARLY_CUT_DISABLED", "").strip() not in ("1","true","on")
                         and new_status == "OPEN"):
-                    ec_window = float(_os_ec.environ.get("MAIN_EARLY_CUT_WINDOW_MIN", "3")) * 60
+                    ec_window = float(_os_ec.environ.get("MAIN_EARLY_CUT_WINDOW_MIN", "10")) * 60
                     ec_trigger = float(_os_ec.environ.get("MAIN_EARLY_CUT_TRIGGER", "-2.5"))
                     if (60 <= hold_sec_main <= ec_window
                             and peak_pct <= 0.5
@@ -876,6 +877,27 @@ class TradeManager:
                               f"never positive in {hold_sec_main/60:.1f}m, cut at {profit_pct:+.1f}%")
             except Exception as _ec_e:
                 print(f"[TRADE] EARLY_CUT error (allow): {_ec_e}")
+
+            # ── INSTANT_REJECT — < 90s crash exit (2026-06-11) ──
+            # 60d audit: high-prob entries crashed within 0-3 min, watcher
+            # killed them at avg -₹26k (₹3.11L total). Catch before -5%.
+            try:
+                import os as _os_ir
+                if (_os_ir.environ.get("MAIN_INSTANT_REJECT_DISABLED", "").strip() not in ("1","true","on")
+                        and new_status == "OPEN"):
+                    ir_max_hold = float(_os_ir.environ.get("MAIN_INSTANT_REJECT_HOLD_SEC", "90"))
+                    ir_trigger = float(_os_ir.environ.get("MAIN_INSTANT_REJECT_TRIGGER", "-1.0"))
+                    if (hold_sec_main <= ir_max_hold
+                            and profit_pct <= ir_trigger
+                            and peak_pct <= 0.5):
+                        new_status = "INSTANT_REJECT"
+                        exit_price = current_ltp
+                        exit_reason = (f"INSTANT_REJECT: hold {hold_sec_main:.0f}s, peak {peak_pct:+.2f}%, "
+                                       f"now {profit_pct:+.2f}% — market rejected entry, cut quick")
+                        print(f"[TRADE] INSTANT_REJECT · {action} {idx} {strike} · "
+                              f"crashed at {profit_pct:+.1f}% in {hold_sec_main:.0f}s")
+            except Exception as _ir_e:
+                print(f"[TRADE] INSTANT_REJECT error (allow): {_ir_e}")
 
             # ── CROSS-ASSET CONFIRMATION (Phase 3 — 2026-06-10) ──
             # If NIFTY trade + BANKNIFTY moving SAME direction → confirmed.

@@ -60,8 +60,12 @@ def get_time_window():
         return "OPENING_FIRST_5MIN"
     if hm < 1030:
         return "MORNING_TREND"
-    if hm < 1130:
+    if hm < 1100:
         return "MID_MORNING"
+    # 2026-06-11: 11:00-12:00 added as PRE_LUNCH_CHOP based on 60d data.
+    # SL_HIT loss in this window: ₹-2,25,936 / 21 trades (worst hour by far!).
+    if hm < 1200:
+        return "PRE_LUNCH_CHOP"
     if hm < 1230:
         return "LUNCH_CHOP"
     if hm < 1400:
@@ -283,6 +287,12 @@ def build_recommendations(regime, time_window, vix, atr_ratio, expiry):
     if time_window == "OPENING_FIRST_5MIN":
         rec["trade_allowed"] = False
         rec["warnings"].append("First 5 min — wait for stabilization")
+    elif time_window == "PRE_LUNCH_CHOP":
+        # 2026-06-11: NEW window. 60d audit showed 11:00-12:00 had
+        # ₹-2.26L SL_HIT damage across 21 trades — worst hour of day.
+        # Smart not strict: 0.7x qty + warning. Damage control still fires.
+        rec["qty_multiplier"] *= 0.7
+        rec["warnings"].append("Pre-lunch chop (11-12) — historical worst hour, smaller qty")
     elif time_window == "LUNCH_CHOP":
         # min_prob NOT raised (was forcing 60 — blocked legit setups)
         rec["qty_multiplier"] *= 0.6  # smaller position is sensible safety

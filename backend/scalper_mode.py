@@ -1337,6 +1337,29 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
         qty = scaled_lots * lot_size
         lots = scaled_lots
 
+    # ── OVERCONFIDENCE PENALTY (2026-06-11 — data-driven) ──
+    # 60d audit: scalper trades at 80+% verdict prob had 20% WR
+    # (₹-69,268 total loss). 70-79% bucket: 46% WR (₹-52,723 loss).
+    # Sweet spot is 65-69% (63.6% WR, +₹1,04,880 profit).
+    # Action: trades above 75% verdict get HALVED size — the
+    # "raw_prob inverse" warning the engine documents.
+    # Override: SCALPER_OVERCONF_DISABLED=1, SCALPER_OVERCONF_THRESHOLD=75
+    try:
+        import os as _os_oc
+        if _os_oc.environ.get("SCALPER_OVERCONF_DISABLED", "").strip() not in ("1","true","on"):
+            oc_threshold = int(_os_oc.environ.get("SCALPER_OVERCONF_THRESHOLD", "75"))
+            oc_multiplier = float(_os_oc.environ.get("SCALPER_OVERCONF_MULT", "0.5"))
+            if probability and probability >= oc_threshold:
+                oc_qty = int(qty * oc_multiplier)
+                oc_lots = max(1, oc_qty // lot_size)
+                old_qty = qty
+                qty = oc_lots * lot_size
+                lots = oc_lots
+                print(f"[SCALPER] OVERCONF_PENALTY · prob={probability}% ≥ {oc_threshold}% "
+                      f"→ qty {old_qty} → {qty} ({oc_multiplier}x)")
+    except Exception as _oc_e:
+        print(f"[SCALPER] overconf penalty error (allow): {_oc_e}")
+
     # ── HARD CAPITAL ENFORCEMENT ──
     # Total committed (open trades) + this trade MUST NOT exceed user's capital.
     # If it would, shrink THIS trade's qty to fit. If even 1 lot won't fit, REJECT.
@@ -1848,19 +1871,25 @@ def check_scalper_exits(chains):
         # positive (avg -₹13k loss = ₹246k total). These are the trades
         # where setup was wrong from tick 1 — letting them ride to -5%
         # default SL is irrational. Cut them at -2.5%.
-        # Logic: if no positive peak in first 3 min AND already at -2%,
+        # Logic: if no positive peak in first 10 min AND already at -2%,
         # exit immediately at -2.5% (small loss). Saves ~₹434k estimated.
+        #
+        # 2026-06-11 v2 — WINDOW EXTENDED 3 → 10 min based on data audit.
+        # 60d exit audit found 14 NEVER_POSITIVE trades held 22-26 min
+        # before hitting SL (-₹22k avg = ₹3.08L total leak). They slipped
+        # past 3-min window because they bled slowly.
+        # New window 10 min catches them. Plus added INSTANT_REJECT rule
+        # below for the < 60s crash pattern.
         # Env:
         #   EARLY_CUT_DISABLED=1            kill switch
-        #   EARLY_CUT_WINDOW_MIN=3          observation window (default 3)
+        #   EARLY_CUT_WINDOW_MIN=10         observation window (default 10)
         #   EARLY_CUT_TRIGGER=-2.5          loss % to trigger early cut
         try:
             import os as _os_ec
             if _os_ec.environ.get("EARLY_CUT_DISABLED", "").strip() not in ("1","true","on"):
-                ec_window = float(_os_ec.environ.get("EARLY_CUT_WINDOW_MIN", "3")) * 60
+                ec_window = float(_os_ec.environ.get("EARLY_CUT_WINDOW_MIN", "10")) * 60
                 ec_trigger = float(_os_ec.environ.get("EARLY_CUT_TRIGGER", "-2.5"))
                 hold_min = hold_sec / 60
-                # Trade is in first 3 min, peak never went positive, currently > 2% loss
                 peak_pct = peak_profit_pct_local
                 if (hold_sec >= 60 and hold_sec <= ec_window
                         and peak_pct <= 0.5  # never reached even +0.5%
@@ -1874,6 +1903,32 @@ def check_scalper_exits(chains):
                     sl_reason_text = exit_reason
                     print(f"[SCALPER] EARLY_CUT · #{t['id']} {idx} {action} {strike} · "
                           f"never positive, cut at {cur_profit_pct:+.1f}%")
+        except Exception:
+            pass
+
+        # ─── INSTANT_REJECT — < 60s crash exit (2026-06-11) ───
+        # 60d audit: 12 WATCHER_EXIT trades fired at high prob (73-83%),
+        # crashed within 0-3 min, avg loss -₹26k (₹3.11L total).
+        # Pattern: entered at top of move, immediately rejected by market.
+        # Rule: hold < 90s, profit < -1% AND momentum down → exit NOW.
+        # Catches the "instant rejection" before -5% SL hit.
+        # Env: SCALPER_INSTANT_REJECT_DISABLED=1
+        try:
+            import os as _os_ir
+            if (_os_ir.environ.get("SCALPER_INSTANT_REJECT_DISABLED", "").strip() not in ("1","true","on")
+                    and new_status == "OPEN"):
+                ir_max_hold = float(_os_ir.environ.get("SCALPER_INSTANT_REJECT_HOLD_SEC", "90"))
+                ir_trigger = float(_os_ir.environ.get("SCALPER_INSTANT_REJECT_TRIGGER", "-1.0"))
+                if (hold_sec <= ir_max_hold
+                        and cur_profit_pct <= ir_trigger
+                        and peak_profit_pct_local <= 0.5):
+                    new_status = "INSTANT_REJECT"
+                    exit_price = current_ltp
+                    exit_reason = (f"INSTANT_REJECT: hold {hold_sec:.0f}s, peak {peak_profit_pct_local:+.2f}%, "
+                                   f"now {cur_profit_pct:+.2f}% — market rejected entry, cut quick")
+                    sl_reason_text = exit_reason
+                    print(f"[SCALPER] INSTANT_REJECT · #{t['id']} {idx} {action} {strike} · "
+                          f"crashed at {cur_profit_pct:+.1f}% in {hold_sec:.0f}s")
         except Exception:
             pass
 
