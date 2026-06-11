@@ -3437,8 +3437,21 @@ async def admin_exit_pattern_audit(days: int = 60, status: str = None):
         c = _sql.connect(db_path)
         c.row_factory = _sql.Row
 
+        # Detect if hold_seconds column exists; if not, compute from times
+        cols = [r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()]
+        if "hold_seconds" in cols:
+            hold_expr = "hold_seconds"
+        else:
+            hold_expr = "(strftime('%s', exit_time) - strftime('%s', entry_time))"
+
         # Build status filter
         where_status = f"status = '{status_filter}'" if status_filter else "status != 'OPEN'"
+
+        # Also: SL distance metric for STOP_HUNTED analysis
+        # original_sl column exists in main DB — measures initial SL distance
+        sl_distance_expr = ""
+        if "original_sl" in cols:
+            sl_distance_expr = ", ROUND(AVG((entry_price - original_sl)*100.0/entry_price), 2) as avg_sl_distance_pct"
 
         # Per-status aggregate
         rows = c.execute(f"""
@@ -3448,11 +3461,12 @@ async def admin_exit_pattern_audit(days: int = 60, status: str = None):
                 ROUND(AVG(pnl_rupees), 0) as avg_pnl,
                 ROUND(SUM(pnl_rupees), 0) as total_pnl,
                 ROUND(AVG((peak_ltp - entry_price)*100.0/entry_price), 2) as avg_peak_pct,
-                ROUND(AVG(hold_seconds)/60.0, 1) as avg_hold_min,
+                ROUND(AVG({hold_expr})/60.0, 1) as avg_hold_min,
                 ROUND(AVG({prob_col}), 1) as avg_prob,
                 SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
                 SUM(CASE WHEN idx='BANKNIFTY' THEN 1 ELSE 0 END) as bnf,
                 SUM(CASE WHEN idx='NIFTY' THEN 1 ELSE 0 END) as nifty
+                {sl_distance_expr}
             FROM {table}
             WHERE status != 'OPEN'
               AND entry_time >= date('now','-{days} days')
@@ -3492,10 +3506,12 @@ async def admin_exit_pattern_audit(days: int = 60, status: str = None):
         # Worst 10 examples of filtered status (if specified)
         worst_examples = []
         if status_filter:
+            # Conditionally include original_sl if it exists (Main DB has it)
+            sl_col = ", original_sl, sl_price" if "original_sl" in cols else ", sl_price"
             wrows = c.execute(f"""
                 SELECT id, entry_time, idx, action, strike, entry_price, peak_ltp,
-                       exit_price, pnl_rupees, hold_seconds, {prob_col} as prob,
-                       exit_reason
+                       exit_price, pnl_rupees, {hold_expr} as hold_seconds,
+                       {prob_col} as prob, exit_reason {sl_col}
                 FROM {table}
                 WHERE status = '{status_filter}'
                   AND entry_time >= date('now','-{days} days')
@@ -3507,7 +3523,11 @@ async def admin_exit_pattern_audit(days: int = 60, status: str = None):
                     d["peak_pct"] = round((d["peak_ltp"] - d["entry_price"])*100/d["entry_price"], 2)
                 else:
                     d["peak_pct"] = 0
-                d["hold_min"] = round(d["hold_seconds"]/60.0, 1)
+                d["hold_min"] = round((d.get("hold_seconds") or 0)/60.0, 1)
+                # SL distance from entry
+                osl = d.get("original_sl") or d.get("sl_price") or 0
+                if d["entry_price"] > 0 and osl > 0:
+                    d["sl_distance_pct"] = round((d["entry_price"] - osl)*100/d["entry_price"], 2)
                 worst_examples.append(d)
 
         # Peak distribution for filtered status — were these trades EVER positive?

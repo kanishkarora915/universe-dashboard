@@ -5361,18 +5361,23 @@ class MarketEngine:
                             pass
 
                         # ── G0c: CALIBRATION GATE (Fix 6) ──
-                        # 2026-06-11: DEFAULT FLIPPED off → on (bear-trader fix).
-                        # Combined with INSTANT_NEW_TRADE_PROB lowered 65→55, the
-                        # 55-60% bucket needs calibration check — raw_prob alone
-                        # is documented as miscalibrated (high prob = low WR).
-                        # Failsafe: cal_wr=None (no data) → allow (don't block
-                        # on missing calibration data).
-                        # Override: CALIBRATION_GATE_ENABLED=off to disable.
+                        # 2026-06-11 v2: PER-TAB threshold (data-driven flip).
+                        # 60d audit revealed asymmetric profiles:
+                        #   SCALPER 55-59% bucket: 37.5% WR, ₹-1,681/trade
+                        #     → gate at 55% protects from coin-flip leak ✓
+                        #   MAIN 70-79% bucket: 43.6% WR but ₹+2,169/trade
+                        #     (asymmetric R:R — small losses, big wins)
+                        #     MAIN 80+% bucket: 42.9% WR but ₹+3,787/trade
+                        #     → gate at 55% would BLOCK ₹+1.64L profitable bucket!
+                        # Solution: Main uses 35% min WR (allows asymmetric R:R),
+                        # scalper uses 55% (blocks coin-flip leak).
+                        # Failsafe: cal_wr=None (no data) → allow.
                         try:
                             import os as _os
                             if _os.environ.get("CALIBRATION_GATE_ENABLED", "on").lower() == "on":
                                 from calibration import calibrated_wr as _cal_wr_fn
-                                cal_min = float(_os.environ.get("CALIBRATION_MIN_WR", "55"))
+                                # Per-tab min WR. Main lower (asymmetric R:R OK).
+                                cal_min = float(_os.environ.get("MAIN_CALIBRATION_MIN_WR", "35"))
                                 raw_prob = pending.get("probability", 0)
                                 cal_wr = _cal_wr_fn(int(raw_prob), engine_type="main", action=action)
                                 print(f"[CALIB_SHADOW] main {action} raw_prob={raw_prob}% "
