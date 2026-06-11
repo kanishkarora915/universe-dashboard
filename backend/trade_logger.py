@@ -1290,6 +1290,54 @@ class TradeManager:
             sl_zone = current_ltp <= new_sl * 1.03
             sl_breached = current_ltp <= new_sl
 
+            # ── ANTI-STOP-HUNT BUFFER (2026-06-11 — data-driven) ──
+            # 60d audit: 45 STOP_HUNTED trades = ₹-4.52L. Pattern:
+            #   - Premium dips to SL momentarily, then recovers
+            #   - System DETECTED these post-hoc but still exited
+            #   - All were "institutional flush" wicks
+            # Fix: when SL first touched, give 30s grace window. If premium
+            # recovers above SL+buffer, cancel the exit. If still below
+            # after 30s, confirm exit.
+            # Tracks per-trade first-touch time in memory.
+            # Env: MAIN_STOP_HUNT_BUFFER_DISABLED=1, MAIN_STOP_HUNT_BUFFER_SEC=30
+            if sl_breached:
+                try:
+                    import os as _os_sh, time as _t_sh
+                    if _os_sh.environ.get("MAIN_STOP_HUNT_BUFFER_DISABLED", "").strip() not in ("1","true","on"):
+                        if not hasattr(self, '_sl_first_touch'):
+                            self._sl_first_touch = {}
+                        tid = t["id"]
+                        buf_sec = float(_os_sh.environ.get("MAIN_STOP_HUNT_BUFFER_SEC", "30"))
+                        # Buffer: SL price × 1.005 (premium must recover 0.5%)
+                        recovery_threshold = new_sl * 1.005
+                        first_touch = self._sl_first_touch.get(tid)
+                        if first_touch is None:
+                            # First time hitting SL — mark, don't exit
+                            self._sl_first_touch[tid] = _t_sh.time()
+                            print(f"[TRADE] STOP_HUNT_BUFFER · {action} {idx} {strike}: "
+                                  f"SL touched at ₹{current_ltp:.2f}, holding {buf_sec:.0f}s for confirmation")
+                            sl_breached = False  # don't exit this cycle
+                        elif (_t_sh.time() - first_touch) < buf_sec:
+                            # Still in buffer window
+                            if current_ltp >= recovery_threshold:
+                                # Premium recovered → CANCEL exit (was a wick)
+                                self._sl_first_touch.pop(tid, None)
+                                print(f"[TRADE] STOP_HUNT_AVOIDED · {action} {idx} {strike}: "
+                                      f"recovered to ₹{current_ltp:.2f} (SL ₹{new_sl:.2f}) — stayed in trade")
+                                sl_breached = False
+                            else:
+                                # Still below SL, keep waiting
+                                sl_breached = False
+                        else:
+                            # Buffer expired, still below SL → confirm exit
+                            print(f"[TRADE] STOP_HUNT_CONFIRMED · {action} {idx} {strike}: "
+                                  f"premium ₹{current_ltp:.2f} stayed below SL ₹{new_sl:.2f} for "
+                                  f"{buf_sec:.0f}s — confirming exit")
+                            self._sl_first_touch.pop(tid, None)
+                            # sl_breached stays True → falls through to exit logic
+                except Exception as _sh_e:
+                    print(f"[TRADE] stop_hunt_buffer error (allow exit): {_sh_e}")
+
             if sl_breached:
                 if breakeven_active and new_sl >= entry:
                     exit_price = new_sl
