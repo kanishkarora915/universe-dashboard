@@ -828,6 +828,14 @@ class TradeManager:
             pnl_pts = round(current_ltp - entry, 2)
             pnl_rupees = round(pnl_pts * t["qty"], 2)
             profit_pct = round((current_ltp - entry) / entry * 100, 1) if entry > 0 else 0
+            peak_pct = round((peak - entry) / entry * 100, 1) if entry > 0 else 0
+
+            # ── MAIN MODE: hold time for EARLY_CUT / PEAK_GIVEBACK ──
+            try:
+                _ent_time = datetime.fromisoformat(t["entry_time"])
+                hold_sec_main = (ist_now() - _ent_time).total_seconds()
+            except Exception:
+                hold_sec_main = 0
 
             new_status = "OPEN"
             exit_reason = None
@@ -835,6 +843,64 @@ class TradeManager:
             new_sl = sl
             alerts_list = []
             trail_level = t.get("trail_level", "")
+
+            # ════════════════════════════════════════════════
+            # MAIN MODE DAMAGE CONTROL (2026-06-10)
+            # Ported from scalper_mode. Smart not strict — small loss vs big loss.
+            # User data: 79 SL_HIT losses (₹-10.20L) = 82% of total losses.
+            # Many had brief positive then died — caught by these rules.
+            # All env-toggleable for safety.
+            # ════════════════════════════════════════════════
+
+            # ── EARLY_CUT — first 3 min "never positive" detection ──
+            # If hold 60s–3min AND peak <+0.5% AND now ≤-2.5% → exit at -2.5%
+            # Catches the "wrong direction from tick 1" pattern.
+            try:
+                import os as _os_ec
+                if (_os_ec.environ.get("MAIN_EARLY_CUT_DISABLED", "").strip() not in ("1","true","on")
+                        and new_status == "OPEN"):
+                    ec_window = float(_os_ec.environ.get("MAIN_EARLY_CUT_WINDOW_MIN", "3")) * 60
+                    ec_trigger = float(_os_ec.environ.get("MAIN_EARLY_CUT_TRIGGER", "-2.5"))
+                    if (60 <= hold_sec_main <= ec_window
+                            and peak_pct <= 0.5
+                            and profit_pct <= ec_trigger):
+                        new_status = "EARLY_CUT"
+                        exit_price = current_ltp
+                        exit_reason = (f"EARLY_CUT: setup wrong from start (peak {peak_pct:+.1f}%, "
+                                       f"now {profit_pct:+.1f}%, hold {hold_sec_main/60:.1f}m) — "
+                                       f"small loss not big loss")
+                        print(f"[TRADE] EARLY_CUT · {action} {idx} {strike} · "
+                              f"never positive in {hold_sec_main/60:.1f}m, cut at {profit_pct:+.1f}%")
+            except Exception as _ec_e:
+                print(f"[TRADE] EARLY_CUT error (allow): {_ec_e}")
+
+            # ── PEAK_GIVEBACK — "brief hope then crash" detection ──
+            # Peak +0.5% to +3% reached, then dropped ≥1.5% from peak,
+            # current PnL ≤-1% → exit at small loss
+            # Catches: trade peaked briefly then died (the #267 BANKNIFTY pattern)
+            try:
+                import os as _os_pg
+                if (_os_pg.environ.get("MAIN_PEAK_GIVEBACK_DISABLED", "").strip() not in ("1","true","on")
+                        and new_status == "OPEN"):
+                    pg_min_peak = float(_os_pg.environ.get("MAIN_PG_MIN_PEAK_PCT", "0.5"))
+                    pg_max_peak = float(_os_pg.environ.get("MAIN_PG_MAX_PEAK_PCT", "3.0"))
+                    pg_drop_from_peak = float(_os_pg.environ.get("MAIN_PG_DROP_PCT", "1.5"))
+                    pg_min_loss = float(_os_pg.environ.get("MAIN_PG_MIN_LOSS", "-1.0"))
+                    hold_min_main = hold_sec_main / 60
+                    drop_from_peak_pct = peak_pct - profit_pct
+                    if (2 <= hold_min_main <= 15  # window: 2-15 min
+                            and pg_min_peak <= peak_pct <= pg_max_peak
+                            and drop_from_peak_pct >= pg_drop_from_peak
+                            and profit_pct <= pg_min_loss):
+                        new_status = "PEAK_GIVEBACK"
+                        exit_price = current_ltp
+                        exit_reason = (f"PEAK_GIVEBACK: peaked +{peak_pct:.1f}% then dropped "
+                                       f"{drop_from_peak_pct:.1f}% from peak (now {profit_pct:+.1f}%) — "
+                                       f"brief hope killed, exit small")
+                        print(f"[TRADE] PEAK_GIVEBACK · {action} {idx} {strike} · "
+                              f"peak +{peak_pct:.1f}% → now {profit_pct:+.1f}%")
+            except Exception as _pg_e:
+                print(f"[TRADE] PEAK_GIVEBACK error (allow): {_pg_e}")
 
             # ── BUYER MODE thresholds (loaded EARLY — used by adaptive SL below) ──
             # BUG FIX 2026-05-08: _bm was used at line 836 before being defined at
@@ -1125,9 +1191,21 @@ class TradeManager:
 
             # Check T1 — PARTIAL PROFIT BOOKING (HEDGER only)
             # BUYER MODE: skip partial book, just activate BE and ride full position to T2
+            # 2026-06-10: BUYER mode now also gets T1 FLOOR LOCK — SL promoted
+            # to T1 (not just entry). Trade keeps running with locked profit.
             elif current_ltp >= t1 and not breakeven_active:
                 breakeven_active = 1
-                new_sl = entry  # Move SL to entry (zero loss on remaining)
+                # ── T1 FLOOR LOCK (2026-06-10) ──
+                # Default: lock SL just below T1 (T1 × 0.995) so trade rides on
+                # with profit floor. Worst case = T1 profit. Best case = T2.
+                # Set MAIN_T1_FLOOR_LOCK=off to revert to entry-only (old behavior).
+                import os as _os_t1
+                _t1_lock_on = _os_t1.environ.get("MAIN_T1_FLOOR_LOCK", "on").lower() != "off"
+                if _t1_lock_on:
+                    t1_floor_sl = round(t1 * 0.995, 2)  # T1 - 0.5% buffer
+                    new_sl = max(entry, t1_floor_sl)  # never below entry
+                else:
+                    new_sl = entry  # Move SL to entry (zero loss on remaining)
 
                 if _bm.get("t1_partial_booking", True):
                     # HEDGER: book 50% qty at T1
