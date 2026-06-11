@@ -3406,6 +3406,169 @@ async def admin_calibration_audit(days: int = 60):
     return out
 
 
+@app.get("/api/admin/exit-pattern-audit")
+async def admin_exit_pattern_audit(days: int = 60, status: str = None):
+    """Deep dive into EXIT PATTERNS — what kills trades?
+
+    Returns per-exit-status breakdown with:
+      - count, avg_pnl, avg_hold_min, avg_peak_pct
+      - BNF vs NIFTY split
+      - time-of-day distribution
+      - worst 5 examples
+      - prob bucket distribution
+
+    Use cases:
+      - REVERSAL_EXIT happens 108x on scalper. Why? Is it peak<0 trades
+        or peak>2% then crash? What's avg verdict prob?
+      - STOP_HUNTED 45x on main. Are SL ranges too tight? Wrong direction?
+
+    Run:
+      curl https://<app>/api/admin/exit-pattern-audit?days=60
+      curl https://<app>/api/admin/exit-pattern-audit?days=60&status=REVERSAL_EXIT
+    """
+    import sqlite3 as _sql
+    from pathlib import Path as _P
+    out = {"days_window": days, "scalper": {}, "main": {}, "errors": []}
+    _data_dir = _P("/data") if _P("/data").is_dir() else _P(__file__).parent
+
+    def _analyze(db_path: str, table: str, prob_col: str, status_filter: str = None):
+        if not _P(db_path).exists():
+            return {}
+        c = _sql.connect(db_path)
+        c.row_factory = _sql.Row
+
+        # Build status filter
+        where_status = f"status = '{status_filter}'" if status_filter else "status != 'OPEN'"
+
+        # Per-status aggregate
+        rows = c.execute(f"""
+            SELECT
+                status,
+                COUNT(*) as n,
+                ROUND(AVG(pnl_rupees), 0) as avg_pnl,
+                ROUND(SUM(pnl_rupees), 0) as total_pnl,
+                ROUND(AVG((peak_ltp - entry_price)*100.0/entry_price), 2) as avg_peak_pct,
+                ROUND(AVG(hold_seconds)/60.0, 1) as avg_hold_min,
+                ROUND(AVG({prob_col}), 1) as avg_prob,
+                SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN idx='BANKNIFTY' THEN 1 ELSE 0 END) as bnf,
+                SUM(CASE WHEN idx='NIFTY' THEN 1 ELSE 0 END) as nifty
+            FROM {table}
+            WHERE status != 'OPEN'
+              AND entry_time >= date('now','-{days} days')
+              AND entry_price > 0
+            GROUP BY status
+            ORDER BY n DESC
+        """).fetchall()
+        per_status = []
+        for r in rows:
+            d = dict(r)
+            d["wr_pct"] = round(d["wins"]*100/d["n"], 1) if d["n"] > 0 else 0
+            per_status.append(d)
+
+        # Time-of-day distribution per status
+        time_dist = {}
+        if status_filter:
+            tod_rows = c.execute(f"""
+                SELECT
+                    CASE
+                        WHEN CAST(substr(entry_time,12,2) AS INT) < 10 THEN '09:15-10:00'
+                        WHEN CAST(substr(entry_time,12,2) AS INT) < 11 THEN '10:00-11:00'
+                        WHEN CAST(substr(entry_time,12,2) AS INT) < 12 THEN '11:00-12:00'
+                        WHEN CAST(substr(entry_time,12,2) AS INT) < 13 THEN '12:00-13:00'
+                        WHEN CAST(substr(entry_time,12,2) AS INT) < 14 THEN '13:00-14:00'
+                        WHEN CAST(substr(entry_time,12,2) AS INT) < 15 THEN '14:00-15:00'
+                        ELSE '15:00+'
+                    END as tod,
+                    COUNT(*) as n,
+                    ROUND(SUM(pnl_rupees), 0) as pnl
+                FROM {table}
+                WHERE {where_status}
+                  AND entry_time >= date('now','-{days} days')
+                GROUP BY tod ORDER BY tod
+            """).fetchall()
+            time_dist = [dict(r) for r in tod_rows]
+
+        # Worst 10 examples of filtered status (if specified)
+        worst_examples = []
+        if status_filter:
+            wrows = c.execute(f"""
+                SELECT id, entry_time, idx, action, strike, entry_price, peak_ltp,
+                       exit_price, pnl_rupees, hold_seconds, {prob_col} as prob,
+                       exit_reason
+                FROM {table}
+                WHERE status = '{status_filter}'
+                  AND entry_time >= date('now','-{days} days')
+                ORDER BY pnl_rupees ASC LIMIT 10
+            """).fetchall()
+            for r in wrows:
+                d = dict(r)
+                if d["entry_price"] > 0:
+                    d["peak_pct"] = round((d["peak_ltp"] - d["entry_price"])*100/d["entry_price"], 2)
+                else:
+                    d["peak_pct"] = 0
+                d["hold_min"] = round(d["hold_seconds"]/60.0, 1)
+                worst_examples.append(d)
+
+        # Peak distribution for filtered status — were these trades EVER positive?
+        peak_dist = {}
+        if status_filter:
+            prows = c.execute(f"""
+                SELECT
+                    CASE
+                        WHEN (peak_ltp - entry_price)/entry_price*100 < 0 THEN 'NEVER_+0%'
+                        WHEN (peak_ltp - entry_price)/entry_price*100 < 0.5 THEN 'peak_+0_to_+0.5%'
+                        WHEN (peak_ltp - entry_price)/entry_price*100 < 1.5 THEN 'peak_+0.5_to_+1.5%'
+                        WHEN (peak_ltp - entry_price)/entry_price*100 < 3 THEN 'peak_+1.5_to_+3%'
+                        WHEN (peak_ltp - entry_price)/entry_price*100 < 5 THEN 'peak_+3_to_+5%'
+                        ELSE 'peak_+5%+'
+                    END as peak_band,
+                    COUNT(*) as n,
+                    ROUND(AVG(pnl_rupees), 0) as avg_pnl,
+                    ROUND(SUM(pnl_rupees), 0) as total_pnl
+                FROM {table}
+                WHERE status = '{status_filter}'
+                  AND entry_time >= date('now','-{days} days')
+                  AND entry_price > 0
+                GROUP BY peak_band
+                ORDER BY n DESC
+            """).fetchall()
+            peak_dist = [dict(r) for r in prows]
+
+        c.close()
+        return {
+            "per_status_aggregate": per_status,
+            "time_of_day_dist": time_dist,
+            "peak_distribution": peak_dist,
+            "worst_10_examples": worst_examples,
+        }
+
+    try:
+        out["scalper"] = _analyze(
+            str(_data_dir / "scalper_trades.db"), "scalper_trades", "probability", status)
+    except Exception as e:
+        out["errors"].append(f"scalper: {e}")
+    try:
+        out["main"] = _analyze(
+            str(_data_dir / "trades.db"), "trades", "probability", status)
+    except Exception as e:
+        out["errors"].append(f"main: {e}")
+
+    # Decision hints based on what we find
+    hints = []
+    sa = out.get("scalper", {}).get("per_status_aggregate", [])
+    for s in sa:
+        if s["status"] == "REVERSAL_EXIT" and s["n"] >= 20:
+            hints.append(f"SCALPER REVERSAL_EXIT: {s['n']} trades, avg_peak={s['avg_peak_pct']}%, "
+                         f"avg_prob={s['avg_prob']}, total loss ₹{s['total_pnl']:,.0f}. "
+                         f"{'NEVER_POSITIVE pattern (EARLY_CUT could catch)' if s['avg_peak_pct'] < 1 else 'PEAK_GIVEBACK pattern (profit_floor would help)'}")
+        if s["status"] == "STOP_HUNTED" and s["n"] >= 10:
+            hints.append(f"MAIN STOP_HUNTED: {s['n']} trades, avg_peak={s['avg_peak_pct']}%, "
+                         f"avg_hold={s['avg_hold_min']}min. SL placement may be too tight.")
+    out["decision_hints"] = hints
+    return out
+
+
 @app.post("/api/admin/disk/cleanup")
 async def admin_disk_cleanup(body: dict = None):
     """SAFE targeted cleanup of /data. Pass {"action": "..."} with one of:
