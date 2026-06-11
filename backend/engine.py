@@ -5387,27 +5387,27 @@ class MarketEngine:
                             print(f"[TRADE] calibration_gate error (allow): {_e}")
 
                         # ── G0f: STRUCTURE GATE (Phase 2 — 2026-05-27) ──
-                    # Multi-timeframe HH/HL/LH/LL check for main engine.
-                    # Default STRUCTURE_MODE=off → no behavior change.
-                    # Fail-safe: any error → allow (never block legit trade).
-                    try:
-                        import structure_gate as sg
-                        if sg.master_mode() != "off" and sg.main_enabled():
-                            sg_decision = sg.evaluate_entry(
-                                engine=self, idx=idx,
-                                proposed_action=action,
-                                source="engine.pending_confirmation",
-                            )
-                            if not sg_decision.get("allow", True):
-                                print(
-                                    f"[TRADE] BLOCKED by structure gate (G0f): "
-                                    f"{sg_decision.get('reason', '')}"
+                        # Multi-timeframe HH/HL/LH/LL check for main engine.
+                        # Default STRUCTURE_MODE=off → no behavior change.
+                        # Fail-safe: any error → allow (never block legit trade).
+                        try:
+                            import structure_gate as sg
+                            if sg.master_mode() != "off" and sg.main_enabled():
+                                sg_decision = sg.evaluate_entry(
+                                    engine=self, idx=idx,
+                                    proposed_action=action,
+                                    source="engine.pending_confirmation",
                                 )
-                                self.trade_manager._pending_entry.pop(idx, None)
-                                self.trade_manager._pending_entry_time.pop(idx, None)
-                                continue
-                    except Exception as _e:
-                        print(f"[TRADE] structure_gate error (allow): {_e}")
+                                if not sg_decision.get("allow", True):
+                                    print(
+                                        f"[TRADE] BLOCKED by structure gate (G0f): "
+                                        f"{sg_decision.get('reason', '')}"
+                                    )
+                                    self.trade_manager._pending_entry.pop(idx, None)
+                                    self.trade_manager._pending_entry_time.pop(idx, None)
+                                    continue
+                        except Exception as _e:
+                            print(f"[TRADE] structure_gate error (allow): {_e}")
 
                     # ── G0e: EARLY-MOVE ENTRY GATE (2026-05-22) ──
                         # Aggregator of 5 leading detectors. veto/full mode can
