@@ -3221,7 +3221,7 @@ async def admin_calibration_audit(days: int = 60):
     out["diagnostics"]["data_dir"] = str(_data_dir)
 
     def _diag_db(db_path: str, table: str):
-        """Returns {exists, total_rows, closed_rows, columns, sample_entry_time}."""
+        """Returns {exists, total_rows, closed_rows, columns, status_breakdown}."""
         info = {"path": db_path, "exists": _P(db_path).exists()}
         if not info["exists"]:
             return info
@@ -3231,14 +3231,19 @@ async def admin_calibration_audit(days: int = 60):
             info["columns"] = cols
             info["total_rows"] = c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             info["closed_rows"] = c.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE status='CLOSED'"
+                f"SELECT COUNT(*) FROM {table} WHERE status != 'OPEN'"
             ).fetchone()[0]
+            # Status breakdown (KEY DEBUG — status != 'CLOSED' is the bug)
+            status_rows = c.execute(
+                f"SELECT status, COUNT(*) FROM {table} GROUP BY status ORDER BY 2 DESC"
+            ).fetchall()
+            info["status_breakdown"] = {r[0]: r[1] for r in status_rows}
             # Sample entry_time format
             time_col = "entry_time" if "entry_time" in cols else (
                 "open_time" if "open_time" in cols else None)
             if time_col:
                 row = c.execute(
-                    f"SELECT {time_col} FROM {table} WHERE status='CLOSED' "
+                    f"SELECT {time_col} FROM {table} WHERE status != 'OPEN' "
                     f"ORDER BY id DESC LIMIT 1"
                 ).fetchone()
                 info["latest_entry_time"] = row[0] if row else None
@@ -3280,7 +3285,7 @@ async def admin_calibration_audit(days: int = 60):
         rows = c.execute(f"""
             SELECT DATE(entry_time) d, SUM(pnl_rupees) pnl, COUNT(*) n
             FROM scalper_trades
-            WHERE status='CLOSED' AND entry_time >= date('now','-{days} days')
+            WHERE status != 'OPEN' AND entry_time >= date('now','-{days} days')
             GROUP BY d HAVING pnl <= -15000 ORDER BY pnl ASC
         """).fetchall()
         out["scalper"]["loss_15k_days"] = [
@@ -3303,7 +3308,7 @@ async def admin_calibration_audit(days: int = 60):
                 SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
                 SUM(pnl_rupees) as total
             FROM scalper_trades
-            WHERE status='CLOSED' AND probability > 0
+            WHERE status != 'OPEN' AND probability > 0
               AND entry_time >= date('now','-30 days')
             GROUP BY bucket ORDER BY bucket
         """).fetchall()
@@ -3312,7 +3317,7 @@ async def admin_calibration_audit(days: int = 60):
         rows = c.execute(f"""
             SELECT DATE(entry_time) d, SUM(pnl_rupees) pnl, COUNT(*) n
             FROM scalper_trades
-            WHERE status='CLOSED' AND entry_time >= date('now','-{days} days')
+            WHERE status != 'OPEN' AND entry_time >= date('now','-{days} days')
             GROUP BY d ORDER BY pnl ASC LIMIT 10
         """).fetchall()
         out["scalper"]["worst_10_days"] = [
@@ -3334,7 +3339,7 @@ async def admin_calibration_audit(days: int = 60):
         rows = c.execute(f"""
             SELECT DATE({time_col}) d, SUM(pnl_rupees) pnl, COUNT(*) n
             FROM trades
-            WHERE status='CLOSED' AND {time_col} >= date('now','-{days} days')
+            WHERE status != 'OPEN' AND {time_col} >= date('now','-{days} days')
             GROUP BY d HAVING pnl <= -15000 ORDER BY pnl ASC
         """).fetchall()
         out["main"]["loss_15k_days"] = [
@@ -3356,7 +3361,7 @@ async def admin_calibration_audit(days: int = 60):
                 SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
                 SUM(pnl_rupees) as total
             FROM trades
-            WHERE status='CLOSED' AND {prob_col} > 0
+            WHERE status != 'OPEN' AND {prob_col} > 0
               AND {time_col} >= date('now','-30 days')
             GROUP BY bucket ORDER BY bucket
         """).fetchall()
@@ -3365,7 +3370,7 @@ async def admin_calibration_audit(days: int = 60):
         rows = c.execute(f"""
             SELECT DATE({time_col}) d, SUM(pnl_rupees) pnl, COUNT(*) n
             FROM trades
-            WHERE status='CLOSED' AND {time_col} >= date('now','-{days} days')
+            WHERE status != 'OPEN' AND {time_col} >= date('now','-{days} days')
             GROUP BY d ORDER BY pnl ASC LIMIT 10
         """).fetchall()
         out["main"]["worst_10_days"] = [
