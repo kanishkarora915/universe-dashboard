@@ -5113,11 +5113,13 @@ class MarketEngine:
                 print(f"[TRADE] check_position_alerts error: {e}")
 
             # Clear stale pending entries per-index — synced with PENDING_TTL_SEC
-            # (default 90s, was 300s). Faster expiry = faster fresh signal cycle.
+            # 2026-06-11: raised 90s → 180s. User feedback: 90s was too short
+            # for momentum confirmation; pending entries expired before premium
+            # could move 0.1%, restarting the cycle endlessly.
             try:
-                _stale_ttl = int(os.environ.get("PENDING_TTL_SEC", "90"))
+                _stale_ttl = int(os.environ.get("PENDING_TTL_SEC", "180"))
             except (TypeError, ValueError):
-                _stale_ttl = 90
+                _stale_ttl = 180
             now_ts = time.time()
             for pidx in list(self.trade_manager._pending_entry.keys()):
                 pt = self.trade_manager._pending_entry_time.get(pidx, 0)
@@ -5293,9 +5295,14 @@ class MarketEngine:
                     if not pending or pending.get("action") != action:
                         prob_now = v.get("winProbability", 0)
                         try:
-                            _instant_new = int(os.environ.get("INSTANT_NEW_TRADE_PROB", "65"))
+                            # 2026-06-11: lowered 65 → 55.
+                            # User feedback: 55-65% verdicts were waiting for
+                            # 0.1% premium momentum confirmation in 90s, then
+                            # expiring → fresh signal cycle restarted endlessly.
+                            # Instant fire at 55%+ matches Scalper threshold.
+                            _instant_new = int(os.environ.get("INSTANT_NEW_TRADE_PROB", "55"))
                         except (TypeError, ValueError):
-                            _instant_new = 65
+                            _instant_new = 55
                         if prob_now >= _instant_new:
                             self.trade_manager._pending_entry[idx] = {
                                 "idx": idx, "action": action, "strike": int(atm),
@@ -5354,11 +5361,16 @@ class MarketEngine:
                             pass
 
                         # ── G0c: CALIBRATION GATE (Fix 6) ──
-                        # Skip when calibrated_wr < threshold (default 55%).
-                        # Audit found probability is inverse: high raw_prob = low actual WR.
+                        # 2026-06-11: DEFAULT FLIPPED off → on (bear-trader fix).
+                        # Combined with INSTANT_NEW_TRADE_PROB lowered 65→55, the
+                        # 55-60% bucket needs calibration check — raw_prob alone
+                        # is documented as miscalibrated (high prob = low WR).
+                        # Failsafe: cal_wr=None (no data) → allow (don't block
+                        # on missing calibration data).
+                        # Override: CALIBRATION_GATE_ENABLED=off to disable.
                         try:
                             import os as _os
-                            if _os.environ.get("CALIBRATION_GATE_ENABLED", "off").lower() == "on":
+                            if _os.environ.get("CALIBRATION_GATE_ENABLED", "on").lower() == "on":
                                 from calibration import calibrated_wr as _cal_wr_fn
                                 cal_min = float(_os.environ.get("CALIBRATION_MIN_WR", "55"))
                                 raw_prob = pending.get("probability", 0)
@@ -5458,9 +5470,10 @@ class MarketEngine:
                         momentum_confirmed = locked_ltp >= pending["entry_price"] * confirm_threshold
                         signal_reversed = locked_ltp < pending["entry_price"] * 0.98
                         try:
-                            _pending_ttl = int(os.environ.get("PENDING_TTL_SEC", "90"))
+                            # 2026-06-11: raised 90s → 180s for patient confirmation.
+                            _pending_ttl = int(os.environ.get("PENDING_TTL_SEC", "180"))
                         except (TypeError, ValueError):
-                            _pending_ttl = 90
+                            _pending_ttl = 180
                         pending_expired = age > _pending_ttl
 
                         if momentum_confirmed:

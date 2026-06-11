@@ -1877,6 +1877,36 @@ def check_scalper_exits(chains):
         except Exception:
             pass
 
+        # ─── ZOMBIE_TRADE_KILL (2026-06-11 — bear-trader fix) ───
+        # PEAK_GIVEBACK was capped to peak ≤+1.5% to avoid overlap with
+        # profit_floor. But profit_floor only RAISES SL — doesn't EXIT.
+        # Trades stuck at +0.3% above entry bleed theta until SL hits.
+        # Rule: hold > 30 min, peak < +2%, profit in (-1%, +1%) → exit.
+        # Disabled by env: SCALPER_ZOMBIE_KILL_DISABLED=1
+        try:
+            import os as _os_zk
+            if (_os_zk.environ.get("SCALPER_ZOMBIE_KILL_DISABLED", "").strip() not in ("1","true","on")
+                    and new_status == "OPEN"):
+                zk_min_hold_min = float(_os_zk.environ.get("SCALPER_ZOMBIE_MIN_HOLD_MIN", "30"))
+                zk_max_peak_pct = float(_os_zk.environ.get("SCALPER_ZOMBIE_MAX_PEAK_PCT", "2.0"))
+                zk_band_low = float(_os_zk.environ.get("SCALPER_ZOMBIE_BAND_LOW", "-1.0"))
+                zk_band_high = float(_os_zk.environ.get("SCALPER_ZOMBIE_BAND_HIGH", "1.0"))
+                hold_min = hold_sec / 60
+                peak_pct = peak_profit_pct_local
+                if (hold_min >= zk_min_hold_min
+                        and peak_pct < zk_max_peak_pct
+                        and zk_band_low <= cur_profit_pct <= zk_band_high):
+                    new_status = "ZOMBIE_KILL"
+                    exit_price = current_ltp
+                    exit_reason = (f"ZOMBIE_KILL: hold {hold_min:.0f}m, no momentum "
+                                   f"(peak {peak_pct:+.1f}%, now {cur_profit_pct:+.1f}%) — "
+                                   f"free capital, theta bleeding")
+                    sl_reason_text = exit_reason
+                    print(f"[SCALPER] ZOMBIE_KILL · #{t['id']} {idx} {action} {strike} · "
+                          f"hold {hold_min:.0f}m, stuck at {cur_profit_pct:+.1f}%")
+        except Exception:
+            pass
+
         # ─── SMART SL LADDER (if enabled) ───
         smart_active_sl = sl  # fallback to static
         smart_stage = 0

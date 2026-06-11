@@ -55,13 +55,16 @@ if not _SCALPER_DB.exists():
 # ── Env flags ──────────────────────────────────────────────────────────
 
 def is_enabled() -> bool:
-    # DEFAULT CHANGED 2026-06-04: off → on
-    # Infrastructure audit found circuit breakers disabled despite the
-    # configured -₹15k daily limit. Without enforcement, a runaway loss
-    # day (like Apr 28 = -₹146k) goes unprotected. Enabling default-on
-    # gives loss-cap protection without requiring env-flag flips.
-    # Override: DAILY_LOSS_CAP_ENABLED=off to disable.
-    return os.environ.get("DAILY_LOSS_CAP_ENABLED", "on").lower() != "off"
+    # 2026-06-11: DEFAULT FLIPPED on → off.
+    # User feedback: circuit breaker tripping after 3 small losses (₹15k cap)
+    # was locking entries for 30 min, missing valid signals mid-morning.
+    # Per-trade loss limits now handled by damage control layer:
+    #   - EARLY_CUT (3min, -2.5% trigger)
+    #   - PEAK_GIVEBACK (lock peak profit)
+    #   - BREAKEVEN at +3% peak
+    #   - profit_floor at +1.5% peak (NEW 2026-06-11)
+    # Set DAILY_LOSS_CAP_ENABLED=on to restore the daily cap.
+    return os.environ.get("DAILY_LOSS_CAP_ENABLED", "off").lower() == "on"
 
 
 def is_shadow_enabled() -> bool:

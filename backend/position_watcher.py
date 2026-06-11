@@ -491,14 +491,49 @@ def _evaluate_triggers(trade: Dict, health: Dict, action: str,
 # ──────────────────────────────────────────────────────────────
 
 def _tighten_main_sl(trade_id: int, new_sl: float, reason: str):
+    """RACE-SAFE SL update.
+
+    2026-06-11 BUG FIX: prior version did blind UPDATE which could
+    DOWNGRADE SL set by profit_floor / profit_trailing_sl in the
+    same cycle. Watcher runs on 30s cycle, trade_logger runs on tick;
+    if watcher's SL was lower than the just-raised floor, the floor lock
+    got wiped.
+
+    Fix: SELECT current sl_price first, take max(), then UPDATE only
+    if new_sl strictly raises it. Idempotent + race-safe.
+    """
     try:
         conn = sqlite3.connect(_trades_db_path())
+        row = conn.execute(
+            "SELECT sl_price FROM trades WHERE id=? AND status='OPEN'",
+            (trade_id,)
+        ).fetchone()
+        if not row:
+            conn.close()
+            return False
+        current_sl = row[0] or 0
+        # NEVER LOWER — invariant from profit_floor / profit_trail
+        if new_sl <= current_sl:
+            conn.close()
+            return False
         conn.execute(
-            "UPDATE trades SET sl_price=?, alerts=COALESCE(alerts,'') || ? WHERE id=? AND status='OPEN'",
-            (new_sl, f" | watcher: {reason}", trade_id)
+            "UPDATE trades SET sl_price=?, alerts=COALESCE(alerts,'') || ? "
+            "WHERE id=? AND status='OPEN' AND sl_price < ?",
+            (new_sl, f" | watcher: {reason}", trade_id, new_sl)
         )
         conn.commit()
         conn.close()
+        # SL attribution log
+        try:
+            from profit_floor import attribution_log
+            attribution_log(
+                trade_id=trade_id, tab="MAIN",
+                old_sl=current_sl, new_sl=new_sl,
+                source="position_watcher",
+                extra=reason[:60],
+            )
+        except Exception:
+            pass
         return True
     except Exception as e:
         print(f"[WATCHER] tighten main SL error: {e}")
@@ -506,15 +541,47 @@ def _tighten_main_sl(trade_id: int, new_sl: float, reason: str):
 
 
 def _tighten_scalper_sl(trade_id: int, new_sl: float, reason: str):
+    """RACE-SAFE SL update for scalper (same fix as _tighten_main_sl).
+
+    2026-06-11: was blind UPDATE — could overwrite SL raised by
+    profit_floor or aggressive_trail in same cycle. Now reads current,
+    takes max, only raises.
+    """
     try:
         conn = sqlite3.connect(_scalper_db_path())
-        # scalper has both static sl_price + smart_sl_value
+        row = conn.execute(
+            "SELECT sl_price, smart_sl_value FROM scalper_trades "
+            "WHERE id=? AND status='OPEN'",
+            (trade_id,)
+        ).fetchone()
+        if not row:
+            conn.close()
+            return False
+        current_sl = row[0] or 0
+        current_smart = row[1] or 0
+        # NEVER LOWER — take max across both fields
+        target_sl = max(new_sl, current_sl, current_smart)
+        if target_sl <= current_sl:
+            conn.close()
+            return False
         conn.execute(
-            "UPDATE scalper_trades SET sl_price=?, smart_sl_value=? WHERE id=? AND status='OPEN'",
-            (new_sl, new_sl, trade_id)
+            "UPDATE scalper_trades SET sl_price=?, smart_sl_value=? "
+            "WHERE id=? AND status='OPEN' AND sl_price < ?",
+            (target_sl, target_sl, trade_id, target_sl)
         )
         conn.commit()
         conn.close()
+        # SL attribution log
+        try:
+            from profit_floor import attribution_log
+            attribution_log(
+                trade_id=trade_id, tab="SCALPER",
+                old_sl=current_sl, new_sl=target_sl,
+                source="position_watcher",
+                extra=reason[:60],
+            )
+        except Exception:
+            pass
         return True
     except Exception as e:
         print(f"[WATCHER] tighten scalper SL error: {e}")

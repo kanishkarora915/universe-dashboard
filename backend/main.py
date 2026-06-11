@@ -3202,6 +3202,154 @@ async def admin_disk_usage():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/admin/calibration-audit")
+async def admin_calibration_audit(days: int = 60):
+    """Pull data to inform the BULL vs BEAR debate (2026-06-11).
+
+    Answers two specific questions:
+      1. How many days had loss ≥ ₹15k? (informs DAILY_LOSS_CAP debate)
+      2. What's the WR by verdict probability bucket? (informs
+         INSTANT_NEW_TRADE_PROB 55 vs 65 debate)
+
+    Run on Render with:
+      curl https://<your-app>.onrender.com/api/admin/calibration-audit?days=60
+    """
+    import sqlite3 as _sql
+    from pathlib import Path as _P
+    out = {"days_window": days, "scalper": {}, "main": {}, "errors": []}
+    _data_dir = _P("/data") if _P("/data").is_dir() else _P(__file__).parent
+
+    def _bucket_query(rows):
+        result = []
+        for r in rows:
+            n = r[1]; wins = r[2]; total = r[3] or 0
+            wr = round(wins * 100 / n, 1) if n > 0 else 0
+            avg = round(total / n, 0) if n > 0 else 0
+            result.append({
+                "bucket": r[0], "n": n, "wins": wins,
+                "wr_pct": wr, "avg_rupees": avg, "total_rupees": round(total, 0)
+            })
+        return result
+
+    # ── SCALPER side ──
+    try:
+        db = str(_data_dir / "scalper_trades.db")
+        if not _P(db).exists():
+            db = "scalper_trades.db"
+        c = _sql.connect(db)
+        # Days with loss ≥ 15k
+        rows = c.execute(f"""
+            SELECT DATE(entry_time) d, SUM(pnl_rupees) pnl, COUNT(*) n
+            FROM scalper_trades
+            WHERE status='CLOSED' AND entry_time >= date('now','-{days} days')
+            GROUP BY d HAVING pnl <= -15000 ORDER BY pnl ASC
+        """).fetchall()
+        out["scalper"]["loss_15k_days"] = [
+            {"date": r[0], "pnl": round(r[1], 0), "n_trades": r[2]} for r in rows
+        ]
+        out["scalper"]["loss_15k_days_count"] = len(rows)
+        # WR by bucket
+        rows = c.execute(f"""
+            SELECT
+                CASE
+                    WHEN probability < 50 THEN '<50'
+                    WHEN probability < 55 THEN '50-54'
+                    WHEN probability < 60 THEN '55-59'
+                    WHEN probability < 65 THEN '60-64'
+                    WHEN probability < 70 THEN '65-69'
+                    WHEN probability < 80 THEN '70-79'
+                    ELSE '80+'
+                END as bucket,
+                COUNT(*) as n,
+                SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(pnl_rupees) as total
+            FROM scalper_trades
+            WHERE status='CLOSED' AND probability > 0
+              AND entry_time >= date('now','-30 days')
+            GROUP BY bucket ORDER BY bucket
+        """).fetchall()
+        out["scalper"]["wr_by_bucket_30d"] = _bucket_query(rows)
+        # Worst 10 days
+        rows = c.execute(f"""
+            SELECT DATE(entry_time) d, SUM(pnl_rupees) pnl, COUNT(*) n
+            FROM scalper_trades
+            WHERE status='CLOSED' AND entry_time >= date('now','-{days} days')
+            GROUP BY d ORDER BY pnl ASC LIMIT 10
+        """).fetchall()
+        out["scalper"]["worst_10_days"] = [
+            {"date": r[0], "pnl": round(r[1], 0), "n_trades": r[2]} for r in rows
+        ]
+        c.close()
+    except Exception as e:
+        out["errors"].append(f"scalper: {e}")
+
+    # ── MAIN side ──
+    try:
+        db = str(_data_dir / "trades.db")
+        if not _P(db).exists():
+            db = "trades.db"
+        c = _sql.connect(db)
+        rows = c.execute(f"""
+            SELECT DATE(entry_time) d, SUM(pnl_rupees) pnl, COUNT(*) n
+            FROM trades
+            WHERE status='CLOSED' AND entry_time >= date('now','-{days} days')
+            GROUP BY d HAVING pnl <= -15000 ORDER BY pnl ASC
+        """).fetchall()
+        out["main"]["loss_15k_days"] = [
+            {"date": r[0], "pnl": round(r[1], 0), "n_trades": r[2]} for r in rows
+        ]
+        out["main"]["loss_15k_days_count"] = len(rows)
+        # WR by bucket (main uses entry_probability not probability)
+        rows = c.execute(f"""
+            SELECT
+                CASE
+                    WHEN entry_probability < 50 THEN '<50'
+                    WHEN entry_probability < 55 THEN '50-54'
+                    WHEN entry_probability < 60 THEN '55-59'
+                    WHEN entry_probability < 65 THEN '60-64'
+                    WHEN entry_probability < 70 THEN '65-69'
+                    WHEN entry_probability < 80 THEN '70-79'
+                    ELSE '80+'
+                END as bucket,
+                COUNT(*) as n,
+                SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(pnl_rupees) as total
+            FROM trades
+            WHERE status='CLOSED' AND entry_probability > 0
+              AND entry_time >= date('now','-30 days')
+            GROUP BY bucket ORDER BY bucket
+        """).fetchall()
+        out["main"]["wr_by_bucket_30d"] = _bucket_query(rows)
+        c.close()
+    except Exception as e:
+        out["errors"].append(f"main: {e}")
+
+    # ── Decision hints ──
+    scalper_bad = out.get("scalper", {}).get("loss_15k_days_count", 0)
+    main_bad = out.get("main", {}).get("loss_15k_days_count", 0)
+    total_bad = scalper_bad + main_bad
+    out["decision_hints"] = {
+        "daily_loss_cap": (
+            "RESTORE ON" if total_bad >= 3 else
+            "KEEP OFF" if total_bad <= 1 else
+            "MARGINAL — your call"
+        ),
+        "daily_loss_cap_reason": f"{total_bad} days with loss ≥ ₹15k in last {days}d "
+                                 f"(scalper={scalper_bad}, main={main_bad})",
+    }
+    # WR-based decision for 55% threshold
+    for tab in ("scalper", "main"):
+        buckets = out.get(tab, {}).get("wr_by_bucket_30d", [])
+        b55 = next((b for b in buckets if b["bucket"] == "55-59"), None)
+        if b55 and b55["n"] >= 5:
+            out["decision_hints"][f"{tab}_55_bucket"] = {
+                "wr_pct": b55["wr_pct"], "n": b55["n"],
+                "avg_pnl": b55["avg_rupees"],
+                "verdict": "KEEP at 55" if b55["wr_pct"] >= 50 else "RESTORE 65"
+            }
+    return out
+
+
 @app.post("/api/admin/disk/cleanup")
 async def admin_disk_cleanup(body: dict = None):
     """SAFE targeted cleanup of /data. Pass {"action": "..."} with one of:

@@ -943,7 +943,12 @@ class TradeManager:
                 if (_os_pg.environ.get("MAIN_PEAK_GIVEBACK_DISABLED", "").strip() not in ("1","true","on")
                         and new_status == "OPEN"):
                     pg_min_peak = float(_os_pg.environ.get("MAIN_PG_MIN_PEAK_PCT", "0.5"))
-                    pg_max_peak = float(_os_pg.environ.get("MAIN_PG_MAX_PEAK_PCT", "3.0"))
+                    # 2026-06-11: capped 3.0 → 1.5. Above +1.5% peak, profit_floor
+                    # locks SL at entry (zero loss). PEAK_GIVEBACK would exit at
+                    # current_ltp (possibly -1% loss) — STRICTLY WORSE outcome.
+                    # Keep PEAK_GIVEBACK only for tiny peaks (0.5-1.5%) where
+                    # profit_floor doesn't yet activate.
+                    pg_max_peak = float(_os_pg.environ.get("MAIN_PG_MAX_PEAK_PCT", "1.5"))
                     pg_drop_from_peak = float(_os_pg.environ.get("MAIN_PG_DROP_PCT", "1.5"))
                     pg_min_loss = float(_os_pg.environ.get("MAIN_PG_MIN_LOSS", "-1.0"))
                     hold_min_main = hold_sec_main / 60
@@ -961,6 +966,38 @@ class TradeManager:
                               f"peak +{peak_pct:.1f}% → now {profit_pct:+.1f}%")
             except Exception as _pg_e:
                 print(f"[TRADE] PEAK_GIVEBACK error (allow): {_pg_e}")
+
+            # ── ZOMBIE_TRADE_KILL — exit theta-bleeding zombies ──
+            # 2026-06-11 (bear-trader fix). PEAK_GIVEBACK was shrunk to peak
+            # ≤ +1.5% to avoid overlap with profit_floor. But profit_floor
+            # only RAISES SL — it doesn't EXIT. Trades sitting at +0.3%
+            # above entry for 30+ min bleed theta until SL hits.
+            #
+            # ZOMBIE rule: hold > 30 min, profit stuck in (-1%, +1%) band,
+            # peak < +2% (no real momentum ever) → exit small, free capital.
+            #
+            # Disabled by env: MAIN_ZOMBIE_KILL_DISABLED=1
+            try:
+                import os as _os_zk
+                if (_os_zk.environ.get("MAIN_ZOMBIE_KILL_DISABLED", "").strip() not in ("1","true","on")
+                        and new_status == "OPEN"):
+                    zk_min_hold_min = float(_os_zk.environ.get("MAIN_ZOMBIE_MIN_HOLD_MIN", "30"))
+                    zk_max_peak_pct = float(_os_zk.environ.get("MAIN_ZOMBIE_MAX_PEAK_PCT", "2.0"))
+                    zk_band_low = float(_os_zk.environ.get("MAIN_ZOMBIE_BAND_LOW", "-1.0"))
+                    zk_band_high = float(_os_zk.environ.get("MAIN_ZOMBIE_BAND_HIGH", "1.0"))
+                    hold_min_main = hold_sec_main / 60
+                    if (hold_min_main >= zk_min_hold_min
+                            and peak_pct < zk_max_peak_pct
+                            and zk_band_low <= profit_pct <= zk_band_high):
+                        new_status = "ZOMBIE_KILL"
+                        exit_price = current_ltp
+                        exit_reason = (f"ZOMBIE_KILL: hold {hold_min_main:.0f}m, no momentum "
+                                       f"(peak {peak_pct:+.1f}%, now {profit_pct:+.1f}%) — "
+                                       f"free capital, theta bleeding")
+                        print(f"[TRADE] ZOMBIE_KILL · {action} {idx} {strike} · "
+                              f"hold {hold_min_main:.0f}m, stuck at {profit_pct:+.1f}%")
+            except Exception as _zk_e:
+                print(f"[TRADE] ZOMBIE_KILL error (allow): {_zk_e}")
 
             # ── BUYER MODE thresholds (loaded EARLY — used by adaptive SL below) ──
             # BUG FIX 2026-05-08: _bm was used at line 836 before being defined at
@@ -1071,19 +1108,50 @@ class TradeManager:
                     and profit_pct > _bm.get("conviction_exit_min_profit", 5)
                     and current_conviction < _bm.get("conviction_exit_threshold", 50)):
                 breakeven_active = 1
-                new_sl = entry
+                # 2026-06-11 BUG FIX: was `new_sl = entry` blindly, which
+                # DOWNGRADED any profit_floor lock set during peak. E.g. peak
+                # hit +8% → profit_floor locked SL at entry × 1.04 (+4%), then
+                # conviction dropped → this line reset SL to entry (lost +4%).
+                # Now: take max of entry-floor and existing locked SL.
+                try:
+                    from profit_floor import get_minimum_sl as _pf_min
+                    peak_p = trade.get("peak_ltp", current_ltp) or current_ltp
+                    if peak_p < current_ltp:
+                        peak_p = current_ltp
+                    floor_min = _pf_min(
+                        entry_price=entry, peak_price=peak_p, current_sl=sl,
+                        idx=idx,  # per-index bands (BNF noise-shifted)
+                    )
+                    new_sl = max(entry, floor_min, sl)
+                except Exception:
+                    new_sl = max(entry, sl)
                 trail_level = "CONVICTION_BE"
-                alerts_list.append(f"EARLY BREAKEVEN [{_bm['mode']}]: Conviction dropped to {current_conviction}% but profit +{profit_pct:.0f}%. SL moved to entry ₹{entry}.")
-                print(f"[TRADE] EARLY BREAKEVEN (conviction): {action} {idx} {strike} — conviction {current_conviction}%, profit +{profit_pct:.0f}%")
+                alerts_list.append(f"EARLY BREAKEVEN [{_bm['mode']}]: Conviction dropped to {current_conviction}% but profit +{profit_pct:.0f}%. SL raised to ₹{new_sl} (floor-aware).")
+                print(f"[TRADE] EARLY BREAKEVEN (conviction): {action} {idx} {strike} — conviction {current_conviction}%, profit +{profit_pct:.0f}%, SL ₹{new_sl}")
 
             # STAGE 1: BREAKEVEN — HEDGER: +2% / BUYER: +20%
             be_threshold = _bm.get("breakeven_pct", 2.0)
             if not breakeven_active and profit_pct >= be_threshold:
                 breakeven_active = 1
-                new_sl = entry
+                # 2026-06-11: take max with existing SL + profit_floor.
+                # profit_floor at +5% peak locks +2.5%. If profit drops back to
+                # +3% (BE threshold), this line previously set new_sl=entry
+                # (lost the +2.5% lock). max() preserves the higher floor.
+                try:
+                    from profit_floor import get_minimum_sl as _pf_min
+                    peak_p = trade.get("peak_ltp", current_ltp) or current_ltp
+                    if peak_p < current_ltp:
+                        peak_p = current_ltp
+                    floor_min = _pf_min(
+                        entry_price=entry, peak_price=peak_p, current_sl=sl,
+                        idx=idx,  # per-index bands (BNF noise-shifted)
+                    )
+                    new_sl = max(entry, floor_min, sl)
+                except Exception:
+                    new_sl = max(entry, sl)
                 trail_level = "BREAKEVEN"
-                alerts_list.append(f"BREAKEVEN [{_bm['mode']}] activated at +{profit_pct:.1f}% (threshold {be_threshold}%) — SL moved to entry ₹{entry}")
-                print(f"[TRADE] BREAKEVEN [{_bm['mode']}]: {action} {idx} {strike} — SL moved to entry ₹{entry} (was ₹{sl})")
+                alerts_list.append(f"BREAKEVEN [{_bm['mode']}] activated at +{profit_pct:.1f}% (threshold {be_threshold}%) — SL raised to ₹{new_sl}")
+                print(f"[TRADE] BREAKEVEN [{_bm['mode']}]: {action} {idx} {strike} — SL ₹{new_sl} (was ₹{sl})")
 
             # STAGE 1.5: REVERSAL EXIT — MAX LOSS CAP at -5% (BUYER mode default)
             #
