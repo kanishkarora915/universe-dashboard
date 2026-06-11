@@ -153,18 +153,21 @@ def calc_position_size(idx, entry_price, sl_price=0, conviction=70, whale_aligne
     if entry_price <= 0:
         return 1, lot_size, lot_size
 
-    # Conviction multiplier — AGGRESSIVE for ₹10L capital
-    # Goal: deploy 30-60% of capital per trade on high conviction
+    # Conviction multiplier — DATA-DRIVEN (199-trade audit 2026-06-10)
+    # Sweet spot from audit: 70-79% bucket = 43 wins (41% of all wins), ₹+5.42L.
+    # 100% conviction trades had 2 wins / 5 losses (overconfidence trap).
+    # 50-59% bucket: 18 wins, ₹+2.37L (counter-intuitive — still positive).
+    # New scaling: BOOST sweet spot, REDUCE extreme conviction.
     if conviction >= 90:
-        conv_mult = 2.0    # MAX — beast mode (₹60k risk = 6%)
+        conv_mult = 0.7    # OVERCONFIDENCE TRAP — data shows 90%+ lose
     elif conviction >= 80:
-        conv_mult = 1.5    # Aggressive (₹45k risk = 4.5%)
-    elif conviction >= 70:
-        conv_mult = 1.2    # Full (₹36k risk = 3.6%)
-    elif conviction >= 60:
-        conv_mult = 1.0    # Standard (₹30k risk = 3%)
+        conv_mult = 1.3    # Good but smaller sample
+    elif conviction >= 65:
+        conv_mult = 1.5    # SWEET SPOT (data-validated 65-79% = best wins)
+    elif conviction >= 55:
+        conv_mult = 1.0    # Standard
     else:
-        conv_mult = 0.7    # Smaller (₹21k risk = 2.1%)
+        conv_mult = 0.7    # Cautious (low conv, smaller bet)
 
     running_capital = _get_running_capital()
     base_risk_pct = MAX_RISK_WHALE_ALIGNED_PCT if whale_aligned else MAX_RISK_PER_TRADE_PCT
@@ -873,6 +876,63 @@ class TradeManager:
                               f"never positive in {hold_sec_main/60:.1f}m, cut at {profit_pct:+.1f}%")
             except Exception as _ec_e:
                 print(f"[TRADE] EARLY_CUT error (allow): {_ec_e}")
+
+            # ── CROSS-ASSET CONFIRMATION (Phase 3 — 2026-06-10) ──
+            # If NIFTY trade + BANKNIFTY moving SAME direction → confirmed.
+            # Tighten trail (catch more profit). Loosen trail if divergent.
+            # Data: 80%+ correlation between NIFTY and BANKNIFTY intraday.
+            # Confirmation = boost trail aggression, hold longer.
+            # Divergence = give more room (single-index move can fade).
+            # Env: MAIN_CROSS_ASSET_DISABLED=1 to revert
+            try:
+                import os as _os_ca
+                if _os_ca.environ.get("MAIN_CROSS_ASSET_DISABLED", "").strip() not in ("1","true","on"):
+                    # Get both index spots from prices dict
+                    nifty_token = spot_tokens.get("NIFTY")
+                    bnf_token = spot_tokens.get("BANKNIFTY")
+                    nifty_spot = prices.get(nifty_token, {}).get("ltp", 0) if nifty_token else 0
+                    bnf_spot = prices.get(bnf_token, {}).get("ltp", 0) if bnf_token else 0
+                    nifty_prev = prices.get(nifty_token, {}).get("close", nifty_spot) if nifty_token else 0
+                    bnf_prev = prices.get(bnf_token, {}).get("close", bnf_spot) if bnf_token else 0
+                    # % change today
+                    nifty_chg = (nifty_spot - nifty_prev) / nifty_prev if nifty_prev > 0 else 0
+                    bnf_chg = (bnf_spot - bnf_prev) / bnf_prev if bnf_prev > 0 else 0
+                    # Is current trade direction aligned with index movements?
+                    is_ce = "CE" in action
+                    # CE trade benefits when spot UP. PE when spot DOWN.
+                    own_chg = nifty_chg if idx == "NIFTY" else bnf_chg
+                    other_chg = bnf_chg if idx == "NIFTY" else nifty_chg
+                    # Cross-asset confirms when BOTH move in our trade direction
+                    if is_ce:
+                        confirmed = (own_chg > 0.001 and other_chg > 0.001)  # both rallying
+                        divergent = (own_chg > 0.001 and other_chg < -0.001)  # our up, other down
+                    else:
+                        confirmed = (own_chg < -0.001 and other_chg < -0.001)  # both falling
+                        divergent = (own_chg < -0.001 and other_chg > 0.001)  # our down, other up
+                    # Apply effect: only when trade is in profit
+                    if profit_pct > 1 and new_status == "OPEN":
+                        if confirmed:
+                            # Cross-asset confirms direction → tighten trail by 5%
+                            # New SL = current_ltp × 0.97 (3% tight trail vs default 5%)
+                            tight_sl = round(current_ltp * 0.97, 2)
+                            if tight_sl > new_sl and tight_sl > entry:
+                                new_sl = tight_sl
+                                trail_level = f"{trail_level}+XAFCONF"
+                                alerts_list.append(
+                                    f"CROSS-ASSET CONFIRMED ({idx} {action} aligned with "
+                                    f"{'BNF' if idx=='NIFTY' else 'NIFTY'}) — tight trail ₹{new_sl}"
+                                )
+                        elif divergent:
+                            # Divergence — loosen trail by 2% (give more room, might recover)
+                            loose_sl = round(current_ltp * 0.93, 2)  # 7% from current
+                            # Don't loosen below entry
+                            if loose_sl < new_sl and loose_sl > entry:
+                                new_sl = loose_sl
+                                alerts_list.append(
+                                    f"CROSS-ASSET DIVERGENT — loose trail ₹{new_sl} (other index opposite)"
+                                )
+            except Exception as _ca_e:
+                print(f"[TRADE] CROSS_ASSET error (allow): {_ca_e}")
 
             # ── PEAK_GIVEBACK — "brief hope then crash" detection ──
             # Peak +0.5% to +3% reached, then dropped ≥1.5% from peak,
