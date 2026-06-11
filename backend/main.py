@@ -3406,6 +3406,222 @@ async def admin_calibration_audit(days: int = 60):
     return out
 
 
+@app.get("/api/admin/daily-report")
+async def admin_daily_report(date: str = None):
+    """Date-wise EOD report — works for any past day.
+
+    Default: today.
+    Returns per-tab P&L, top winner/loser, new rule firings, time-of-day breakdown.
+
+    Examples:
+      /api/admin/daily-report                  → today
+      /api/admin/daily-report?date=2026-06-11  → specific date
+      /api/admin/daily-report?date=2026-06-10  → past date
+    """
+    import sqlite3 as _sql
+    from pathlib import Path as _P
+    from datetime import datetime as _dt
+
+    # Date handling
+    if not date:
+        date = _dt.now().strftime("%Y-%m-%d")
+
+    _data_dir = _P("/data") if _P("/data").is_dir() else _P(__file__).parent
+    out = {
+        "date": date,
+        "scalper": {},
+        "main": {},
+        "combined": {},
+        "errors": [],
+    }
+
+    def _analyze_tab(db_path, table, prob_col="probability"):
+        if not _P(db_path).exists():
+            return {"error": f"DB not found: {db_path}"}
+        c = _sql.connect(db_path)
+        c.row_factory = _sql.Row
+        cols = [r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()]
+        hold_expr = "hold_seconds" if "hold_seconds" in cols else "(strftime('%s', exit_time) - strftime('%s', entry_time))"
+
+        # All trades for the date
+        rows = c.execute(f"""
+            SELECT id, entry_time, exit_time, idx, action, strike, entry_price,
+                   peak_ltp, exit_price, pnl_rupees, status, exit_reason,
+                   {prob_col} as prob, qty
+            FROM {table}
+            WHERE status != 'OPEN' AND DATE(entry_time) = ?
+            ORDER BY entry_time ASC
+        """, (date,)).fetchall()
+        trades = [dict(r) for r in rows]
+
+        if not trades:
+            c.close()
+            return {"n": 0, "pnl": 0, "wins": 0, "losses": 0, "win_rate": 0,
+                    "trades_by_status": {}, "top_winner": None, "top_loser": None,
+                    "by_hour": {}, "new_rules_fired": {}}
+
+        # Aggregates
+        wins = [t for t in trades if t["pnl_rupees"] > 0]
+        losses = [t for t in trades if t["pnl_rupees"] < 0]
+        scratches = [t for t in trades if t["pnl_rupees"] == 0]
+        total_pnl = sum(t["pnl_rupees"] for t in trades)
+
+        # By status
+        from collections import Counter
+        status_counts = Counter(t["status"] for t in trades)
+        status_pnl = {}
+        for s in status_counts:
+            status_pnl[s] = {
+                "n": status_counts[s],
+                "pnl": round(sum(t["pnl_rupees"] for t in trades if t["status"] == s), 0)
+            }
+
+        # Top winner/loser
+        top_winner = max(trades, key=lambda t: t["pnl_rupees"]) if trades else None
+        top_loser = min(trades, key=lambda t: t["pnl_rupees"]) if trades else None
+
+        # By hour
+        by_hour = {}
+        for t in trades:
+            try:
+                h = int(t["entry_time"][11:13])
+                key = f"{h:02d}:00"
+                if key not in by_hour:
+                    by_hour[key] = {"n": 0, "pnl": 0, "wins": 0}
+                by_hour[key]["n"] += 1
+                by_hour[key]["pnl"] += t["pnl_rupees"]
+                if t["pnl_rupees"] > 0:
+                    by_hour[key]["wins"] += 1
+            except Exception:
+                pass
+
+        # NEW rules firings count (today's deployed protections)
+        new_rules = {
+            "INSTANT_REJECT":  status_counts.get("INSTANT_REJECT", 0),
+            "EARLY_CUT":       status_counts.get("EARLY_CUT", 0),
+            "ZOMBIE_KILL":     status_counts.get("ZOMBIE_KILL", 0),
+            "PEAK_GIVEBACK":   status_counts.get("PEAK_GIVEBACK", 0),
+            "BREAKEVEN_EXIT":  status_counts.get("BREAKEVEN_EXIT", 0),
+            "STOP_HUNTED":     status_counts.get("STOP_HUNTED", 0),
+        }
+
+        c.close()
+
+        # Build clean trade summary
+        def _trade_brief(t):
+            if not t: return None
+            return {
+                "id": t["id"],
+                "time": t["entry_time"][11:19] if t.get("entry_time") else "",
+                "idx": t["idx"],
+                "action": t["action"],
+                "strike": t["strike"],
+                "entry": t["entry_price"],
+                "peak_pct": round((t["peak_ltp"] - t["entry_price"]) / t["entry_price"] * 100, 2) if t["entry_price"] > 0 else 0,
+                "exit": t["exit_price"],
+                "pnl": round(t["pnl_rupees"], 0),
+                "status": t["status"],
+                "prob": t.get("prob", 0),
+            }
+
+        return {
+            "n": len(trades),
+            "wins": len(wins),
+            "losses": len(losses),
+            "scratches": len(scratches),
+            "win_rate": round(len(wins) * 100 / len(trades), 1) if trades else 0,
+            "pnl": round(total_pnl, 0),
+            "trades_by_status": status_pnl,
+            "top_winner": _trade_brief(top_winner) if top_winner and top_winner["pnl_rupees"] > 0 else None,
+            "top_loser": _trade_brief(top_loser) if top_loser and top_loser["pnl_rupees"] < 0 else None,
+            "by_hour": {k: {"n": v["n"], "pnl": round(v["pnl"], 0), "wins": v["wins"]} for k, v in sorted(by_hour.items())},
+            "new_rules_fired": new_rules,
+        }
+
+    try:
+        out["scalper"] = _analyze_tab(str(_data_dir / "scalper_trades.db"), "scalper_trades")
+    except Exception as e:
+        out["errors"].append(f"scalper: {e}")
+    try:
+        out["main"] = _analyze_tab(str(_data_dir / "trades.db"), "trades")
+    except Exception as e:
+        out["errors"].append(f"main: {e}")
+
+    # Combined
+    s = out.get("scalper", {})
+    m = out.get("main", {})
+    if "n" in s and "n" in m:
+        s_pnl = s.get("pnl", 0)
+        m_pnl = m.get("pnl", 0)
+        s_n = s.get("n", 0)
+        m_n = m.get("n", 0)
+        total_n = s_n + m_n
+        total_wins = s.get("wins", 0) + m.get("wins", 0)
+        out["combined"] = {
+            "total_trades": total_n,
+            "total_pnl": round(s_pnl + m_pnl, 0),
+            "total_wins": total_wins,
+            "win_rate": round(total_wins * 100 / total_n, 1) if total_n > 0 else 0,
+            "scalper_pnl": round(s_pnl, 0),
+            "main_pnl": round(m_pnl, 0),
+        }
+
+    return out
+
+
+@app.get("/api/admin/recent-days-report")
+async def admin_recent_days_report(days: int = 7):
+    """Roll-up: last N days summary. Returns date-wise P&L."""
+    import sqlite3 as _sql
+    from pathlib import Path as _P
+    _data_dir = _P("/data") if _P("/data").is_dir() else _P(__file__).parent
+    out = {"days": days, "by_date": {}, "totals": {}, "errors": []}
+
+    try:
+        for tab, db_name, table in [("scalper", "scalper_trades.db", "scalper_trades"),
+                                      ("main", "trades.db", "trades")]:
+            db = str(_data_dir / db_name)
+            if not _P(db).exists():
+                continue
+            c = _sql.connect(db)
+            rows = c.execute(f"""
+                SELECT DATE(entry_time) d, COUNT(*) n,
+                       SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) wins,
+                       SUM(pnl_rupees) pnl
+                FROM {table}
+                WHERE status != 'OPEN'
+                  AND entry_time >= date('now','-{days} days')
+                GROUP BY d ORDER BY d DESC
+            """).fetchall()
+            for r in rows:
+                d, n, w, pnl = r
+                if d not in out["by_date"]:
+                    out["by_date"][d] = {}
+                out["by_date"][d][tab] = {
+                    "n": n, "wins": w,
+                    "win_rate": round(w * 100 / n, 1) if n > 0 else 0,
+                    "pnl": round(pnl or 0, 0)
+                }
+            c.close()
+    except Exception as e:
+        out["errors"].append(str(e))
+
+    # Build totals
+    grand_total = 0
+    for d, tabs in out["by_date"].items():
+        s_pnl = tabs.get("scalper", {}).get("pnl", 0)
+        m_pnl = tabs.get("main", {}).get("pnl", 0)
+        tabs["combined_pnl"] = round(s_pnl + m_pnl, 0)
+        grand_total += s_pnl + m_pnl
+
+    out["totals"] = {
+        "grand_total_pnl": round(grand_total, 0),
+        "days_with_data": len(out["by_date"]),
+        "avg_per_day": round(grand_total / len(out["by_date"]), 0) if out["by_date"] else 0,
+    }
+    return out
+
+
 @app.get("/api/admin/exit-pattern-audit")
 async def admin_exit_pattern_audit(days: int = 60, status: str = None):
     """Deep dive into EXIT PATTERNS — what kills trades?
