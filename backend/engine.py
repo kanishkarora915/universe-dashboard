@@ -5281,6 +5281,31 @@ class MarketEngine:
                     # so ATM drift doesn't reset the pending.
                     pending = self.trade_manager._pending_entry.get(idx)
 
+                    # ── INSTANT FIRE (2026-06-10 user request) ──
+                    # User: "PnL tab me 1 bhi trade nahi liya aaj, scalper jaisa
+                    # instant fire chahiye". When verdict prob >= INSTANT_NEW_TRADE_PROB
+                    # AND no pending exists, create pending immediately so the
+                    # fire path below executes in SAME cycle (no 30s wait).
+                    # confirm_threshold=1.0 at prob>=60 means premium == entry
+                    # passes the momentum check, so trade fires this iteration.
+                    # All A2-A12 safety gates still apply — instant fire only
+                    # skips the pending+wait step, not the safety checks.
+                    if not pending or pending.get("action") != action:
+                        prob_now = v.get("winProbability", 0)
+                        try:
+                            _instant_new = int(os.environ.get("INSTANT_NEW_TRADE_PROB", "65"))
+                        except (TypeError, ValueError):
+                            _instant_new = 65
+                        if prob_now >= _instant_new:
+                            self.trade_manager._pending_entry[idx] = {
+                                "idx": idx, "action": action, "strike": int(atm),
+                                "entry_price": fresh_entry, "probability": prob_now,
+                            }
+                            self.trade_manager._pending_entry_time[idx] = time.time()
+                            pending = self.trade_manager._pending_entry[idx]
+                            print(f"[TRADE] INSTANT FIRE: {action} {idx} {atm} @ "
+                                  f"₹{fresh_entry} ({prob_now}% — no wait, gates apply)")
+
                     if pending and pending["action"] == action:
                         # ── G0: EXPIRY DAY GUARD ──
                         # Tuesday = NIFTY weekly expiry. 60d audit: -₹116k MAIN loss.
