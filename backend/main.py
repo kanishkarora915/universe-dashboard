@@ -267,6 +267,21 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         print(f"[STARTUP] structure-refresh spawn failed: {_e}")
 
+    # ── EOD Daily Report Telegram Push (3:30 PM IST) ──
+    # 2026-06-11: User requested daily date-wise report.
+    # Sends formatted summary to Telegram each day after market close.
+    # Uses existing /api/admin/daily-report data + telegram_alerts.
+    try:
+        import threading as _th
+        _th.Thread(
+            target=_eod_telegram_daemon,
+            daemon=True,
+            name="eod-telegram-daemon",
+        ).start()
+        print("[STARTUP] eod-telegram daemon spawned")
+    except Exception as _e:
+        print(f"[STARTUP] eod-telegram spawn failed: {_e}")
+
     # ── Stale-token reaper — wipes the cached Kite token at 06:00 IST ──
     # Kite revokes the access token at 6 AM IST sharp. Holding onto the
     # cached /data/access_token.json past 6 AM means any consumer
@@ -911,6 +926,152 @@ def _engine_selfheal_monitor():
 
         except Exception as e:
             print(f"[SELFHEAL] Outer loop error: {e}")
+            _t.sleep(60)
+
+
+def _eod_telegram_daemon():
+    """Background thread — sends daily EOD report at 15:30 IST (after market close).
+
+    2026-06-11: User requested "3pm report har din ki date wise ho".
+    Logic:
+      - Sleep until next 15:30 IST
+      - On weekdays: fetch today's report, format, send to Telegram
+      - On weekends: skip
+      - Loop forever
+    """
+    import time as _t
+    from datetime import datetime as _dt, timedelta as _td
+    import pytz as _pytz
+
+    IST = _pytz.timezone("Asia/Kolkata")
+
+    def _next_run_time():
+        """Returns next 15:30 IST (today if before, tomorrow if after)."""
+        now = _dt.now(IST)
+        target = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        if now >= target:
+            target = target + _td(days=1)
+        return target
+
+    def _format_summary(report):
+        """Builds telegram-friendly markdown summary from daily-report data."""
+        try:
+            date = report.get("date", "?")
+            s = report.get("scalper", {})
+            m = report.get("main", {})
+            c = report.get("combined", {})
+
+            def _emj(pnl):
+                if pnl > 5000: return "🟢"
+                if pnl > 0: return "🟢"
+                if pnl > -5000: return "🟡"
+                return "🔴"
+
+            tot_pnl = c.get("total_pnl", 0)
+            lines = [
+                f"📊 *EOD Report — {date}*",
+                f"",
+                f"{_emj(tot_pnl)} *Combined: ₹{tot_pnl:+,.0f}*",
+                f"  • Scalper: ₹{c.get('scalper_pnl', 0):+,.0f} ({s.get('n', 0)} trades, WR {s.get('win_rate', 0):.0f}%)",
+                f"  • Main:    ₹{c.get('main_pnl', 0):+,.0f} ({m.get('n', 0)} trades, WR {m.get('win_rate', 0):.0f}%)",
+                f"",
+            ]
+
+            # Top trades
+            tw = s.get("top_winner") or m.get("top_winner")
+            tl = s.get("top_loser") or m.get("top_loser")
+
+            # Pick the bigger overall winner/loser
+            all_winners = [x for x in [s.get("top_winner"), m.get("top_winner")] if x]
+            all_losers = [x for x in [s.get("top_loser"), m.get("top_loser")] if x]
+            if all_winners:
+                tw = max(all_winners, key=lambda x: x["pnl"])
+                lines.append(f"⭐ *Top Win:* {tw['idx']} {tw['action']} {tw['strike']}")
+                lines.append(f"   ₹{tw['pnl']:+,.0f} (peak {tw['peak_pct']:+.1f}%, {tw['time']})")
+            if all_losers:
+                tl = min(all_losers, key=lambda x: x["pnl"])
+                lines.append(f"💀 *Top Loss:* {tl['idx']} {tl['action']} {tl['strike']}")
+                lines.append(f"   ₹{tl['pnl']:+,.0f} (peak {tl['peak_pct']:+.1f}%, {tl['time']})")
+
+            lines.append("")
+
+            # Status breakdown (top 4)
+            all_status = {}
+            for tab_data in [s, m]:
+                for status, sd in (tab_data.get("trades_by_status") or {}).items():
+                    if status not in all_status:
+                        all_status[status] = {"n": 0, "pnl": 0}
+                    all_status[status]["n"] += sd["n"]
+                    all_status[status]["pnl"] += sd["pnl"]
+
+            if all_status:
+                lines.append("*Exits:*")
+                sorted_st = sorted(all_status.items(), key=lambda x: -abs(x[1]["pnl"]))[:5]
+                for status, sd in sorted_st:
+                    pnl_str = f"₹{sd['pnl']:+,.0f}"
+                    lines.append(f"  • {status}: {sd['n']}× → {pnl_str}")
+
+            # New rules effectiveness
+            rules_total = {}
+            for tab_data in [s, m]:
+                for r, count in (tab_data.get("new_rules_fired") or {}).items():
+                    rules_total[r] = rules_total.get(r, 0) + count
+            fired = {k: v for k, v in rules_total.items() if v > 0}
+            if fired:
+                lines.append("")
+                lines.append("*Damage Control Fired:*")
+                for r, count in sorted(fired.items(), key=lambda x: -x[1]):
+                    lines.append(f"  • {r}: {count}×")
+
+            return "\n".join(lines)
+        except Exception as e:
+            return f"📊 EOD Report — error formatting: {e}"
+
+    def _is_market_day():
+        """Mon-Fri only."""
+        return _dt.now(IST).weekday() < 5
+
+    print("[EOD-TG] daemon started, will fire at 15:30 IST each market day")
+    while True:
+        try:
+            next_run = _next_run_time()
+            sleep_sec = (next_run - _dt.now(IST)).total_seconds()
+            sleep_sec = max(sleep_sec, 60)  # min 60s
+            print(f"[EOD-TG] sleeping {sleep_sec:.0f}s until {next_run.strftime('%Y-%m-%d %H:%M')} IST")
+            _t.sleep(sleep_sec)
+
+            if not _is_market_day():
+                print("[EOD-TG] weekend, skipping")
+                continue
+
+            # Fetch today's report
+            from datetime import datetime as _dt2
+            today = _dt2.now(IST).strftime("%Y-%m-%d")
+
+            # Call the daily-report endpoint logic directly
+            # (avoids HTTP self-call)
+            try:
+                # Use the local function we built
+                import asyncio
+                report = asyncio.run(admin_daily_report(date=today))
+            except Exception as ee:
+                print(f"[EOD-TG] report fetch error: {ee}")
+                continue
+
+            # Format + send
+            try:
+                import telegram_alerts as _tg
+                if _tg.is_enabled():
+                    msg = _format_summary(report)
+                    _tg.send(msg, key=f"eod_{today}")
+                    print(f"[EOD-TG] sent for {today}")
+                else:
+                    print(f"[EOD-TG] telegram not configured, skipped")
+            except Exception as ee:
+                print(f"[EOD-TG] send error: {ee}")
+
+        except Exception as e:
+            print(f"[EOD-TG] loop error: {e}")
             _t.sleep(60)
 
 
