@@ -5468,18 +5468,22 @@ async def admin_main_gates_trace():
         if not eng:
             return {"error": "engine not running"}
 
-        verdict = eng.verdict if hasattr(eng, 'verdict') else {}
+        try:
+            verdict = eng.get_full_verdict() or {}
+        except Exception:
+            verdict = {}
         out["verdict_summary"] = {
             idx: {
-                "action": v.get("action", "?"),
-                "prob": v.get("winProbability", 0),
-            } for idx, v in verdict.items() if v
+                "action": v.get("action", "?") if isinstance(v, dict) else "?",
+                "prob": v.get("winProbability", 0) if isinstance(v, dict) else 0,
+            } for idx, v in verdict.items() if isinstance(v, dict)
         }
 
-        # Trace each idx
+        # Trace each idx — verdict keys are lowercase
         for idx in ("NIFTY", "BANKNIFTY"):
             v = verdict.get(idx.lower(), {})
-            if not v:
+            if not isinstance(v, dict) or not v:
+                out["gate_results"][idx] = {"error": f"no verdict for {idx}"}
                 continue
             gates = []
             action = v.get("action", "")
