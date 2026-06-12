@@ -24,6 +24,7 @@ const ZonesTab = lazy(() => import("./ZonesTab"));
 const TrinityTab = lazy(() => import("./TrinityTab"));
 const ReportsTab = lazy(() => import("./ReportsTab"));
 const DailyReportTab = lazy(() => import("./DailyReportTab"));
+const ImprovementPlanTab = lazy(() => import("./ImprovementPlanTab"));
 const TradingTimesTab = lazy(() => import("./TradingTimesTab"));
 const TradeAutopsyTab = lazy(() => import("./TradeAutopsyTab"));
 const BacktestTab = lazy(() => import("./BacktestTab"));
@@ -95,6 +96,7 @@ const TAB_GROUPS = [
   ]},
   { group: "System", tabs: [
     { id: "daily",   icon: "📅", label: "Daily" },
+    { id: "plan",    icon: "🚀", label: "Plan" },
     { id: "reports", icon: "📊", label: "Reports" },
     { id: "health",  icon: "🔬", label: "Health Check" },
   ]},
@@ -2901,6 +2903,7 @@ export default function Universe({ onLogout }) {
       case "health":  return <SystemHealthTab />;
       case "reports": return <ReportsTab />;
       case "daily":   return <DailyReportTab />;
+      case "plan":    return <ImprovementPlanTab />;
       default:        return null;
     }
   };
