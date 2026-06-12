@@ -5463,7 +5463,8 @@ async def admin_main_gates_trace():
         import pytz as _pytz
         out["timestamp"] = _dt.now(_pytz.timezone("Asia/Kolkata")).isoformat()
 
-        eng = session.get("engine")
+        global engine
+        eng = engine
         if not eng:
             return {"error": "engine not running"}
 
