@@ -1338,18 +1338,16 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
         lots = scaled_lots
 
     # ── TIERED CONVICTION SIZING (2026-06-11 v2 — data-driven) ──
-    # 60d audit revealed asymmetric WR/PnL by verdict bucket:
-    #   55-59%:  37.5% WR  -₹54k    UNDER-confidence trap
-    #   60-64%:  60.0% WR  -₹25k    decent WR but ratio bad
-    #   65-69%:  63.6% WR  +₹105k   ⭐ SWEET SPOT (boost size!)
-    #   70-79%:  46.4% WR  -₹53k    OVER-confidence trap
-    #   80+%:    20.0% WR  -₹69k    HEAVY over-confidence trap
-    #
-    # Strategy: boost sweet spot, penalize over/under confidence.
-    # Override: SCALPER_TIERED_SIZING_DISABLED=1
+    # 2026-06-13: DEFAULT DISABLED after forensic.
+    # Reason: tiered killed 65-69 sweet spot AND 80+ buckets where Main
+    # tab was profitable (Main 70-79: +₹146k, 80+%: +₹79k).
+    # Plus: scaling by raw_prob is unreliable when threshold itself
+    # is being raised to 65%. Below 65% trades don't exist anyway.
+    # Flat sizing = May 19 era full power on every entry.
+    # Override: SCALPER_TIERED_SIZING_DISABLED=0 to re-enable.
     try:
         import os as _os_oc
-        if _os_oc.environ.get("SCALPER_TIERED_SIZING_DISABLED", "").strip() not in ("1","true","on"):
+        if _os_oc.environ.get("SCALPER_TIERED_SIZING_DISABLED", "1").strip() not in ("1","true","on"):
             if probability and probability > 0:
                 p = probability
                 # Tiered multiplier from audit data

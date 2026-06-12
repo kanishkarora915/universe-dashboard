@@ -5293,14 +5293,14 @@ class MarketEngine:
                     if not pending or pending.get("action") != action:
                         prob_now = v.get("winProbability", 0)
                         try:
-                            # 2026-06-11: lowered 65 → 55.
-                            # User feedback: 55-65% verdicts were waiting for
-                            # 0.1% premium momentum confirmation in 90s, then
-                            # expiring → fresh signal cycle restarted endlessly.
-                            # Instant fire at 55%+ matches Scalper threshold.
-                            _instant_new = int(os.environ.get("INSTANT_NEW_TRADE_PROB", "55"))
+                            # 2026-06-13: restored 55 → 65 after deep forensic.
+                            # 60d data: 55-59% bucket = 35% WR, ₹-55,790 LOSS.
+                            # 65-69% bucket = sweet spot (55.6% WR, +₹98,790).
+                            # Calibration audit explicit verdict: "RESTORE 65".
+                            # Trust quality over quantity.
+                            _instant_new = int(os.environ.get("INSTANT_NEW_TRADE_PROB", "65"))
                         except (TypeError, ValueError):
-                            _instant_new = 55
+                            _instant_new = 65
                         if prob_now >= _instant_new:
                             self.trade_manager._pending_entry[idx] = {
                                 "idx": idx, "action": action, "strike": int(atm),
@@ -5460,17 +5460,14 @@ class MarketEngine:
                         # Override via PROB_INSTANT_FIRE / PENDING_TTL_SEC envs.
                         prob = pending.get("probability", 0)
                         try:
-                            # 2026-06-12: lowered 60→55 to match INSTANT_NEW_TRADE_PROB.
-                            # Bug: INSTANT_NEW=55 created pending at 55%+, but
-                            # momentum INSTANT fired only at 60%+. At 55-60%,
-                            # needs 0.1% premium move. On chop days premium
-                            # doesn't move → pending expires every 90s → no trade.
-                            # Today June 12: verdict bounced 51-57% all day,
-                            # Main fired 0 trades because of this mismatch.
-                            # Sync both thresholds at 55%.
-                            _instant_at = int(os.environ.get("PROB_INSTANT_FIRE", "55"))
+                            # 2026-06-13: synced with INSTANT_NEW_TRADE_PROB at 65.
+                            # Both thresholds MUST match — if pending creates at
+                            # X% but momentum fires at higher Y%, trades stuck
+                            # in limbo (June 12 wasted full day).
+                            # Forensic-driven default: 65%.
+                            _instant_at = int(os.environ.get("PROB_INSTANT_FIRE", "65"))
                         except (TypeError, ValueError):
-                            _instant_at = 55
+                            _instant_at = 65
                         if prob >= _instant_at:
                             confirm_threshold = 1.0  # instant — no wait
                         elif prob >= 55:
