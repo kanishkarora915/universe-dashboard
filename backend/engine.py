@@ -5460,10 +5460,17 @@ class MarketEngine:
                         # Override via PROB_INSTANT_FIRE / PENDING_TTL_SEC envs.
                         prob = pending.get("probability", 0)
                         try:
-                            # Default lowered 65→60 (2026-06-05): faster Main fires.
-                            _instant_at = int(os.environ.get("PROB_INSTANT_FIRE", "60"))
+                            # 2026-06-12: lowered 60→55 to match INSTANT_NEW_TRADE_PROB.
+                            # Bug: INSTANT_NEW=55 created pending at 55%+, but
+                            # momentum INSTANT fired only at 60%+. At 55-60%,
+                            # needs 0.1% premium move. On chop days premium
+                            # doesn't move → pending expires every 90s → no trade.
+                            # Today June 12: verdict bounced 51-57% all day,
+                            # Main fired 0 trades because of this mismatch.
+                            # Sync both thresholds at 55%.
+                            _instant_at = int(os.environ.get("PROB_INSTANT_FIRE", "55"))
                         except (TypeError, ValueError):
-                            _instant_at = 65
+                            _instant_at = 55
                         if prob >= _instant_at:
                             confirm_threshold = 1.0  # instant — no wait
                         elif prob >= 55:
