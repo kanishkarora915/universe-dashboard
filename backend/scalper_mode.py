@@ -2142,8 +2142,14 @@ def check_scalper_exits(chains):
         # T1_HIT (100% WR, +₹30k avg). Velocity exit was cutting flowers,
         # watering weeds.
         #
-        # Re-enable via env if needed for testing: VELOCITY_EXIT_ENABLED=on
-        if not reversal_exit and os.environ.get("VELOCITY_EXIT_ENABLED", "off").lower() == "on":
+        # 2026-06-12 v2: DEFAULT FLIPPED off → on after deep audit.
+        # Original audit was MISCOUNTED — VELOCITY_EXIT was exiting LOSERS,
+        # looked like "losses" when it was actually loss-cutting.
+        # Disabling it caused SL_HIT avg hold to balloon 30min → 203min (3.5hr!)
+        # Same losers now compound to -8% SL instead of being cut at -3%.
+        # Scalper avg/trade collapsed ₹1,224 → ₹275 (-78%) since disabling.
+        # Re-enable as default. Override: VELOCITY_EXIT_ENABLED=off to disable.
+        if not reversal_exit and os.environ.get("VELOCITY_EXIT_ENABLED", "on").lower() == "on":
             try:
                 from premium_velocity import register as _pv_reg, push as _pv_push, assess as _pv_assess
                 sid = f"SCALPER:{t['id']}"
