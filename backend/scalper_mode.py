@@ -1933,15 +1933,14 @@ def check_scalper_exits(chains):
             pass
 
         # ─── INSTANT_REJECT — < 60s crash exit (2026-06-11) ───
-        # 60d audit: 12 WATCHER_EXIT trades fired at high prob (73-83%),
-        # crashed within 0-3 min, avg loss -₹26k (₹3.11L total).
-        # Pattern: entered at top of move, immediately rejected by market.
-        # Rule: hold < 90s, profit < -1% AND momentum down → exit NOW.
-        # Catches the "instant rejection" before -5% SL hit.
-        # Env: SCALPER_INSTANT_REJECT_DISABLED=1
+        # 2026-06-11 v2: DEFAULT DISABLED per user feedback.
+        # Was firing 5-6 times today, sometimes on legitimate dips
+        # that would have recovered. User: "trade leke chut mut price change toh
+        # hota rehta hai".
+        # Env: SCALPER_INSTANT_REJECT_DISABLED=0 to re-enable.
         try:
             import os as _os_ir
-            if (_os_ir.environ.get("SCALPER_INSTANT_REJECT_DISABLED", "").strip() not in ("1","true","on")
+            if (_os_ir.environ.get("SCALPER_INSTANT_REJECT_DISABLED", "1").strip() not in ("1","true","on")
                     and new_status == "OPEN"):
                 ir_max_hold = float(_os_ir.environ.get("SCALPER_INSTANT_REJECT_HOLD_SEC", "90"))
                 ir_trigger = float(_os_ir.environ.get("SCALPER_INSTANT_REJECT_TRIGGER", "-1.0"))

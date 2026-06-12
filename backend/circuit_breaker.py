@@ -55,17 +55,12 @@ if not _SCALPER_DB.exists():
 # ── Env flags ──────────────────────────────────────────────────────────
 
 def is_enabled() -> bool:
-    # 2026-06-11 v3 — RESTORED ON (data-driven flip).
-    # 60d audit showed 16 days with loss ≥ ₹15k (27% of trading days).
-    # Worst: May 4 = -₹1,02,217 in single day (27 trades).
-    #        Apr 28 = -₹1,46,837 combined scalper+main.
-    # Per-trade damage control (EARLY_CUT, profit_floor) catches
-    # individual bad trades but NOT runaway-day patterns where 10+
-    # losses cascade. Daily cap is the second-line defense.
-    # Raised limit ₹15k → ₹20k (gives 33% more rope before tripping
-    # — addresses original complaint of "tripping on 3 small losses").
-    # Override: DAILY_LOSS_CAP_ENABLED=off to disable.
-    return os.environ.get("DAILY_LOSS_CAP_ENABLED", "on").lower() == "on"
+    # 2026-06-11 v4 — FLIPPED off per user feedback.
+    # "merko koi greed ni hai, system loss bhi karega"
+    # Daily cap was blocking entries after 3 small losses. Trust per-trade
+    # damage control (EARLY_CUT, profit_floor, ZOMBIE_KILL).
+    # Override: DAILY_LOSS_CAP_ENABLED=on to restore.
+    return os.environ.get("DAILY_LOSS_CAP_ENABLED", "off").lower() == "on"
 
 
 def is_shadow_enabled() -> bool:

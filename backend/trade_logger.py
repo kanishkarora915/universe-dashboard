@@ -879,11 +879,12 @@ class TradeManager:
                 print(f"[TRADE] EARLY_CUT error (allow): {_ec_e}")
 
             # ── INSTANT_REJECT — < 90s crash exit (2026-06-11) ──
-            # 60d audit: high-prob entries crashed within 0-3 min, watcher
-            # killed them at avg -₹26k (₹3.11L total). Catch before -5%.
+            # 2026-06-11 v2: DEFAULT DISABLED per user feedback.
+            # User: trade just entered, normal price wiggle shouldn't kill it.
+            # Env: MAIN_INSTANT_REJECT_DISABLED=0 to re-enable.
             try:
                 import os as _os_ir
-                if (_os_ir.environ.get("MAIN_INSTANT_REJECT_DISABLED", "").strip() not in ("1","true","on")
+                if (_os_ir.environ.get("MAIN_INSTANT_REJECT_DISABLED", "1").strip() not in ("1","true","on")
                         and new_status == "OPEN"):
                     ir_max_hold = float(_os_ir.environ.get("MAIN_INSTANT_REJECT_HOLD_SEC", "90"))
                     ir_trigger = float(_os_ir.environ.get("MAIN_INSTANT_REJECT_TRIGGER", "-1.0"))
@@ -1328,7 +1329,10 @@ class TradeManager:
             if sl_breached:
                 try:
                     import os as _os_sh, time as _t_sh
-                    if _os_sh.environ.get("MAIN_STOP_HUNT_BUFFER_DISABLED", "").strip() not in ("1","true","on"):
+                    # 2026-06-11 v2: DEFAULT DISABLED per user feedback.
+                    # Was delaying real SL exits by 30s causing bigger losses.
+                    # Env: MAIN_STOP_HUNT_BUFFER_DISABLED=0 to re-enable.
+                    if _os_sh.environ.get("MAIN_STOP_HUNT_BUFFER_DISABLED", "1").strip() not in ("1","true","on"):
                         if not hasattr(self, '_sl_first_touch'):
                             self._sl_first_touch = {}
                         tid = t["id"]

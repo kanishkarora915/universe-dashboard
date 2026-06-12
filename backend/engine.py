@@ -5113,13 +5113,11 @@ class MarketEngine:
                 print(f"[TRADE] check_position_alerts error: {e}")
 
             # Clear stale pending entries per-index — synced with PENDING_TTL_SEC
-            # 2026-06-11: raised 90s → 180s. User feedback: 90s was too short
-            # for momentum confirmation; pending entries expired before premium
-            # could move 0.1%, restarting the cycle endlessly.
+            # 2026-06-11 v2: reverted 180s → 90s per user feedback.
             try:
-                _stale_ttl = int(os.environ.get("PENDING_TTL_SEC", "180"))
+                _stale_ttl = int(os.environ.get("PENDING_TTL_SEC", "90"))
             except (TypeError, ValueError):
-                _stale_ttl = 180
+                _stale_ttl = 90
             now_ts = time.time()
             for pidx in list(self.trade_manager._pending_entry.keys()):
                 pt = self.trade_manager._pending_entry_time.get(pidx, 0)
@@ -5475,10 +5473,10 @@ class MarketEngine:
                         momentum_confirmed = locked_ltp >= pending["entry_price"] * confirm_threshold
                         signal_reversed = locked_ltp < pending["entry_price"] * 0.98
                         try:
-                            # 2026-06-11: raised 90s → 180s for patient confirmation.
-                            _pending_ttl = int(os.environ.get("PENDING_TTL_SEC", "180"))
+                            # 2026-06-11 v2: reverted 180s → 90s per user feedback.
+                            _pending_ttl = int(os.environ.get("PENDING_TTL_SEC", "90"))
                         except (TypeError, ValueError):
-                            _pending_ttl = 180
+                            _pending_ttl = 90
                         pending_expired = age > _pending_ttl
 
                         if momentum_confirmed:
