@@ -5450,6 +5450,162 @@ async def position_health_one(trade_id: int, source: str = "MAIN"):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/admin/main-gates-trace")
+async def admin_main_gates_trace():
+    """Trace every gate for current Main mode verdict.
+
+    Shows which specific gate is blocking Main from trading.
+    Run this when Main mode has 0 trades despite high verdict.
+    """
+    out = {"timestamp": None, "verdict_summary": {}, "gate_results": {}}
+    try:
+        from datetime import datetime as _dt
+        import pytz as _pytz
+        out["timestamp"] = _dt.now(_pytz.timezone("Asia/Kolkata")).isoformat()
+
+        eng = session.get("engine")
+        if not eng:
+            return {"error": "engine not running"}
+
+        verdict = eng.verdict if hasattr(eng, 'verdict') else {}
+        out["verdict_summary"] = {
+            idx: {
+                "action": v.get("action", "?"),
+                "prob": v.get("winProbability", 0),
+            } for idx, v in verdict.items() if v
+        }
+
+        # Trace each idx
+        for idx in ("NIFTY", "BANKNIFTY"):
+            v = verdict.get(idx.lower(), {})
+            if not v:
+                continue
+            gates = []
+            action = v.get("action", "")
+            prob = v.get("winProbability", 0)
+            try:
+                from expiry_day_guard import should_skip
+                blocked = should_skip(source="trace")
+                gates.append({"gate": "G0a expiry_day", "blocked": blocked,
+                              "detail": "Tuesday morning block" if blocked else "OK"})
+            except Exception as e:
+                gates.append({"gate": "G0a expiry_day", "error": str(e)})
+
+            try:
+                from circuit_breaker import should_block
+                blocked = should_block(tab="MAIN", source="trace")
+                gates.append({"gate": "G0b circuit_breaker", "blocked": blocked,
+                              "detail": "daily cap or streak" if blocked else "OK"})
+            except Exception as e:
+                gates.append({"gate": "G0b circuit_breaker", "error": str(e)})
+
+            try:
+                from profit_target import should_block as _pt_block
+                blocked = _pt_block(tab="MAIN", source="trace")
+                gates.append({"gate": "G0d profit_target", "blocked": blocked,
+                              "detail": "profit booked" if blocked else "OK"})
+            except Exception as e:
+                gates.append({"gate": "G0d profit_target", "error": str(e)})
+
+            try:
+                import os as _os
+                if _os.environ.get("CALIBRATION_GATE_ENABLED", "on").lower() == "on":
+                    from calibration import calibrated_wr as _cal_fn
+                    cal_min = float(_os.environ.get("MAIN_CALIBRATION_MIN_WR", "35"))
+                    cal_wr = _cal_fn(int(prob), engine_type="main", action=action)
+                    blocked = cal_wr is not None and cal_wr < cal_min
+                    gates.append({"gate": "G0c calibration", "blocked": blocked,
+                                  "detail": f"cal_wr={cal_wr} threshold={cal_min}"})
+                else:
+                    gates.append({"gate": "G0c calibration", "blocked": False,
+                                  "detail": "disabled"})
+            except Exception as e:
+                gates.append({"gate": "G0c calibration", "error": str(e)})
+
+            try:
+                import structure_gate as _sg
+                if _sg.master_mode() != "off" and _sg.main_enabled():
+                    sg_dec = _sg.evaluate_entry(engine=eng, idx=idx,
+                                                  proposed_action=action,
+                                                  source="trace")
+                    blocked = not sg_dec.get("allow", True)
+                    gates.append({"gate": "G0f structure", "blocked": blocked,
+                                  "detail": sg_dec.get("reason", "OK")})
+                else:
+                    gates.append({"gate": "G0f structure", "blocked": False,
+                                  "detail": "disabled"})
+            except Exception as e:
+                gates.append({"gate": "G0f structure", "error": str(e)})
+
+            try:
+                from early_move.entry_gate import evaluate_entry as _em_eval
+                em = _em_eval(engine=eng, idx=idx,
+                               proposed_action=action, source="trace")
+                blocked = not em.get("allow", True)
+                gates.append({"gate": "G0e early_move", "blocked": blocked,
+                              "detail": em.get("reason", "OK")})
+            except Exception as e:
+                gates.append({"gate": "G0e early_move", "error": str(e)})
+
+            # OI Shift
+            try:
+                from oi_shift_detector import is_against
+                blocked, reason = is_against(idx=idx, action=action, engine=eng)
+                gates.append({"gate": "A2 oi_shift", "blocked": blocked,
+                              "detail": reason or "OK"})
+            except Exception as e:
+                gates.append({"gate": "A2 oi_shift", "error": str(e)[:80]})
+
+            # Divergence
+            try:
+                from divergence_filter import should_block as _div_block
+                blocked, reason = _div_block(eng, idx, action)
+                gates.append({"gate": "A4 divergence", "blocked": blocked,
+                              "detail": reason or "OK"})
+            except Exception as e:
+                gates.append({"gate": "A4 divergence", "error": str(e)[:80]})
+
+            # Truth/Lie
+            try:
+                from truth_lie_detector import assess as _tl_assess
+                tl = _tl_assess(eng, idx, action) or {}
+                blocked = tl.get("block", False)
+                gates.append({"gate": "A6 truth_lie", "blocked": blocked,
+                              "detail": tl.get("message", "OK")[:80]})
+            except Exception as e:
+                gates.append({"gate": "A6 truth_lie", "error": str(e)[:80]})
+
+            # Quality
+            try:
+                from entry_filters import compute_quality_score
+                q = compute_quality_score(eng, idx, action) or {}
+                score = q.get("score", 0)
+                blocked = score < 5
+                gates.append({"gate": "A8 quality", "blocked": blocked,
+                              "detail": f"score={score}/10 grade={q.get('grade','?')}"})
+            except Exception as e:
+                gates.append({"gate": "A8 quality", "error": str(e)[:80]})
+
+            # Buyer filter
+            try:
+                from buyer_filters import should_block as _bf_block
+                blocked, reason = _bf_block(eng, idx, action)
+                gates.append({"gate": "A11 buyer_filter", "blocked": blocked,
+                              "detail": reason or "OK"})
+            except Exception as e:
+                gates.append({"gate": "A11 buyer_filter", "error": str(e)[:80]})
+
+            out["gate_results"][idx] = {
+                "action": action,
+                "prob": prob,
+                "gates": gates,
+                "first_blocker": next((g["gate"] for g in gates if g.get("blocked")), None),
+            }
+    except Exception as e:
+        out["error"] = str(e)
+    return out
+
+
 @app.get("/api/trades/why-no-trade")
 async def why_no_trade():
     """Diagnostic: explain why auto-trader is not entering trades right now.
