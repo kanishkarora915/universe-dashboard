@@ -5469,7 +5469,12 @@ async def admin_main_gates_trace():
             return {"error": "engine not running"}
 
         try:
-            verdict = eng.get_full_verdict() or {}
+            if hasattr(eng, "get_trap_verdict"):
+                verdict = eng.get_trap_verdict() or {}
+            elif hasattr(eng, "get_full_verdict"):
+                verdict = eng.get_full_verdict() or {}
+            else:
+                verdict = {}
         except Exception:
             verdict = {}
         out["verdict_summary"] = {
