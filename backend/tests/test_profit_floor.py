@@ -40,46 +40,50 @@ class TestEnvFlags:
 # ── FLOOR COMPUTATION ──────────────────────────────────────────────────
 
 class TestComputeFloor:
-    def test_peak_below_3pct_no_floor(self):
-        """Peak < +3% → no floor (trade hasn't really been profitable)."""
+    # 2026-06-11/12: NIFTY/BANKNIFTY per-index thresholds. NIFTY defaults
+    # (no idx kwarg) lock breakeven at peak +1.5%, +1% at +2.5%, +2% at +3.5%.
+    def test_peak_below_1pct_no_floor(self):
+        """Peak < +1.5% → no floor (NIFTY default)."""
         from profit_floor import compute_floor
-        result = compute_floor(entry_price=100, peak_price=102)
+        # 101 = +1.0% peak → below +1.5% threshold
+        result = compute_floor(entry_price=100, peak_price=101)
         assert result is None
 
-    def test_peak_3pct_locks_breakeven(self):
-        """Peak ≥ +3% → SL floor = entry (no loss possible)."""
+    def test_peak_15pct_locks_breakeven_nifty(self):
+        """NIFTY: Peak ≥ +1.5% → SL floor = entry (BE)."""
         from profit_floor import compute_floor
-        result = compute_floor(entry_price=100, peak_price=103)
+        result = compute_floor(entry_price=100, peak_price=101.5)
         assert result is not None
         assert result["floor_sl"] == 100  # breakeven
         assert result["locked_pct"] == 0
 
-    def test_peak_5pct_locks_1pct(self):
-        """Peak ≥ +5% → +1% locked."""
+    def test_peak_25pct_locks_1pct_nifty(self):
+        """NIFTY: Peak ≥ +2.5% → +1% locked."""
         from profit_floor import compute_floor
-        result = compute_floor(entry_price=100, peak_price=105.5)
+        result = compute_floor(entry_price=100, peak_price=102.6)
         assert result["floor_sl"] == 101
         assert result["locked_pct"] == 1
 
     def test_peak_10pct_locks_4pct(self):
-        """Peak ≥ +12% → +5% locked (note +8% threshold gives +2%)."""
+        """NIFTY: Peak ≥ +8% → +4% locked."""
         from profit_floor import compute_floor
         result = compute_floor(entry_price=100, peak_price=110)
-        # peak 10% > 8% threshold = +2% locked
-        assert result["floor_sl"] == 102
-        assert result["locked_pct"] == 2
+        # peak 10% > 8% threshold = +4% locked
+        assert result["floor_sl"] == 104
+        assert result["locked_pct"] == 4
 
-    def test_peak_15pct_locks_5pct(self):
+    def test_peak_15pct_locks_10pct(self):
         from profit_floor import compute_floor
         result = compute_floor(entry_price=100, peak_price=115)
-        # peak 15% > 12% threshold = +5% locked
-        assert result["floor_sl"] == 105
-        assert result["locked_pct"] == 5
+        # peak 15% > 12% threshold = +6% locked
+        assert result["floor_sl"] == 106
+        assert result["locked_pct"] == 6
 
-    def test_peak_20pct_locks_10pct(self):
+    def test_peak_20pct_locks_15pct(self):
         from profit_floor import compute_floor
         result = compute_floor(entry_price=100, peak_price=120)
-        # peak 20% > 18% threshold = +10% locked
+        # peak 20% > 18% threshold = +10% locked, but also > 25%? No
+        # Actually: 20% >= 18% threshold = +10% locked
         assert result["floor_sl"] == 110
         assert result["locked_pct"] == 10
 
@@ -108,21 +112,22 @@ class TestGetMinimumSL:
     def test_floor_higher_than_current_sl_raises(self):
         """Floor wins when peak triggers it."""
         from profit_floor import get_minimum_sl
-        # Entry 100, peak 110 → floor at 102. Current SL at 85.
+        # Entry 100, peak 110 (NIFTY default: +8% threshold = +4% lock = 104).
         new_sl = get_minimum_sl(entry_price=100, peak_price=110, current_sl=85)
-        assert new_sl == 102  # raised from 85 to 102
+        assert new_sl == 104  # raised from 85 to 104
 
     def test_existing_sl_higher_wins(self):
         """If current SL is already above floor, keep current."""
         from profit_floor import get_minimum_sl
-        # Entry 100, peak 110 (floor would be 102). Current SL at 105.
+        # Entry 100, peak 110 (NIFTY floor would be 104). Current SL at 105.
         new_sl = get_minimum_sl(entry_price=100, peak_price=110, current_sl=105)
         assert new_sl == 105  # unchanged (already above floor)
 
     def test_no_peak_no_change(self):
-        """Below +3% peak → no change."""
+        """Below +1.5% peak (NIFTY) → no change."""
         from profit_floor import get_minimum_sl
-        new_sl = get_minimum_sl(entry_price=100, peak_price=102, current_sl=85)
+        # peak 101 = +1% < NIFTY 1.5% threshold → no floor
+        new_sl = get_minimum_sl(entry_price=100, peak_price=101, current_sl=85)
         assert new_sl == 85  # unchanged
 
     def test_disabled_returns_current(self, monkeypatch):
@@ -178,11 +183,12 @@ class TestRealAuditScenarios:
 class TestDiagnose:
     def test_diagnose_returns_full_info(self):
         from profit_floor import diagnose
+        # peak 115 = +15% (NIFTY default: 12% threshold = +6% lock = 106)
         d = diagnose(entry_price=100, peak_price=115, current_sl=90)
         assert d["enabled"] is True
         assert d["floor_info"] is not None
         assert d["would_raise_sl"] is True
-        assert d["final_sl"] == 105  # raised from 90 to 105
+        assert d["final_sl"] == 106  # +6% locked (raised from 90 to 106)
 
     def test_diagnose_when_no_peak(self):
         from profit_floor import diagnose

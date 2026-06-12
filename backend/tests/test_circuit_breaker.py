@@ -82,8 +82,8 @@ class TestEnvFlags:
 
     def test_default_daily_limits(self):
         from circuit_breaker import daily_loss_limit
-        assert daily_loss_limit("MAIN") == 15000
-        assert daily_loss_limit("SCALPER") == 15000
+        assert daily_loss_limit("MAIN") == 20000
+        assert daily_loss_limit("SCALPER") == 20000
 
     def test_per_tab_limits_configurable(self, monkeypatch):
         monkeypatch.setenv("DAILY_LOSS_LIMIT_MAIN", "20000")
@@ -330,5 +330,5 @@ class TestStatus:
         s = circuit_breaker.status("MAIN")
         assert s["tab"] == "MAIN"
         assert s["today_pnl"] == -5000
-        assert s["daily_limit"] == -15000
+        assert s["daily_limit"] == -20000
         assert "consec_losses" in s
