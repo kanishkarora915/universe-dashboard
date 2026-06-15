@@ -277,6 +277,13 @@ def init_trades_db(db_path):
         "trailing_active": "INTEGER DEFAULT 0",
         "trail_level": "TEXT DEFAULT ''",
         "alerts": "TEXT DEFAULT ''",
+        # 2026-06-15: Regime capture at entry — for chop/structure analysis
+        "regime_at_entry": "TEXT DEFAULT ''",
+        "range_pct_at_entry": "REAL DEFAULT 0",
+        "candle_pct_at_entry": "REAL DEFAULT 0",
+        "structure_5m": "TEXT DEFAULT ''",
+        "structure_15m": "TEXT DEFAULT ''",
+        "structure_1h": "TEXT DEFAULT ''",
     }
     for col, col_type in migrations.items():
         if col not in existing_cols:
@@ -687,6 +694,31 @@ class TradeManager:
             qty = max(lot_size, int(qty * tier_mult))
             lots = qty // lot_size
 
+        # ── REGIME CAPTURE AT ENTRY (2026-06-15) ──
+        # Snapshot of market regime so we can audit chop/structure post-hoc.
+        # Wrapped in try — never blocks trade if computation fails.
+        _regime, _range_pct, _candle_pct = "", 0.0, 0.0
+        _s5m, _s15m, _s1h = "", "", ""
+        try:
+            from entry_filters import detect_market_regime as _dmr
+            spot_hist = getattr(engine, "_spot_history", {}).get(idx, []) if engine else []
+            if spot_hist:
+                _r = _dmr(spot_hist)
+                _regime = _r.get("regime", "")
+                _range_pct = float(_r.get("range_pct") or 0)
+                _candle_pct = float(_r.get("candle_pct") or 0)
+        except Exception as _re:
+            print(f"[TRADE] regime capture failed: {_re}")
+        try:
+            from structure_gate import get_cached_structure as _gcs
+            _cache = _gcs(idx) or {}
+            _structs = _cache.get("structures", {})
+            _s5m = (_structs.get("5m") or {}).get("verdict", "")
+            _s15m = (_structs.get("15m") or {}).get("verdict", "")
+            _s1h = (_structs.get("1h") or {}).get("verdict", "")
+        except Exception as _se:
+            print(f"[TRADE] structure capture failed: {_se}")
+
         now = ist_now()
         conn = _conn()
         cursor = conn.execute("""
@@ -694,14 +726,19 @@ class TradeManager:
                 entry_price, sl_price, original_sl, t1_price, t2_price,
                 current_ltp, peak_ltp,
                 lots, lot_size, qty, status, probability, source,
-                breakeven_active, trailing_active, trail_level, alerts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, 0, 0, '', '')
+                breakeven_active, trailing_active, trail_level, alerts,
+                regime_at_entry, range_pct_at_entry, candle_pct_at_entry,
+                structure_5m, structure_15m, structure_1h)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, 0, 0, '', '',
+                    ?, ?, ?, ?, ?, ?)
         """, (
             now.isoformat(), idx, action, strike, expiry,
             entry_price, sl_price, sl_price, t1_price, t2_price,
             entry_price, entry_price,
             lots, lot_size, qty,
             probability, source,
+            _regime, _range_pct, _candle_pct,
+            _s5m, _s15m, _s1h,
         ))
         trade_id = cursor.lastrowid
         conn.commit()

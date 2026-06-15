@@ -3966,6 +3966,56 @@ async def admin_exit_pattern_audit(days: int = 60, status: str = None):
     return out
 
 
+@app.post("/api/admin/regime-backfill")
+async def admin_regime_backfill():
+    """One-shot backfill: populate regime_at_entry + structure_5m/15m/1h
+    for all historical trades in both trades.db and scalper_trades.db.
+
+    Runs synchronously (1-3 min total for ~300 trades). Returns counts +
+    summary distribution so the caller can immediately read the truth
+    instead of waiting for an async job.
+    """
+    try:
+        import regime_backfill as _rb
+        _rb.main()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    # Quick summary read from the just-populated rows
+    import sqlite3 as _sql
+    out = {"status": "done", "summaries": {}}
+    for path, table, label in (
+        ("/data/trades.db", "trades", "main"),
+        ("/data/scalper_trades.db", "scalper_trades", "scalper"),
+    ):
+        if not os.path.exists(path):
+            continue
+        c = _sql.connect(path)
+        c.row_factory = _sql.Row
+        rows = c.execute(
+            f"SELECT regime_at_entry, pnl_rupees, status FROM {table} "
+            f"WHERE status NOT IN ('OPEN','PENDING') "
+            f"AND regime_at_entry IS NOT NULL AND regime_at_entry != ''"
+        ).fetchall()
+        c.close()
+        from collections import Counter, defaultdict
+        rg_cnt = Counter()
+        rg_pnl = defaultdict(float)
+        for r in rows:
+            rg_cnt[r["regime_at_entry"]] += 1
+            rg_pnl[r["regime_at_entry"]] += r["pnl_rupees"] or 0
+        out["summaries"][label] = {
+            "total": len(rows),
+            "regime_distribution": {
+                rg: {"n": rg_cnt[rg], "pnl_total": round(rg_pnl[rg], 2)}
+                for rg in rg_cnt
+            },
+            "chop_total_pnl": round(rg_pnl.get("CHOP", 0), 2),
+            "chop_trades": rg_cnt.get("CHOP", 0),
+        }
+    return out
+
+
 @app.post("/api/admin/disk/cleanup")
 async def admin_disk_cleanup(body: dict = None):
     """SAFE targeted cleanup of /data. Pass {"action": "..."} with one of:
