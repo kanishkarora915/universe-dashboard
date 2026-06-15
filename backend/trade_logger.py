@@ -694,6 +694,37 @@ class TradeManager:
             qty = max(lot_size, int(qty * tier_mult))
             lots = qty // lot_size
 
+        # ── ASYMMETRIC SIZING by direction × structure (Fix H + I, 2026-06-15) ──
+        # Data (60d backfill):
+        #   PE aligned 5m+15m DN: 100% WR, ₹+89k (8 trades) → BOOST 1.5x
+        #   CE aligned 5m+15m UP: 53% WR, ₹-10k    (15 trades) → CUT 0.5x
+        # Other buckets get 1.0x (no change).
+        # Try to read structure from cache; failure → fall back to neutral.
+        # Env kill: ASYM_SIZE_DISABLED=1
+        try:
+            import os as _os_as
+            if _os_as.environ.get("ASYM_SIZE_DISABLED", "").strip() not in ("1","true","on"):
+                _pe_boost = float(_os_as.environ.get("ASYM_SIZE_PE_ALIGNED_MULT", "1.5"))
+                _ce_cut = float(_os_as.environ.get("ASYM_SIZE_CE_ALIGNED_MULT", "0.5"))
+                from structure_gate import get_cached_structure as _gcs
+                _cache = _gcs(idx) or {}
+                _structs = _cache.get("structures", {})
+                _s5m = (_structs.get("5m") or {}).get("verdict", "")
+                _s15m = (_structs.get("15m") or {}).get("verdict", "")
+                _is_ce = "CE" in action
+                _asym_mult = 1.0
+                if (not _is_ce) and _s5m == "DOWNTREND" and _s15m == "DOWNTREND":
+                    _asym_mult = _pe_boost
+                    print(f"[TRADE] ASYM_SIZE: PE aligned 5m+15m DN → boost {_asym_mult}x")
+                elif _is_ce and _s5m == "UPTREND" and _s15m == "UPTREND":
+                    _asym_mult = _ce_cut
+                    print(f"[TRADE] ASYM_SIZE: CE aligned 5m+15m UP → cut {_asym_mult}x")
+                if _asym_mult != 1.0:
+                    qty = max(lot_size, int(qty * _asym_mult))
+                    lots = qty // lot_size
+        except Exception as _as_e:
+            print(f"[TRADE] ASYM_SIZE error (keep base size): {_as_e}")
+
         # ── REGIME CAPTURE AT ENTRY (2026-06-15) ──
         # Snapshot of market regime so we can audit chop/structure post-hoc.
         # Wrapped in try — never blocks trade if computation fails.

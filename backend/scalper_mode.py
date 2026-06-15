@@ -966,9 +966,18 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
     # G16 was blocking legitimate reversal entries during rallies — exactly
     # the setups that catch 100+ pt swings. Damage control handles bad ones.
     # Set ANTI_COUNTER_ENABLED=on to re-enable.
-    if engine is not None and os.environ.get("ANTI_COUNTER_ENABLED", "").strip() in ("1", "true", "on"):
+    #
+    # 2026-06-15 (Fix F): DEFAULT FLIPPED BACK ON with smarter tuning:
+    #   - move_thresh raised to 0.6 (was 0.4) — only big moves count
+    #     as "in-trend" to be counter to
+    #   - prob_bypass kept at 60 — high-conviction trades still pass
+    # Combined with WATCHER cooldown (Fix C) and aggressive peak floor
+    # (Fix A), legitimate reversals are safer than they were June 8.
+    # Set ANTI_COUNTER_ENABLED=off to revert to fully off.
+    _ac_env = os.environ.get("ANTI_COUNTER_ENABLED", "on").strip().lower()
+    if engine is not None and _ac_env in ("1", "true", "on"):
         try:
-            move_thresh = float(os.environ.get("ANTI_COUNTER_MOVE_PCT", "0.4"))
+            move_thresh = float(os.environ.get("ANTI_COUNTER_MOVE_PCT", "0.6"))
             # Default lowered 65→60 (2026-06-05): faster fires when conviction
             # is decent. Damage control catches the few bad ones at exit side.
             prob_bypass = float(os.environ.get("ANTI_COUNTER_PROB_BYPASS", "60"))
@@ -1472,6 +1481,46 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
         qty = max_affordable_qty
         lots = qty // lot_size
         print(f"[SCALPER] SHRUNK qty {old_qty}→{qty} ({lots} lots) to fit available ₹{available:,.0f} (was needing ₹{needed:,.0f})")
+
+    # ── ASYMMETRIC SIZING by direction × structure (Fix H + I, 2026-06-15) ──
+    # Data (60d backfill): PE aligned 5m+15m DN = 100% WR;
+    #                      CE aligned 5m+15m UP = ₹-29k loss bucket.
+    # Boost PE-golden, cut CE-aligned. Other buckets unchanged.
+    # Env kill: ASYM_SIZE_DISABLED=1
+    try:
+        import os as _os_as
+        if _os_as.environ.get("ASYM_SIZE_DISABLED", "").strip() not in ("1","true","on"):
+            _pe_boost = float(_os_as.environ.get("ASYM_SIZE_PE_ALIGNED_MULT", "1.5"))
+            _ce_cut = float(_os_as.environ.get("ASYM_SIZE_CE_ALIGNED_MULT", "0.5"))
+            from structure_gate import get_cached_structure as _gcs
+            _cache = _gcs(idx) or {}
+            _structs = _cache.get("structures", {})
+            _s5m = (_structs.get("5m") or {}).get("verdict", "")
+            _s15m = (_structs.get("15m") or {}).get("verdict", "")
+            _is_ce = "CE" in action
+            _asym_mult = 1.0
+            if (not _is_ce) and _s5m == "DOWNTREND" and _s15m == "DOWNTREND":
+                _asym_mult = _pe_boost
+                print(f"[SCALPER] ASYM_SIZE: PE aligned 5m+15m DN → boost {_asym_mult}x")
+            elif _is_ce and _s5m == "UPTREND" and _s15m == "UPTREND":
+                _asym_mult = _ce_cut
+                print(f"[SCALPER] ASYM_SIZE: CE aligned 5m+15m UP → cut {_asym_mult}x")
+            if _asym_mult != 1.0:
+                new_qty = max(lot_size, int(qty * _asym_mult))
+                # If boosting, re-check capital; else just apply
+                if _asym_mult > 1.0:
+                    available_after = capital - committed
+                    if entry_price * new_qty <= available_after:
+                        qty = new_qty
+                        lots = qty // lot_size
+                    else:
+                        # not enough capital for boost — fall back to base
+                        print(f"[SCALPER] ASYM_SIZE: PE boost skipped (capital ₹{available_after:,.0f} insufficient for ₹{entry_price * new_qty:,.0f})")
+                else:
+                    qty = new_qty
+                    lots = qty // lot_size
+    except Exception as _as_e:
+        print(f"[SCALPER] ASYM_SIZE error (keep base): {_as_e}")
 
     capital_used = entry_price * qty
 

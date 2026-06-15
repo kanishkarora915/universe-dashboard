@@ -42,7 +42,13 @@ TRADING_DAYS = 252
 #   2) Respect regime.recommend.main_pnl_allowed flag
 #   3) Consecutive-loss circuit breaker per (idx, side)
 #   4) OI confirmation on entry (not just exit)
-#   5) Fair CE/PE scan order (currently CE-first biased)
+#   5) [resolved 2026-06-15 — verified in regime audit] Verdict action
+#      derives from symmetric weighted vote (engine_weights.json applies
+#      equally to CE/PE). Earlier "CE-first" wording referred to a
+#      speculative concern in this comment, not actual scan-order code.
+#      Practical asymmetry was traced to market_context.py +5 bonus in
+#      200d UPTREND — now made adaptive in Fix E. No CE-first scan bias
+#      exists in production code.
 # Verdict-based engine (54% winrate, +₹18,869 over 14 days, 126 trades)
 # remains the production trading path.
 REVERSAL_ZONE_ENABLED = False
