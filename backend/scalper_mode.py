@@ -2333,6 +2333,39 @@ def check_scalper_exits(chains):
         # ─── Exit logic (priority order) ───
         active_sl_used = smart_active_sl if smart_enabled else sl
 
+        # ─── AGGRESSIVE PEAK FLOOR (Fix A, 2026-06-15) ──────────────────
+        # Belt-and-suspenders: independent of profit_floor / smart_sl /
+        # profit_trailing_sl chain. Guarantees peak-based floor is honored
+        # even if upstream systems missed it. Targets scalper SL_HIT bleed
+        # (₹6.29L over 60d, avg peak 5.46% — moves came but weren't locked).
+        # Tiers chosen to be MORE aggressive than profit_floor (starts at +3%).
+        # Env kill: SCALPER_AGG_FLOOR_DISABLED=1
+        try:
+            import os as _os_af
+            if _os_af.environ.get("SCALPER_AGG_FLOOR_DISABLED", "").strip() not in ("1","true","on"):
+                _af_peak_pct = peak_profit_pct_local
+                if _af_peak_pct >= 3.0:
+                    if _af_peak_pct >= 12.0:
+                        _af_floor_pct = 6.0
+                    elif _af_peak_pct >= 8.0:
+                        _af_floor_pct = 4.0
+                    elif _af_peak_pct >= 5.0:
+                        _af_floor_pct = 2.5
+                    elif _af_peak_pct >= 3.5:
+                        _af_floor_pct = 1.5
+                    else:  # 3.0 - 3.5
+                        _af_floor_pct = 0.5
+                    _af_floor_price = round(entry * (1 + _af_floor_pct/100), 2)
+                    if _af_floor_price > active_sl_used:
+                        old_sl = active_sl_used
+                        active_sl_used = _af_floor_price
+                        sl = active_sl_used
+                        t["sl_price"] = sl
+                        print(f"[SCALPER] AGG_FLOOR #{t['id']}: peak {_af_peak_pct:.1f}% → "
+                              f"floor +{_af_floor_pct}% (SL ₹{old_sl:.2f} → ₹{active_sl_used:.2f})")
+        except Exception:
+            pass
+
         # Wick-hunt protection: reset the consecutive-breach counter the
         # moment premium climbs back clear of SL.
         if current_ltp > active_sl_used:

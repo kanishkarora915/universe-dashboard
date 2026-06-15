@@ -1186,6 +1186,37 @@ class TradeManager:
             # NULLIFY their protection. So skip widening when new systems active.
             # ══════════════════════════════════════════════
             sl_raised_by_new_system = (new_sl > sl)  # sl = original DB value
+
+            # ─── MAIN AGGRESSIVE PEAK FLOOR (Fix A, 2026-06-15) ──────────
+            # Belt-and-suspenders independent of profit_floor chain.
+            # Locks SL based on peak — guarantees peak-based protection
+            # even if other systems missed the band. Mirrors scalper Fix A
+            # but tuned for main mode (slightly more conservative).
+            # Env kill: MAIN_AGG_FLOOR_DISABLED=1
+            try:
+                import os as _os_maf
+                if _os_maf.environ.get("MAIN_AGG_FLOOR_DISABLED", "").strip() not in ("1","true","on"):
+                    _maf_peak_pct = peak_pct
+                    if _maf_peak_pct >= 3.0:
+                        if _maf_peak_pct >= 12.0:
+                            _maf_floor_pct = 6.0
+                        elif _maf_peak_pct >= 8.0:
+                            _maf_floor_pct = 4.0
+                        elif _maf_peak_pct >= 5.0:
+                            _maf_floor_pct = 2.5
+                        elif _maf_peak_pct >= 3.5:
+                            _maf_floor_pct = 1.5
+                        else:  # 3.0 - 3.5
+                            _maf_floor_pct = 0.5
+                        _maf_floor_price = round(entry * (1 + _maf_floor_pct/100), 1)
+                        if _maf_floor_price > new_sl:
+                            print(f"[TRADE] AGG_FLOOR id={t['id']}: peak {_maf_peak_pct:.1f}% → "
+                                  f"floor +{_maf_floor_pct}% (SL ₹{new_sl} → ₹{_maf_floor_price})")
+                            new_sl = _maf_floor_price
+                            sl_raised_by_new_system = True
+            except Exception:
+                pass
+
             if not breakeven_active:
                 context = self._detect_trade_context(t, idx, action, chain, current_ltp)
                 original_sl = t.get("original_sl", sl) or sl
@@ -1445,6 +1476,36 @@ class TradeManager:
             # Check SL zone (within 3% of SL)
             sl_zone = current_ltp <= new_sl * 1.03
             sl_breached = current_ltp <= new_sl
+
+            # ── MULTI-TICK SL CONFIRMATION (Fix B, 2026-06-15) ─────────────
+            # Mirrors scalper's wick-hunt protection (scalper_mode.py:2280-2295).
+            # Targets STOP_HUNTED ₹4.84L bleed (46 trades, avg peak 0.86%,
+            # hold 3.3 min — pattern matches institutional wick hunt).
+            # Tick-based (≈sub-second), unlike old time-buffer (30s) that the
+            # user disabled because it delayed real exits.
+            # Env: MAIN_SL_CONFIRM_TICKS (default 2; set 1 = old single-tick).
+            if sl_breached:
+                try:
+                    import os as _os_mt
+                    _confirm_ticks = max(1, int(_os_mt.environ.get("MAIN_SL_CONFIRM_TICKS", "2") or 2))
+                    if not hasattr(self, '_main_sl_breach_count'):
+                        self._main_sl_breach_count = {}
+                    tid_mt = t["id"]
+                    self._main_sl_breach_count[tid_mt] = self._main_sl_breach_count.get(tid_mt, 0) + 1
+                    if self._main_sl_breach_count[tid_mt] < _confirm_ticks:
+                        print(f"[TRADE] SL_TICK_GUARD · {action} {idx} {strike}: "
+                              f"premium ₹{current_ltp:.2f} ≤ SL ₹{new_sl:.2f} "
+                              f"({self._main_sl_breach_count[tid_mt]}/{_confirm_ticks} ticks)")
+                        sl_breached = False
+                except Exception as _mt_e:
+                    print(f"[TRADE] multi_tick check error (allow exit): {_mt_e}")
+            else:
+                # Reset breach counter the moment premium climbs back above SL
+                try:
+                    if hasattr(self, '_main_sl_breach_count'):
+                        self._main_sl_breach_count.pop(t["id"], None)
+                except Exception:
+                    pass
 
             # ── ANTI-STOP-HUNT BUFFER (2026-06-11 — data-driven) ──
             # 60d audit: 45 STOP_HUNTED trades = ₹-4.52L. Pattern:
