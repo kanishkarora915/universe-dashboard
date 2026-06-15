@@ -239,12 +239,40 @@ def get_context(idx: str, spot: float, action: str) -> Dict:
     reasons = []
 
     # Trend alignment: ±5 based on 200d trend agreeing with action
+    #
+    # 2026-06-15 — ADAPTIVE BONUS (Fix E):
+    # Data showed CE-aligned UP trades (n=15) NET LOST ₹10k while
+    # PE-aligned DN won 100%. Root cause: when 200d=UPTREND, CE got +5
+    # which pushed marginal CE entries through *even when intraday
+    # move was already exhausted*. Make the CE bonus conditional on
+    # intraday room remaining (move_since_open < 0.3% by default).
+    # PE bonus in DOWNTREND remains unconditional (data shows it works).
+    # Env: MARKET_CTX_CE_BONUS_GUARD_DISABLED=1, MARKET_CTX_CE_BONUS_MAX_MOVE=0.3
     trend = ctx.get("trend_200d", "UNKNOWN")
     strength = ctx.get("trend_strength", 0)
+    # Compute intraday move proxy: spot vs last daily close cached in ctx
+    # (refresh happens once per session; current_close is the prior session close)
+    _ref_close = ctx.get("current_close") or 0
+    if _ref_close > 0 and spot > 0:
+        intraday_move = (spot - _ref_close) / _ref_close * 100
+    else:
+        intraday_move = ctx.get("move_since_open_pct", 0) or 0
+    try:
+        import os as _os_mc
+        _ce_guard_off = _os_mc.environ.get("MARKET_CTX_CE_BONUS_GUARD_DISABLED", "").strip() in ("1","true","on")
+        _ce_max_move = float(_os_mc.environ.get("MARKET_CTX_CE_BONUS_MAX_MOVE", "0.3"))
+    except Exception:
+        _ce_guard_off = False
+        _ce_max_move = 0.3
+
     if trend == "UPTREND":
         if is_ce:
-            bonus += 5
-            reasons.append(f"200d UPTREND aligns CE (+5)")
+            if _ce_guard_off or abs(intraday_move) <= _ce_max_move:
+                bonus += 5
+                reasons.append(f"200d UPTREND aligns CE (+5)")
+            else:
+                # exhaustion guard — index already moved a lot today
+                reasons.append(f"200d UPTREND CE bonus skipped (move {intraday_move:+.2f}% > {_ce_max_move}%, exhaustion risk)")
         else:
             bonus -= 5
             reasons.append(f"200d UPTREND against PE (-5)")

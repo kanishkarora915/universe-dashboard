@@ -55,9 +55,11 @@ def _put_cache(idx, structures_by_tf, alignment):
 
 
 class TestMasterMode:
-    def test_default_off(self):
+    def test_default_shadow(self, monkeypatch):
+        # 2026-06-15: Default flipped off→shadow for observation (Fix D)
+        monkeypatch.delenv("STRUCTURE_MODE", raising=False)
         from structure_gate import master_mode
-        assert master_mode() == "off"
+        assert master_mode() == "shadow"
 
     def test_shadow(self, monkeypatch):
         monkeypatch.setenv("STRUCTURE_MODE", "shadow")
@@ -69,8 +71,14 @@ class TestMasterMode:
         from structure_gate import master_mode
         assert master_mode() == "live"
 
-    def test_invalid_falls_back_off(self, monkeypatch):
+    def test_invalid_falls_back_shadow(self, monkeypatch):
+        # 2026-06-15: Default flipped to shadow, so invalid values fall back to shadow too
         monkeypatch.setenv("STRUCTURE_MODE", "garbage")
+        from structure_gate import master_mode
+        assert master_mode() == "shadow"
+
+    def test_explicit_off(self, monkeypatch):
+        monkeypatch.setenv("STRUCTURE_MODE", "off")
         from structure_gate import master_mode
         assert master_mode() == "off"
 
@@ -79,7 +87,9 @@ class TestMasterMode:
 
 
 class TestOffMode:
-    def test_off_always_allows(self):
+    def test_off_always_allows(self, monkeypatch):
+        # 2026-06-15: default changed shadow; force off for this test
+        monkeypatch.setenv("STRUCTURE_MODE", "off")
         from structure_gate import evaluate_entry
         r = evaluate_entry(
             engine=None, idx="NIFTY",
@@ -89,7 +99,8 @@ class TestOffMode:
         assert r["mode"] == "off"
         assert r["tuning"] is None
 
-    def test_off_works_without_cache(self):
+    def test_off_works_without_cache(self, monkeypatch):
+        monkeypatch.setenv("STRUCTURE_MODE", "off")
         from structure_gate import evaluate_entry
         r = evaluate_entry(
             engine=None, idx="BANKNIFTY",
@@ -287,10 +298,12 @@ class TestNoData:
 
 
 class TestDiagnostics:
-    def test_diagnostics_shape(self):
+    def test_diagnostics_shape(self, monkeypatch):
+        # 2026-06-15: default is now 'shadow'; test the structure is intact
+        monkeypatch.delenv("STRUCTURE_MODE", raising=False)
         from structure_gate import diagnostics
         d = diagnostics()
-        assert d["master_mode"] == "off"
+        assert d["master_mode"] == "shadow"
         assert "mode_a_tuning" in d
         assert "mode_b_tuning" in d
         assert d["mode_a_tuning"]["size_mult"] == 1.0

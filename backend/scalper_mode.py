@@ -771,6 +771,31 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         conn.close()
         return False
 
+    # Guard 4: WATCHER_EXIT cooldown (Fix C, 2026-06-15)
+    # Targets WATCHER_EXIT ₹3.58L bleed (16 trades, avg peak 0.83%,
+    # hold 1.6 min — wrong-direction immediate kills).
+    # If ANY scalper trade in same index just got watcher-killed in
+    # last 5 min, the market is hostile to that idx — skip new entries.
+    # Env: SCALPER_WATCHER_COOLDOWN_DISABLED=1, SCALPER_WATCHER_COOLDOWN_MIN=5
+    try:
+        import os as _os_wc
+        if _os_wc.environ.get("SCALPER_WATCHER_COOLDOWN_DISABLED", "").strip() not in ("1","true","on"):
+            _wc_min = float(_os_wc.environ.get("SCALPER_WATCHER_COOLDOWN_MIN", "5"))
+            _wc_cutoff = (now - timedelta(minutes=_wc_min)).isoformat()
+            recent_watcher = conn.execute(
+                """SELECT COUNT(*) FROM scalper_trades
+                   WHERE idx=? AND status IN ('WATCHER_EXIT','EARLY_CUT','INSTANT_REJECT')
+                     AND exit_time > ?""",
+                (idx, _wc_cutoff)
+            ).fetchone()[0]
+            if recent_watcher > 0:
+                conn.close()
+                print(f"[SCALPER] REJECT entry: WATCHER_COOLDOWN — {recent_watcher} hostile "
+                      f"exit(s) on {idx} in last {_wc_min:.0f} min, market unfriendly")
+                return False
+    except Exception as _wc_e:
+        print(f"[SCALPER] WATCHER_COOLDOWN error (allow): {_wc_e}")
+
     conn.close()
 
     # ── B1.4: DIRECTION SANITY (OI delta + spot must AGREE with action) ──

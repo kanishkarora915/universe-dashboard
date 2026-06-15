@@ -59,9 +59,16 @@ from typing import Dict, Optional, List
 
 
 def master_mode() -> str:
-    """off | shadow | live (default off)."""
-    m = os.environ.get("STRUCTURE_MODE", "off").lower().strip()
-    return m if m in ("off", "shadow", "live") else "off"
+    """off | shadow | live.
+
+    2026-06-15: Default flipped off→shadow. Multi-TF Bill Williams Dow
+    Theory gate runs and LOGS decisions but does NOT block any trades.
+    Zero behavior change; gathers data on what it WOULD have blocked so
+    we can decide on live activation with proof. Set STRUCTURE_MODE=off
+    to revert to fully dormant.
+    """
+    m = os.environ.get("STRUCTURE_MODE", "shadow").lower().strip()
+    return m if m in ("off", "shadow", "live") else "shadow"
 
 
 def scalper_enabled() -> bool:
