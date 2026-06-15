@@ -20,7 +20,7 @@ MAX_RISK_PER_TRADE_PCT = 3.0  # Risk 3% of capital per trade (₹30k on ₹10L) 
 MAX_RISK_WHALE_ALIGNED_PCT = 5.0  # 5% on whale-aligned trades (₹50k risk) — was 2.5%
 MAX_DAILY_LOSS_PCT = 8  # Stop trading after 8% daily loss (was 5% — let trades breathe)
 MAX_SIMULTANEOUS_TRADES = 10  # No practical limit
-MAX_DAILY_TRADES = 15  # Real trades per day (raised from 6 per user request)
+MAX_DAILY_TRADES = 24  # Raised 15→24 (user req 2026-06-15)
 
 # NSE Holidays — Auto-fetched from Kite API, fallback to hardcoded
 _NSE_HOLIDAYS_CACHE = None

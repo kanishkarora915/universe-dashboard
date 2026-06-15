@@ -41,7 +41,7 @@ SCALPER_AUTO_TRADE_ENABLED = os.environ.get("SCALPER_AUTO_TRADE", "on").lower() 
 SCALPER_THRESHOLD = 50         # Lowered 55→50 (2026-06-05, user: "fast scalper, small profits")
                                # Backtest: prob 50-54% bucket = 8 trades, 57% WR, +₹85k untapped
                                # Damage control (EARLY_CUT + BREAKEVEN) handles the small losses
-SCALPER_DAILY_CAP = 20         # Raised 15→20 (more shots for small-profit capture)
+SCALPER_DAILY_CAP = 30         # Raised 20→30 (user req 2026-06-15)
 SCALPER_SL_PCT = 0.08          # 8% SL (lowered 12→8 per user safety rule, B1.1)
 SCALPER_T1_PCT = 0.10          # 10% T1 (lowered 15→10 per profit-mgmt #1 — more reachable)
 SCALPER_T2_PCT = 0.20          # 20% T2 (lowered 30→20 — better R:R 1:2.5 with -8% SL)
@@ -159,7 +159,7 @@ def init_scalper_db():
             t1_pct REAL DEFAULT 0.10,
             t2_pct REAL DEFAULT 0.20,
             threshold INTEGER DEFAULT 55,
-            daily_cap INTEGER DEFAULT 15,
+            daily_cap INTEGER DEFAULT 30,
             updated_at TEXT
         )
     """)
@@ -172,17 +172,17 @@ def init_scalper_db():
     #   sl_pct ≥ 0.10  → 0.08 (B1.1 safety floor)
     #   t1_pct ≥ 0.13  → 0.10 (profit-mgmt #1 — T1 more reachable)
     #   t2_pct ≥ 0.25  → 0.20 (R:R 1:2.5)
-    #   daily_cap > 15 → 15
+    #   daily_cap raised to 30 (user req 2026-06-15) — clamp old DB rows up to 30 too
     try:
         conn.execute("""
             UPDATE scalper_config
                SET sl_pct = 0.08,
                    t1_pct = 0.10,
                    t2_pct = 0.20,
-                   daily_cap = MIN(daily_cap, 15),
+                   daily_cap = MAX(daily_cap, 30),
                    updated_at = ?
              WHERE id = 1 AND (sl_pct >= 0.10 OR t1_pct >= 0.13 OR t2_pct >= 0.25
-                               OR daily_cap > 15)
+                               OR daily_cap < 30)
         """, (ist_now().isoformat(),))
     except Exception:
         pass
