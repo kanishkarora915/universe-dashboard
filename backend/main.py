@@ -3966,6 +3966,100 @@ async def admin_exit_pattern_audit(days: int = 60, status: str = None):
     return out
 
 
+@app.get("/api/admin/regime-deep-audit")
+async def admin_regime_deep_audit():
+    """Returns a detailed regime × outcome breakdown for both modes.
+    Use after regime_backfill has populated rows."""
+    import sqlite3 as _sql
+    from collections import Counter, defaultdict
+    out = {"tables": {}}
+    for path, table, label in (
+        ("/data/trades.db", "trades", "main"),
+        ("/data/scalper_trades.db", "scalper_trades", "scalper"),
+    ):
+        if not os.path.exists(path):
+            continue
+        c = _sql.connect(path)
+        c.row_factory = _sql.Row
+        rows = c.execute(
+            f"SELECT idx, action, status, pnl_rupees, regime_at_entry, "
+            f"range_pct_at_entry, candle_pct_at_entry, "
+            f"structure_5m, structure_15m, structure_1h "
+            f"FROM {table} WHERE status NOT IN ('OPEN','PENDING') "
+            f"AND regime_at_entry IS NOT NULL AND regime_at_entry != ''"
+        ).fetchall()
+        c.close()
+        # status × regime
+        sxr_cnt = defaultdict(lambda: defaultdict(int))
+        sxr_pnl = defaultdict(lambda: defaultdict(float))
+        for r in rows:
+            st = r["status"]
+            rg = r["regime_at_entry"]
+            sxr_cnt[st][rg] += 1
+            sxr_pnl[st][rg] += r["pnl_rupees"] or 0
+        status_regime = []
+        for st in sorted(sxr_cnt.keys()):
+            entry = {"status": st, "by_regime": {}}
+            for rg, n in sxr_cnt[st].items():
+                pnl = sxr_pnl[st][rg]
+                entry["by_regime"][rg] = {"n": n, "pnl": round(pnl, 0)}
+            status_regime.append(entry)
+        # range histogram
+        bands = [(0, 0.1), (0.1, 0.15), (0.15, 0.2), (0.2, 0.3),
+                 (0.3, 0.4), (0.4, 0.6), (0.6, 1.0), (1.0, 99)]
+        range_hist = []
+        for lo, hi in bands:
+            in_band = [r for r in rows if lo <= (r["range_pct_at_entry"] or 0) < hi]
+            n = len(in_band)
+            pnl = sum(r["pnl_rupees"] or 0 for r in in_band)
+            w = sum(1 for r in in_band if (r["pnl_rupees"] or 0) > 0)
+            l = sum(1 for r in in_band if (r["pnl_rupees"] or 0) < 0)
+            range_hist.append({
+                "band": f"[{lo}%-{hi}%)", "n": n,
+                "pnl": round(pnl, 0), "wins": w, "losses": l,
+                "wr_pct": round(w / n * 100, 1) if n else 0,
+            })
+        # structure alignment
+        align = defaultdict(lambda: {"n": 0, "pnl": 0.0, "w": 0, "l": 0})
+        for r in rows:
+            is_ce = "CE" in (r["action"] or "")
+            s5 = r["structure_5m"] or "UNKNOWN"
+            s15 = r["structure_15m"] or "UNKNOWN"
+            if is_ce and s5 == "UPTREND" and s15 == "UPTREND":
+                cat = "CE aligned 5m+15m UP"
+            elif is_ce and (s5 == "DOWNTREND" or s15 == "DOWNTREND"):
+                cat = "CE counter-trend"
+            elif not is_ce and s5 == "DOWNTREND" and s15 == "DOWNTREND":
+                cat = "PE aligned 5m+15m DN"
+            elif not is_ce and (s5 == "UPTREND" or s15 == "UPTREND"):
+                cat = "PE counter-trend"
+            elif s5 == "CHOP" or s15 == "CHOP":
+                cat = "structure CHOP"
+            else:
+                cat = "mixed/other"
+            b = align[cat]
+            b["n"] += 1
+            b["pnl"] += (r["pnl_rupees"] or 0)
+            if (r["pnl_rupees"] or 0) > 0:
+                b["w"] += 1
+            elif (r["pnl_rupees"] or 0) < 0:
+                b["l"] += 1
+        alignment_buckets = []
+        for cat, b in sorted(align.items(), key=lambda x: -x[1]["pnl"]):
+            alignment_buckets.append({
+                "bucket": cat, "n": b["n"],
+                "pnl": round(b["pnl"], 0), "wins": b["w"], "losses": b["l"],
+                "wr_pct": round(b["w"] / b["n"] * 100, 1) if b["n"] else 0,
+            })
+        out["tables"][label] = {
+            "total": len(rows),
+            "status_x_regime": status_regime,
+            "range_histogram": range_hist,
+            "structure_alignment": alignment_buckets,
+        }
+    return out
+
+
 @app.post("/api/admin/regime-backfill")
 async def admin_regime_backfill():
     """One-shot backfill: populate regime_at_entry + structure_5m/15m/1h
