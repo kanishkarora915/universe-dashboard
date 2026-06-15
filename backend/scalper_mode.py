@@ -1298,6 +1298,35 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
     t1_price = round(entry_price * (1 + t1_pct))
     t2_price = round(entry_price * (1 + t2_pct))
 
+    # ── ADAPTIVE SL DISTANCE CAP BY PREMIUM (Fix 3, 2026-06-15) ──
+    # When sl_pct config is wide (8%+) AND premium is fat (₹1000+ BNF ATM),
+    # the absolute rupee risk per lot becomes ₹80k+. Cap SL distance by
+    # premium size. Audit: S-106 ₹1233 entry × 12% wide = ₹88k loss.
+    # Env kill: SCALPER_ADAPTIVE_SL_DISABLED=1
+    try:
+        import os as _os_asl
+        if _os_asl.environ.get("SCALPER_ADAPTIVE_SL_DISABLED", "").strip() not in ("1","true","on"):
+            _asl_fat = float(_os_asl.environ.get("SCALPER_ADAPTIVE_SL_FAT_PREMIUM", "1000"))
+            _asl_mid = float(_os_asl.environ.get("SCALPER_ADAPTIVE_SL_MID_PREMIUM", "500"))
+            _asl_fat_cap = float(_os_asl.environ.get("SCALPER_ADAPTIVE_SL_FAT_PCT", "7.0"))
+            _asl_mid_cap = float(_os_asl.environ.get("SCALPER_ADAPTIVE_SL_MID_PCT", "9.0"))
+            _asl_def_cap = float(_os_asl.environ.get("SCALPER_ADAPTIVE_SL_DEFAULT_PCT", "12.0"))
+            current_sl_dist_pct = (entry_price - sl_price) / entry_price * 100 if entry_price > 0 else 0
+            if entry_price >= _asl_fat:
+                cap_pct = _asl_fat_cap
+            elif entry_price >= _asl_mid:
+                cap_pct = _asl_mid_cap
+            else:
+                cap_pct = _asl_def_cap
+            if current_sl_dist_pct > cap_pct:
+                new_sl_price = round(entry_price * (1 - cap_pct/100))
+                print(f"[SCALPER] ADAPTIVE_SL: premium ₹{entry_price:.1f} → "
+                      f"capping SL distance from {current_sl_dist_pct:.1f}% to {cap_pct:.1f}% "
+                      f"(SL ₹{sl_price} → ₹{new_sl_price})")
+                sl_price = new_sl_price
+    except Exception as _asl_e:
+        print(f"[SCALPER] ADAPTIVE_SL error (keeping original): {_asl_e}")
+
     # Anti-stop-hunt SL wrapping (2026-05-19).
     # Scalper had 69 SL_HIT trades / -₹656k over 60d — many at obvious
     # round-number SLs that institutions sweep. smart_sl applies tick-
@@ -1930,6 +1959,38 @@ def check_scalper_exits(chains):
         except Exception:
             pass
 
+        # ─── STALE_TRADE_KILL (Fix 4, 2026-06-15) ───
+        # Catches GAP between EARLY_CUT (10min, -2.5%) and ZOMBIE_KILL
+        # (30min, profit band -1..+1). Bleed-trades that drift below -1%
+        # before 30min escape both. Audit: 14 such trades held 180m avg
+        # lost ₹3.08L scalper-side. Kill at 15-30 min if peak <1% and loss
+        # -2% to -5%. Direction wrong → theta will keep widening loss.
+        # Env kill: SCALPER_STALE_KILL_DISABLED=1
+        try:
+            import os as _os_sk
+            if (_os_sk.environ.get("SCALPER_STALE_KILL_DISABLED", "").strip() not in ("1","true","on")
+                    and new_status == "OPEN"):
+                sk_min_hold = float(_os_sk.environ.get("SCALPER_STALE_KILL_MIN_HOLD_MIN", "15")) * 60
+                sk_max_hold = float(_os_sk.environ.get("SCALPER_STALE_KILL_MAX_HOLD_MIN", "30")) * 60
+                sk_max_peak = float(_os_sk.environ.get("SCALPER_STALE_KILL_MAX_PEAK_PCT", "1.0"))
+                sk_loss_low = float(_os_sk.environ.get("SCALPER_STALE_KILL_LOSS_LOW", "-5.0"))
+                sk_loss_high = float(_os_sk.environ.get("SCALPER_STALE_KILL_LOSS_HIGH", "-2.0"))
+                if (sk_min_hold <= hold_sec <= sk_max_hold
+                        and peak_profit_pct_local <= sk_max_peak
+                        and sk_loss_low <= cur_profit_pct <= sk_loss_high):
+                    new_status = "STALE_TRADE_KILL"
+                    exit_price = current_ltp
+                    exit_reason = (f"STALE_TRADE_KILL: hold {hold_sec/60:.0f}m, "
+                                   f"peak {peak_profit_pct_local:+.1f}% (never broke {sk_max_peak}%), "
+                                   f"loss {cur_profit_pct:+.1f}% — direction wrong, "
+                                   f"prevent slow-bleed to -5% SL")
+                    sl_reason_text = exit_reason
+                    print(f"[SCALPER] STALE_KILL · #{t['id']} {idx} {action} {strike} · "
+                          f"hold {hold_sec/60:.0f}m, peak {peak_profit_pct_local:+.1f}%, "
+                          f"now {cur_profit_pct:+.1f}% — bleeding stopped")
+        except Exception:
+            pass
+
         # ─── INSTANT_REJECT — < 60s crash exit (2026-06-11) ───
         # 2026-06-11 v2: DEFAULT DISABLED per user feedback.
         # Was firing 5-6 times today, sometimes on legitimate dips
@@ -2249,14 +2310,43 @@ def check_scalper_exits(chains):
             _confirm_ticks = max(1, int(_os_wk.environ.get("SCALPER_SL_CONFIRM_TICKS", "2") or 2))
             _sl_breach_count[t["id"]] = _sl_breach_count.get(t["id"], 0) + 1
             if _sl_breach_count[t["id"]] >= _confirm_ticks:
-                new_status = "SL_HIT"
-                exit_price = active_sl_used
-                if smart_enabled:
-                    exit_reason = f"Smart SL hit (Stage {smart_stage} - {smart_label}) at ₹{active_sl_used:.2f}"
-                    sl_reason_text = f"Profit ladder triggered: Stage {smart_stage} ({smart_label}). Premium ₹{current_ltp:.2f} hit SL ₹{active_sl_used:.2f}"
+                # ── PEAK-AWARE FLOOR (Fix 2, 2026-06-15) ──
+                # If trade peaked +5%+ during lifetime, don't dump full SL.
+                # Lock at peak × 0.4 (or current ltp if past floor).
+                # Catches trades like #51 (peak +17% → SL hit) — would lock +6.8%.
+                # Env kill: SCALPER_PEAK_FLOOR_DISABLED=1
+                _pf_disabled = _os_wk.environ.get("SCALPER_PEAK_FLOOR_DISABLED", "").strip() in ("1","true","on")
+                _pf_peak_thresh = float(_os_wk.environ.get("SCALPER_PEAK_FLOOR_PEAK_PCT", "5.0"))
+                _pf_factor = float(_os_wk.environ.get("SCALPER_PEAK_FLOOR_FACTOR", "0.4"))
+                _peak_pct_now = peak_profit_pct_local
+                if (not _pf_disabled) and _peak_pct_now >= _pf_peak_thresh:
+                    floor_pct = _peak_pct_now * _pf_factor
+                    floor_price = round(entry * (1 + floor_pct/100), 2)
+                    if current_ltp >= floor_price:
+                        new_status = "PEAK_FLOOR_EXIT"
+                        exit_price = floor_price
+                        exit_reason = (f"PEAK_FLOOR_LOCK at ₹{floor_price} (+{floor_pct:.1f}%) — "
+                                       f"trade peaked +{_peak_pct_now:.1f}% then SL approach. "
+                                       f"Floor saved profit (was SL at ₹{active_sl_used:.2f}).")
+                        sl_reason_text = exit_reason
+                        print(f"[SCALPER] PEAK_FLOOR · #{t['id']} {idx} {action} {strike} · "
+                              f"peak +{_peak_pct_now:.1f}% → exit +{floor_pct:.1f}% (was SL exit)")
+                    else:
+                        new_status = "SL_HIT"
+                        exit_price = active_sl_used
+                        exit_reason = (f"SL hit at ₹{active_sl_used:.2f} — peak was "
+                                       f"+{_peak_pct_now:.1f}% but premium crashed past "
+                                       f"floor ₹{floor_price}.")
+                        sl_reason_text = exit_reason
                 else:
-                    exit_reason = f"SL hit at ₹{sl:.2f}"
-                    sl_reason_text = f"Static SL hit. Premium ₹{current_ltp:.2f} ≤ SL ₹{sl:.2f}"
+                    new_status = "SL_HIT"
+                    exit_price = active_sl_used
+                    if smart_enabled:
+                        exit_reason = f"Smart SL hit (Stage {smart_stage} - {smart_label}) at ₹{active_sl_used:.2f}"
+                        sl_reason_text = f"Profit ladder triggered: Stage {smart_stage} ({smart_label}). Premium ₹{current_ltp:.2f} hit SL ₹{active_sl_used:.2f}"
+                    else:
+                        exit_reason = f"SL hit at ₹{sl:.2f}"
+                        sl_reason_text = f"Static SL hit. Premium ₹{current_ltp:.2f} ≤ SL ₹{sl:.2f}"
             else:
                 print(f"[SCALPER] SL wick #{t['id']}: premium ₹{current_ltp:.2f} ≤ SL "
                       f"₹{active_sl_used:.2f} but only {_sl_breach_count[t['id']]}/{_confirm_ticks} "

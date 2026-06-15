@@ -641,6 +641,36 @@ class TradeManager:
             print(f"[TRADE] Fallback targets (no ATR): SL ₹{sl_price} (-5%) "
                   f"T1 ₹{t1_price} (+5%) T2 ₹{t2_price} (+12%)")
 
+        # ── ADAPTIVE SL DISTANCE CAP BY PREMIUM (Fix 3, 2026-06-15) ──
+        # ATR-based SL can be 11-15% wide on fat BANKNIFTY ATM (₹1200+).
+        # When wrong-direction, -12% × 60 lots = ₹80k single trade blast.
+        # Audit: top losses S-106 (-₹88k), S-63 (-₹80k) — both 11.98% wide.
+        # Cap SL distance by premium size to bound worst-case damage.
+        # Env kill: MAIN_ADAPTIVE_SL_DISABLED=1
+        try:
+            import os as _os_asl
+            if _os_asl.environ.get("MAIN_ADAPTIVE_SL_DISABLED", "").strip() not in ("1","true","on"):
+                _asl_fat = float(_os_asl.environ.get("MAIN_ADAPTIVE_SL_FAT_PREMIUM", "1000"))
+                _asl_mid = float(_os_asl.environ.get("MAIN_ADAPTIVE_SL_MID_PREMIUM", "500"))
+                _asl_fat_cap = float(_os_asl.environ.get("MAIN_ADAPTIVE_SL_FAT_PCT", "7.0"))
+                _asl_mid_cap = float(_os_asl.environ.get("MAIN_ADAPTIVE_SL_MID_PCT", "9.0"))
+                _asl_def_cap = float(_os_asl.environ.get("MAIN_ADAPTIVE_SL_DEFAULT_PCT", "12.0"))
+                current_sl_dist_pct = (entry_price - sl_price) / entry_price * 100 if entry_price > 0 else 0
+                if entry_price >= _asl_fat:
+                    cap_pct = _asl_fat_cap
+                elif entry_price >= _asl_mid:
+                    cap_pct = _asl_mid_cap
+                else:
+                    cap_pct = _asl_def_cap
+                if current_sl_dist_pct > cap_pct:
+                    new_sl_price = round(entry_price * (1 - cap_pct/100), 1)
+                    print(f"[TRADE] ADAPTIVE_SL: premium ₹{entry_price:.1f} → "
+                          f"capping SL distance from {current_sl_dist_pct:.1f}% to {cap_pct:.1f}% "
+                          f"(SL ₹{sl_price} → ₹{new_sl_price})")
+                    sl_price = new_sl_price
+        except Exception as _asl_e:
+            print(f"[TRADE] ADAPTIVE_SL error (keeping original): {_asl_e}")
+
         # Position size SCALED by conviction + whale alignment + ADAPTIVE TIER (A5)
         try:
             from risk_tier_manager import get_tier_qty_multiplier
@@ -877,6 +907,37 @@ class TradeManager:
                               f"never positive in {hold_sec_main/60:.1f}m, cut at {profit_pct:+.1f}%")
             except Exception as _ec_e:
                 print(f"[TRADE] EARLY_CUT error (allow): {_ec_e}")
+
+            # ── STALE_TRADE_KILL (Fix 4, 2026-06-15) ──
+            # Catches the GAP between EARLY_CUT (10min, -2.5%) and ZOMBIE_KILL
+            # (30min, profit band -1..+1). Bleed-trades that drift below -1%
+            # before 30min escape ZOMBIE_KILL. Audit: 14 such trades held 180m
+            # avg, lost ₹3.08L. Kill at 15min if peak <1% and loss between
+            # -2% and -5% — direction wrong, theta+slippage will only widen it.
+            # Env kill: MAIN_STALE_KILL_DISABLED=1
+            try:
+                import os as _os_sk
+                if (_os_sk.environ.get("MAIN_STALE_KILL_DISABLED", "").strip() not in ("1","true","on")
+                        and new_status == "OPEN"):
+                    sk_min_hold = float(_os_sk.environ.get("MAIN_STALE_KILL_MIN_HOLD_MIN", "15")) * 60
+                    sk_max_hold = float(_os_sk.environ.get("MAIN_STALE_KILL_MAX_HOLD_MIN", "30")) * 60
+                    sk_max_peak = float(_os_sk.environ.get("MAIN_STALE_KILL_MAX_PEAK_PCT", "1.0"))
+                    sk_loss_low = float(_os_sk.environ.get("MAIN_STALE_KILL_LOSS_LOW", "-5.0"))
+                    sk_loss_high = float(_os_sk.environ.get("MAIN_STALE_KILL_LOSS_HIGH", "-2.0"))
+                    if (sk_min_hold <= hold_sec_main <= sk_max_hold
+                            and peak_pct <= sk_max_peak
+                            and sk_loss_low <= profit_pct <= sk_loss_high):
+                        new_status = "STALE_TRADE_KILL"
+                        exit_price = current_ltp
+                        exit_reason = (f"STALE_TRADE_KILL: hold {hold_sec_main/60:.0f}m, "
+                                       f"peak {peak_pct:+.1f}% (never broke {sk_max_peak}%), "
+                                       f"loss {profit_pct:+.1f}% — direction wrong, "
+                                       f"prevent slow-bleed to -5% SL")
+                        print(f"[TRADE] STALE_KILL · {action} {idx} {strike} · "
+                              f"hold {hold_sec_main/60:.0f}m, peak {peak_pct:+.1f}%, "
+                              f"now {profit_pct:+.1f}% — bleeding stopped")
+            except Exception as _sk_e:
+                print(f"[TRADE] STALE_KILL error (allow): {_sk_e}")
 
             # ── INSTANT_REJECT — < 90s crash exit (2026-06-11) ──
             # 2026-06-11 v2: DEFAULT DISABLED per user feedback.
@@ -1199,11 +1260,43 @@ class TradeManager:
                 # Capital preservation: in fast-moving markets, position could blow
                 # through -5% to -15% in <2 min. Must fire on first tick at -5%.
                 # This OVERRIDES every other system (engines-hold, STOP_HUNT, etc.).
+                #
+                # ── PEAK-AWARE FLOOR (Fix 2, 2026-06-15) ──
+                # If trade peaked +5%+ before crashing, don't exit at -5%.
+                # Lock at peak × 0.4 floor instead — preserves earned profit.
+                # Catches Trade #51 (peak +17% → exit -8%): would lock at +6.8%.
+                # Env kill: MAIN_PEAK_FLOOR_DISABLED=1
                 if profit_pct <= rev_pct:
-                    new_status = "REVERSAL_EXIT"
-                    exit_price = current_ltp
-                    exit_reason = f"HARD MAX-LOSS CAP [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — capital preservation, no overrides."
-                    print(f"[TRADE] MAX-LOSS EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}% after {int(hold_sec/60)}min)")
+                    import os as _os_pf
+                    _pf_disabled = _os_pf.environ.get("MAIN_PEAK_FLOOR_DISABLED", "").strip() in ("1","true","on")
+                    _pf_peak_thresh = float(_os_pf.environ.get("MAIN_PEAK_FLOOR_PEAK_PCT", "5.0"))
+                    _pf_factor = float(_os_pf.environ.get("MAIN_PEAK_FLOOR_FACTOR", "0.4"))
+                    if (not _pf_disabled) and peak_pct >= _pf_peak_thresh:
+                        floor_pct = peak_pct * _pf_factor
+                        floor_price = round(entry * (1 + floor_pct/100), 1)
+                        # Only lock if current ltp is still above the floor (otherwise the
+                        # crash is past the floor too — exit at market is best we can do).
+                        if current_ltp >= floor_price:
+                            new_status = "TRAIL_EXIT"
+                            exit_price = floor_price
+                            exit_reason = (f"PEAK_FLOOR_LOCK [{_bm['mode']}] at ₹{floor_price} "
+                                           f"(+{floor_pct:.1f}%) — trade peaked +{peak_pct:.1f}% then "
+                                           f"reversed past -5% cap. Floor saved profit.")
+                            print(f"[TRADE] PEAK_FLOOR [{_bm['mode']}]: {action} {idx} {strike} "
+                                  f"peak +{peak_pct:.1f}% → exit +{floor_pct:.1f}% (was about to -5%)")
+                        else:
+                            new_status = "REVERSAL_EXIT"
+                            exit_price = current_ltp
+                            exit_reason = (f"HARD MAX-LOSS CAP [{_bm['mode']}] at ₹{current_ltp:.1f} "
+                                           f"({profit_pct:.1f}%) — peak was +{peak_pct:.1f}% but crash "
+                                           f"past floor ₹{floor_price}. Exit at market.")
+                            print(f"[TRADE] MAX-LOSS (past floor) [{_bm['mode']}]: {action} {idx} {strike} "
+                                  f"peak +{peak_pct:.1f}% but crashed past +{floor_pct:.1f}% floor")
+                    else:
+                        new_status = "REVERSAL_EXIT"
+                        exit_price = current_ltp
+                        exit_reason = f"HARD MAX-LOSS CAP [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — capital preservation, no overrides."
+                        print(f"[TRADE] MAX-LOSS EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}% after {int(hold_sec/60)}min)")
 
                 # Tier (a): early exit on confirmed downtrend (saves 2%, requires hold)
                 # Only checks if hard cap didn't already fire AND we've held >= rev_min_hold.
