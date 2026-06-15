@@ -188,6 +188,101 @@ def _candles_to_spot_history(candles: List[Dict], entry_dt: datetime, window_min
     return out
 
 
+def _compute_regime_at(entry_dt: datetime, spot_history: List[Dict],
+                       tight_range_pct: float = 0.4,
+                       breakout_candle_pct: float = 1.5) -> Dict:
+    """REPLICATE detect_market_regime() but use entry_dt as "now" instead of
+    ist_now(). The live function compares against current time which kills
+    historical backfill — every old tick fails cutoff and returns NORMAL.
+    """
+    if not spot_history or len(spot_history) < 10:
+        return {"regime": "NORMAL", "range_pct": 0, "candle_pct": 0,
+                "tight_before": False, "reason": "insufficient history"}
+
+    cutoff_20 = entry_dt - timedelta(minutes=20)
+    recent_20 = []
+    for h in spot_history:
+        try:
+            t = datetime.fromisoformat(h["t"]) if isinstance(h["t"], str) else h["t"]
+            if t.tzinfo is None:
+                t = IST.localize(t)
+            if cutoff_20 <= t <= entry_dt:
+                recent_20.append(h)
+        except Exception:
+            continue
+    if len(recent_20) < 10:
+        return {"regime": "NORMAL", "range_pct": 0, "candle_pct": 0,
+                "tight_before": False, "reason": f"<10 ticks ({len(recent_20)}) in 20min before entry"}
+
+    ltps_20 = [h["ltp"] for h in recent_20 if h.get("ltp", 0) > 0]
+    if not ltps_20:
+        return {"regime": "NORMAL", "range_pct": 0, "candle_pct": 0,
+                "tight_before": False, "reason": "no valid ltps"}
+
+    high_20 = max(ltps_20)
+    low_20 = min(ltps_20)
+    avg_20 = sum(ltps_20) / len(ltps_20)
+    if avg_20 <= 0:
+        return {"regime": "NORMAL", "range_pct": 0, "candle_pct": 0,
+                "tight_before": False, "reason": "bad avg"}
+    range_pct = ((high_20 - low_20) / avg_20) * 100
+
+    cutoff_1m = entry_dt - timedelta(minutes=1)
+    last_1m = []
+    for h in spot_history:
+        try:
+            t = datetime.fromisoformat(h["t"]) if isinstance(h["t"], str) else h["t"]
+            if t.tzinfo is None:
+                t = IST.localize(t)
+            if cutoff_1m <= t <= entry_dt:
+                last_1m.append(h)
+        except Exception:
+            continue
+    candle_pct = 0.0
+    if last_1m and len(last_1m) >= 2:
+        c_first = last_1m[0]["ltp"]
+        c_last = last_1m[-1]["ltp"]
+        if c_first > 0:
+            candle_pct = ((c_last - c_first) / c_first) * 100
+
+    cutoff_pre_start = entry_dt - timedelta(minutes=20)
+    cutoff_pre_end = entry_dt - timedelta(minutes=1)
+    pre_candle = []
+    for h in spot_history:
+        try:
+            t = datetime.fromisoformat(h["t"]) if isinstance(h["t"], str) else h["t"]
+            if t.tzinfo is None:
+                t = IST.localize(t)
+            if cutoff_pre_start <= t < cutoff_pre_end:
+                pre_candle.append(h)
+        except Exception:
+            continue
+    tight_before = False
+    if pre_candle and len(pre_candle) >= 5:
+        pre_ltps = [h["ltp"] for h in pre_candle if h.get("ltp", 0) > 0]
+        if pre_ltps:
+            pre_avg = sum(pre_ltps) / len(pre_ltps)
+            if pre_avg > 0:
+                pre_range_pct = ((max(pre_ltps) - min(pre_ltps)) / pre_avg) * 100
+                tight_before = pre_range_pct < tight_range_pct
+
+    if tight_before and abs(candle_pct) >= breakout_candle_pct:
+        regime = "BREAKOUT"
+    elif range_pct < tight_range_pct and abs(candle_pct) < 0.3:
+        regime = "CHOP"
+    elif range_pct > 1.0:
+        regime = "TRENDING"
+    else:
+        regime = "NORMAL"
+    return {
+        "regime": regime,
+        "range_pct": round(range_pct, 3),
+        "candle_pct": round(candle_pct, 3),
+        "tight_before": tight_before,
+        "reason": "computed at entry_dt",
+    }
+
+
 def _candles_before(candles: List[Dict], ref_dt: datetime, count_back: int) -> List[Dict]:
     """Return the most recent `count_back` candles strictly before ref_dt."""
     keep = []
@@ -241,6 +336,21 @@ def backfill_one_db(db_path: str, table: str):
                 print(f"[BACKFILL] ALTER {col} failed: {e}")
     conn.commit()
 
+    # Reset rows polluted by the v1 bug (regime='NORMAL' with range_pct=0 came
+    # from detect_market_regime using ist_now() against historical timestamps).
+    try:
+        cur.execute(
+            f"UPDATE {table} SET regime_at_entry='' "
+            f"WHERE regime_at_entry='NORMAL' AND range_pct_at_entry=0 "
+            f"AND status NOT IN ('OPEN','PENDING')"
+        )
+        n_reset = cur.rowcount
+        conn.commit()
+        if n_reset:
+            print(f"[BACKFILL] reset {n_reset} v1-bug rows for re-compute")
+    except Exception as e:
+        print(f"[BACKFILL] reset step failed (ignoring): {e}")
+
     rows = cur.execute(
         f"SELECT id, entry_time, idx FROM {table} "
         f"WHERE (regime_at_entry IS NULL OR regime_at_entry='') "
@@ -254,7 +364,6 @@ def backfill_one_db(db_path: str, table: str):
 
     # Defer imports until after DB open so script can run even if backend not importable
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from entry_filters import detect_market_regime
     import price_structure as ps
 
     ok = 0
@@ -271,7 +380,7 @@ def backfill_one_db(db_path: str, table: str):
             # Per-trade work
             minute_candles = _fetch_day_minute(kite, idx, day_anchor)
             spot_hist = _candles_to_spot_history(minute_candles, entry_dt)
-            regime_info = detect_market_regime(spot_hist) if spot_hist else {
+            regime_info = _compute_regime_at(entry_dt, spot_hist) if spot_hist else {
                 "regime": "", "range_pct": 0, "candle_pct": 0}
 
             # Structure 5m / 15m / 1h
