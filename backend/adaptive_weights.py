@@ -59,7 +59,10 @@ def _ist_now() -> datetime:
 
 
 def _is_enabled() -> bool:
-    return os.environ.get("ADAPTIVE_WEIGHTS_ENABLED", "off").lower() in ("on", "1", "true")
+    # 2026-06-17: User approved production activation after shadow validated
+    # (fii_dii correctly detected as DECLINING with 1032 data points).
+    # Set ADAPTIVE_WEIGHTS_ENABLED=off to revert to shadow-only.
+    return os.environ.get("ADAPTIVE_WEIGHTS_ENABLED", "on").lower() in ("on", "1", "true")
 
 
 def _min_data_points() -> int:

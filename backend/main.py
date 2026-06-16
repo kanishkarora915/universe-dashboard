@@ -471,6 +471,57 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         print(f"[STARTUP] disk auto-prune spawn failed: {_e}")
 
+    # ── Adaptive engine weights daemon (W1 D3, 2026-06-17) ──
+    # Runs once at startup (after engine boot) + then daily at 06:00 IST.
+    # Recomputes per-engine rolling accuracy and updates engine_weights.json
+    # when streaks (HOT/COLD) detected. Persists changes; logs to
+    # adaptive_weights.db audit DB. Set ADAPTIVE_WEIGHTS_ENABLED=off to
+    # revert to shadow-only.
+    try:
+        import threading as _th, time as _time
+        import pytz as _pytz_aw
+        from datetime import datetime as _dt_aw
+
+        def _adaptive_weights_daemon():
+            _IST_aw = _pytz_aw.timezone("Asia/Kolkata")
+            print("[ADAPTIVE_WEIGHTS] daemon started — runs at 06:00 IST daily")
+            last_run_date = None
+
+            def _do_run():
+                try:
+                    import adaptive_weights as _aw
+                    summary = _aw.recompute_and_save()
+                    n_adj = len(summary.get("adjustments") or [])
+                    n_skip = len(summary.get("skipped") or [])
+                    mode = "live" if summary.get("enabled") else "shadow"
+                    print(f"[ADAPTIVE_WEIGHTS] run done — mode={mode} "
+                          f"adjustments={n_adj} skipped={n_skip}")
+                except Exception as e:
+                    print(f"[ADAPTIVE_WEIGHTS] run error: {e}")
+
+            _time.sleep(120)  # let engine boot fully
+            _do_run()
+
+            while True:
+                try:
+                    now = _dt_aw.now(_IST_aw)
+                    today_iso = now.strftime("%Y-%m-%d")
+                    if (now.hour == 6 and now.minute < 10
+                            and last_run_date != today_iso):
+                        _do_run()
+                        last_run_date = today_iso
+                except Exception as e:
+                    print(f"[ADAPTIVE_WEIGHTS] loop error: {e}")
+                _time.sleep(60)
+
+        _th.Thread(
+            target=_adaptive_weights_daemon,
+            daemon=True,
+            name="adaptive-weights",
+        ).start()
+    except Exception as _e:
+        print(f"[STARTUP] adaptive weights daemon spawn failed: {_e}")
+
     # ── Engine self-heal monitor (Layer 3 of bulletproof auto-login) ──
     # During market hours (09:15-15:30 IST), if engine is detected
     # dead (None or running=False), attempt automatic recovery:
