@@ -4022,8 +4022,13 @@ async def _do_admin_trade_attribution(days: int, brokerage_per_trade: int):
             continue
         c = _sql.connect(path)
         c.row_factory = _sql.Row
+        # `source` exists on trades (main) but not scalper_trades; use
+        # entry_reasoning there. Detect which columns exist and adapt.
+        cols = {r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+        _src_expr = ("source" if "source" in cols
+                     else "COALESCE(entry_reasoning,'') AS source")
         rows = c.execute(
-            f"SELECT idx, action, status, pnl_rupees, probability, source, "
+            f"SELECT idx, action, status, pnl_rupees, probability, {_src_expr}, "
             f"regime_at_entry, structure_5m, structure_15m, structure_1h, "
             f"range_pct_at_entry, entry_time "
             f"FROM {table} WHERE status NOT IN ('OPEN','PENDING') "
