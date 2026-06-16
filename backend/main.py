@@ -3968,6 +3968,17 @@ async def admin_exit_pattern_audit(days: int = 60, status: str = None):
 
 @app.get("/api/admin/trade-attribution")
 async def admin_trade_attribution(days: int = 60, brokerage_per_trade: int = 1500):
+    try:
+        return await _do_admin_trade_attribution(days, brokerage_per_trade)
+    except Exception as _ta_e:
+        import traceback
+        return JSONResponse(
+            {"error": str(_ta_e), "trace": traceback.format_exc()[:2000]},
+            status_code=500,
+        )
+
+
+async def _do_admin_trade_attribution(days: int, brokerage_per_trade: int):
     """Per-trade attribution: groups CLOSED trades by every dimension we
     capture at entry and computes win/loss + net P&L after brokerage.
 
