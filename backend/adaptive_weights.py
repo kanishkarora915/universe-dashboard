@@ -216,7 +216,11 @@ def _classify_streak(rolling_5d: float, baseline: float) -> str:
     return "STEADY"
 
 
-def _adjust_weight(current_weight: float, streak: str) -> float:
+def _adjust_weight(current_weight: float, streak: str, manually_disabled: bool = False) -> float:
+    # Respect manual override — if user pinned engine OFF (0), keep it OFF
+    # regardless of streak. User judgement > auto-tune for explicit choices.
+    if manually_disabled:
+        return 0.0
     if   streak == "HOT":        new = current_weight * 1.30
     elif streak == "IMPROVING":  new = current_weight * 1.15
     elif streak == "COLD":       new = current_weight * 0.50
@@ -251,6 +255,11 @@ def recompute_and_save() -> Dict:
         return summary
     summary["weights_before"] = dict(weights)
 
+    # Manual override — engines pinned OFF by user
+    # Stored in weights file under "_disabled_engines": ["vwap", "fii_dii", ...]
+    manually_disabled = set(weights.get("_disabled_engines") or [])
+    summary["manually_disabled"] = list(manually_disabled)
+
     # Compute rolling accuracies
     rolling_5d  = _compute_rolling_per_engine(days=5)
     rolling_10d = _compute_rolling_per_engine(days=10)
@@ -261,9 +270,29 @@ def recompute_and_save() -> Dict:
 
     # Iterate every engine in weights file
     for engine_name, current_weight in list(weights.items()):
-        if engine_name in ("last_updated", "auto_adjusted"):
+        if engine_name in ("last_updated", "auto_adjusted", "_disabled_engines"):
             continue  # metadata keys
         if not isinstance(current_weight, (int, float)):
+            continue
+
+        # User manually disabled — pin at 0, skip auto-adjust
+        if engine_name in manually_disabled:
+            if current_weight != 0:
+                weights[engine_name] = 0
+                summary["adjustments"].append({
+                    "engine": engine_name,
+                    "weight_before": current_weight,
+                    "weight_after": 0,
+                    "streak": "MANUAL_OFF",
+                    "rolling_5d": None,
+                    "rolling_30d": None,
+                    "data_points_5d": 0,
+                })
+            else:
+                summary["skipped"].append({
+                    "engine": engine_name,
+                    "reason": "manually disabled (pinned at 0)",
+                })
             continue
 
         d5 = rolling_5d.get(engine_name, {}) or {}

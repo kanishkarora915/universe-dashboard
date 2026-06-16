@@ -1,13 +1,15 @@
 {
   "seller_positioning": 30,
-  "trap_fingerprints": 20,
+  "trap_fingerprints": 50,
   "price_action": 20,
-  "oi_flow": 15,
+  "oi_flow": 30,
   "market_context": 15,
-  "vwap": 5,
-  "multi_timeframe": 15,
-  "fii_dii": 10,
+  "vwap": 0,
+  "multi_timeframe": 0,
+  "fii_dii": 0,
   "global_cues": 10,
-  "last_updated": "2026-04-09",
-  "auto_adjusted": false
+  "_disabled_engines": ["vwap", "multi_timeframe", "fii_dii"],
+  "last_updated": "2026-06-17",
+  "auto_adjusted": true,
+  "_manual_override_notes": "User pinned vwap/multi_timeframe/fii_dii OFF on 2026-06-17 (47% accuracy = noise). trap_fingerprints 41->50 (max), oi_flow 24->30 (boost), global_cues 18->10 (reduce). Adaptive weights respects _disabled_engines list."
 }
