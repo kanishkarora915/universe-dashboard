@@ -775,12 +775,14 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
     # Targets WATCHER_EXIT ₹3.58L bleed (16 trades, avg peak 0.83%,
     # hold 1.6 min — wrong-direction immediate kills).
     # If ANY scalper trade in same index just got watcher-killed in
-    # last 5 min, the market is hostile to that idx — skip new entries.
-    # Env: SCALPER_WATCHER_COOLDOWN_DISABLED=1, SCALPER_WATCHER_COOLDOWN_MIN=5
+    # last N min, the market is hostile to that idx — skip new entries.
+    # 2026-06-15 tweak: window 5 → 15 min after observing 3 WATCHER_EXIT
+    # trades spaced hours apart that all escaped 5-min cooldown.
+    # Env: SCALPER_WATCHER_COOLDOWN_DISABLED=1, SCALPER_WATCHER_COOLDOWN_MIN=15
     try:
         import os as _os_wc
         if _os_wc.environ.get("SCALPER_WATCHER_COOLDOWN_DISABLED", "").strip() not in ("1","true","on"):
-            _wc_min = float(_os_wc.environ.get("SCALPER_WATCHER_COOLDOWN_MIN", "5"))
+            _wc_min = float(_os_wc.environ.get("SCALPER_WATCHER_COOLDOWN_MIN", "15"))
             _wc_cutoff = (now - timedelta(minutes=_wc_min)).isoformat()
             recent_watcher = conn.execute(
                 """SELECT COUNT(*) FROM scalper_trades

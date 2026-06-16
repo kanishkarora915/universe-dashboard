@@ -1094,11 +1094,15 @@ class TradeManager:
                 import os as _os_pg
                 if (_os_pg.environ.get("MAIN_PEAK_GIVEBACK_DISABLED", "").strip() not in ("1","true","on")
                         and new_status == "OPEN"):
-                    pg_min_peak = float(_os_pg.environ.get("MAIN_PG_MIN_PEAK_PCT", "0.5"))
+                    # 2026-06-15 (Fix C-tweak): min raised 0.5 → 1.0 because today
+                    # PEAK_GIVEBACK fired 7× on avg peak 0.9% for ₹-61k, killing
+                    # trades that needed more time to develop. Only fire if peak
+                    # was genuinely meaningful (≥1.0%).
+                    pg_min_peak = float(_os_pg.environ.get("MAIN_PG_MIN_PEAK_PCT", "1.0"))
                     # 2026-06-11: capped 3.0 → 1.5. Above +1.5% peak, profit_floor
                     # locks SL at entry (zero loss). PEAK_GIVEBACK would exit at
                     # current_ltp (possibly -1% loss) — STRICTLY WORSE outcome.
-                    # Keep PEAK_GIVEBACK only for tiny peaks (0.5-1.5%) where
+                    # Keep PEAK_GIVEBACK only for tiny peaks (1.0-1.5%) where
                     # profit_floor doesn't yet activate.
                     pg_max_peak = float(_os_pg.environ.get("MAIN_PG_MAX_PEAK_PCT", "1.5"))
                     pg_drop_from_peak = float(_os_pg.environ.get("MAIN_PG_DROP_PCT", "1.5"))
