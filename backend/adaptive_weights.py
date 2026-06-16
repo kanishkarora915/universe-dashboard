@@ -98,25 +98,57 @@ def _init_db():
 # ── Rolling accuracy computation (uses existing accuracy report) ──
 
 def _compute_rolling_per_engine(days: int) -> Dict[str, Dict]:
-    """Query the existing engine accuracy data for the last N days.
+    """Query engine accuracy for the last N days from backtest_log.
 
-    Reads from council.db verdicts table where we have outcomes scored.
+    Uses the SAME data source as /api/reports/engine-accuracy (which
+    confirms 4000+ data points per engine). Per-engine accuracy:
+    when this engine scored > 0 (contributed to verdict), what was the
+    30-min outcome? Counts WIN/LOSS rows.
+
     Returns: { engine_name: { 'accuracy': X, 'data_points': Y } }
     """
     try:
-        # Use the same data source as /api/reports/engine-accuracy
-        from council import storage as _council_storage
-        try:
-            engine_data = _council_storage.compute_rolling_engine_accuracy(days=days)
-        except AttributeError:
-            engine_data = _query_council_direct(days)
+        from ml_feedback import _bt_conn, COL_TO_ENGINE
     except Exception as e:
-        print(f"[ADAPTIVE_WEIGHTS] rolling compute failed (days={days}): {e}")
-        engine_data = {}
-    return engine_data
+        print(f"[ADAPTIVE_WEIGHTS] ml_feedback import failed: {e}")
+        return {}
+
+    conn = _bt_conn()
+    if conn is None:
+        print(f"[ADAPTIVE_WEIGHTS] backtest_log unavailable")
+        return {}
+
+    cutoff = (_ist_now() - timedelta(days=days)).isoformat()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM backtest_log WHERE timestamp > ? AND checked = 1",
+            (cutoff,)
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        return {}
+
+    out: Dict[str, Dict] = {}
+    for col, engine_name in COL_TO_ENGINE.items():
+        try:
+            active = [r for r in rows if (r[col] is not None) and (r[col] > 0)]
+        except (IndexError, KeyError):
+            active = []
+        valid = [r for r in active if r["outcome_30min"] in ("WIN", "LOSS")]
+        if not valid:
+            out[engine_name] = {"accuracy": 0.0, "data_points": 0}
+            continue
+        wins = sum(1 for r in valid if r["outcome_30min"] == "WIN")
+        out[engine_name] = {
+            "accuracy": round(wins / len(valid) * 100, 1),
+            "data_points": len(valid),
+        }
+    return out
 
 
-def _query_council_direct(days: int) -> Dict[str, Dict]:
+def _legacy_query_council_direct_UNUSED(days: int) -> Dict[str, Dict]:
     """Fallback: read council.db directly for engine vote outcomes."""
     council_path = _DATA_DIR / "council.db"
     if not council_path.exists():
