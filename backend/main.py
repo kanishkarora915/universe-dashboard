@@ -3966,6 +3966,116 @@ async def admin_exit_pattern_audit(days: int = 60, status: str = None):
     return out
 
 
+@app.get("/api/admin/trade-attribution")
+async def admin_trade_attribution(days: int = 60, brokerage_per_trade: int = 1500):
+    """Per-trade attribution: groups CLOSED trades by every dimension we
+    capture at entry and computes win/loss + net P&L after brokerage.
+
+    Dimensions returned:
+      - probability bucket (50-60, 60-65, 65-70, 70-75, 75-80, 80-85, 85+)
+      - source (verdict_momentum, verdict, counter, etc.)
+      - regime_at_entry (CHOP/NORMAL/BREAKOUT/TRENDING)
+      - structure combo (5m × 15m)
+      - exit status × direction
+      - probability × structure (cross-tab)
+
+    Brokerage default ₹1500/trade — pass ?brokerage_per_trade=X to change.
+    """
+    import sqlite3 as _sql
+    from collections import defaultdict
+    from datetime import datetime, timedelta
+    cutoff_dt = datetime.now() - timedelta(days=days)
+    cutoff_iso = cutoff_dt.strftime("%Y-%m-%d")
+
+    def _prob_bucket(p):
+        if p is None or p == 0:
+            return "unknown"
+        if p < 60:  return "50-60"
+        if p < 65:  return "60-65"
+        if p < 70:  return "65-70"
+        if p < 75:  return "70-75"
+        if p < 80:  return "75-80"
+        if p < 85:  return "80-85"
+        return "85+"
+
+    def _struct_label(s5, s15):
+        if not s5 and not s15: return "no-structure-data"
+        return f"5m={s5 or '?'} | 15m={s15 or '?'}"
+
+    out = {"days_window": days, "brokerage_per_trade": brokerage_per_trade, "tables": {}}
+    for path, table, label in (
+        ("/data/trades.db", "trades", "main"),
+        ("/data/scalper_trades.db", "scalper_trades", "scalper"),
+    ):
+        if not os.path.exists(path):
+            continue
+        c = _sql.connect(path)
+        c.row_factory = _sql.Row
+        rows = c.execute(
+            f"SELECT idx, action, status, pnl_rupees, probability, source, "
+            f"regime_at_entry, structure_5m, structure_15m, structure_1h, "
+            f"range_pct_at_entry, entry_time "
+            f"FROM {table} WHERE status NOT IN ('OPEN','PENDING') "
+            f"AND substr(entry_time,1,10) >= ?",
+            (cutoff_iso,)
+        ).fetchall()
+        c.close()
+
+        total_n = len(rows)
+        total_brokerage = total_n * brokerage_per_trade
+        gross_pnl = sum(r["pnl_rupees"] or 0 for r in rows)
+        net_pnl = gross_pnl - total_brokerage
+
+        # ── Per-dimension aggregation helper ──
+        def _agg(key_fn, sort_by="net_pnl"):
+            buckets = defaultdict(lambda: {"n": 0, "wins": 0, "losses": 0, "gross": 0.0})
+            for r in rows:
+                key = key_fn(r)
+                p = r["pnl_rupees"] or 0
+                b = buckets[key]
+                b["n"] += 1
+                b["gross"] += p
+                if p > 0: b["wins"] += 1
+                elif p < 0: b["losses"] += 1
+            result = []
+            for key, b in buckets.items():
+                brk = b["n"] * brokerage_per_trade
+                net = b["gross"] - brk
+                result.append({
+                    "key": key,
+                    "n": b["n"],
+                    "wins": b["wins"],
+                    "losses": b["losses"],
+                    "wr_pct": round(b["wins"] / b["n"] * 100, 1) if b["n"] else 0,
+                    "gross_pnl": round(b["gross"], 0),
+                    "brokerage": brk,
+                    "net_pnl": round(net, 0),
+                    "avg_net": round(net / b["n"], 0) if b["n"] else 0,
+                })
+            result.sort(key=lambda x: -x[sort_by])
+            return result
+
+        out["tables"][label] = {
+            "total_trades": total_n,
+            "gross_pnl": round(gross_pnl, 0),
+            "total_brokerage": total_brokerage,
+            "net_pnl": round(net_pnl, 0),
+            "by_probability": _agg(lambda r: _prob_bucket(r["probability"])),
+            "by_source": _agg(lambda r: r["source"] or "unknown"),
+            "by_regime": _agg(lambda r: r["regime_at_entry"] or "unknown"),
+            "by_structure": _agg(lambda r: _struct_label(r["structure_5m"], r["structure_15m"])),
+            "by_status": _agg(lambda r: r["status"] or "unknown"),
+            "by_direction": _agg(
+                lambda r: "BUY CE" if "CE" in (r["action"] or "") else "BUY PE"
+            ),
+            "by_prob_x_direction": _agg(
+                lambda r: f"{_prob_bucket(r['probability'])} | "
+                          f"{'CE' if 'CE' in (r['action'] or '') else 'PE'}"
+            ),
+        }
+    return out
+
+
 @app.get("/api/admin/regime-deep-audit")
 async def admin_regime_deep_audit():
     """Returns a detailed regime × outcome breakdown for both modes.

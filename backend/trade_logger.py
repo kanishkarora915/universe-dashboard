@@ -284,6 +284,10 @@ def init_trades_db(db_path):
         "structure_5m": "TEXT DEFAULT ''",
         "structure_15m": "TEXT DEFAULT ''",
         "structure_1h": "TEXT DEFAULT ''",
+        # 2026-06-16: Per-engine attribution at entry (JSON blobs)
+        "engine_scores_json": "TEXT DEFAULT ''",
+        "signals_triggered": "TEXT DEFAULT ''",
+        "gates_passed": "TEXT DEFAULT ''",
     }
     for col, col_type in migrations.items():
         if col not in existing_cols:
@@ -566,7 +570,7 @@ class TradeManager:
         return "NORMAL"
 
     def log_trade(self, idx, action, strike, entry_price, probability, source="verdict", expiry="",
-                  straddle=0, big_wall=0, whale_aligned=False, engine=None):
+                  straddle=0, big_wall=0, whale_aligned=False, engine=None, verdict_data=None):
         """Log a new trade entry with ATR-based realistic SL/targets (A6).
         whale_aligned=True → uses larger position (smart money agrees with direction).
 
@@ -730,6 +734,38 @@ class TradeManager:
         # Wrapped in try — never blocks trade if computation fails.
         _regime, _range_pct, _candle_pct = "", 0.0, 0.0
         _s5m, _s15m, _s1h = "", "", ""
+        # ── ENGINE ATTRIBUTION CAPTURE (2026-06-16) ──
+        # Snapshot of 9-engine breakdown, signals fired, gates passed.
+        # All JSON-serialized text for portability.
+        _engine_scores_json = ""
+        _signals_triggered = ""
+        _gates_passed = ""
+        try:
+            import json as _json_es
+            _es_blob = {"probability": probability, "action": action, "source": source}
+            if verdict_data:
+                # Pull useful fields from verdict_data
+                for _k in ("winProbability", "bull", "bear", "reasons",
+                           "engineScores", "engine_scores",
+                           "voters", "council_votes", "modules", "callout"):
+                    _v = verdict_data.get(_k)
+                    if _v is not None:
+                        _es_blob[_k] = _v
+                # Reasons list often holds the most useful "why fired" info
+                _signals_triggered = " | ".join(
+                    str(r) for r in (verdict_data.get("reasons") or [])
+                )[:1000]
+            # Capitulation engine state
+            try:
+                from capitulation_engine import get_live_state as _gls
+                _cap = (_gls() or {}).get("results", {}).get(idx, {})
+                _es_blob["capit_bull"] = (_cap.get("bullish") or {}).get("score", 0)
+                _es_blob["capit_bear"] = (_cap.get("bearish") or {}).get("score", 0)
+            except Exception:
+                pass
+            _engine_scores_json = _json_es.dumps(_es_blob, default=str)[:4000]
+        except Exception as _es_e:
+            print(f"[TRADE] engine_attribution capture failed: {_es_e}")
         try:
             from entry_filters import detect_market_regime as _dmr
             spot_hist = getattr(engine, "_spot_history", {}).get(idx, []) if engine else []
@@ -759,9 +795,10 @@ class TradeManager:
                 lots, lot_size, qty, status, probability, source,
                 breakeven_active, trailing_active, trail_level, alerts,
                 regime_at_entry, range_pct_at_entry, candle_pct_at_entry,
-                structure_5m, structure_15m, structure_1h)
+                structure_5m, structure_15m, structure_1h,
+                engine_scores_json, signals_triggered, gates_passed)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, 0, 0, '', '',
-                    ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             now.isoformat(), idx, action, strike, expiry,
             entry_price, sl_price, sl_price, t1_price, t2_price,
@@ -770,6 +807,7 @@ class TradeManager:
             probability, source,
             _regime, _range_pct, _candle_pct,
             _s5m, _s15m, _s1h,
+            _engine_scores_json, _signals_triggered, _gates_passed,
         ))
         trade_id = cursor.lastrowid
         conn.commit()

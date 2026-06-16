@@ -5166,6 +5166,7 @@ class MarketEngine:
                                     entry_bull_pct=v.get("bullPct", 0),
                                     entry_bear_pct=v.get("bearPct", 0),
                                     entry_spot=spot_ltp,
+                                    verdict_data=v,
                                 )
 
                     # ── EARLY-MOVE INDEPENDENT FIRE (2026-05-22) ──
@@ -5217,6 +5218,7 @@ class MarketEngine:
                                         entry_reasoning=f"EARLY-MOVE: {fire.get('reason', '')}",
                                         entry_bull_pct=0, entry_bear_pct=0,
                                         entry_spot=spot_ltp,
+                                        verdict_data=em_verdict,
                                     )
                     except Exception as e:
                         print(f"[SCALPER] early-move fire error: {e}")
@@ -5644,6 +5646,7 @@ class MarketEngine:
                                     straddle=straddle,
                                     whale_aligned=whale_aligned,
                                     engine=self,  # for ATR target calc
+                                    verdict_data=v,  # for engine attribution capture
                                 )
                             except Exception as e:
                                 print(f"[TRADE] log_trade FAILED for {idx}: {e}")
