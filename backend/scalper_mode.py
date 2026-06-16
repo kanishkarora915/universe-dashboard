@@ -245,20 +245,51 @@ def get_active_scalp_config():
     except Exception:
         pass
 
+    # ── CONFIG DRIFT FIX (Week 1, 2026-06-17) ──
+    # buyer_mode is the single source of truth for SL/T1/T2/max_hold.
+    # Previously scalper used its own SCALPER_SL/T1/T2_PCT constants
+    # which drifted from buyer_mode (live 8/10/20 vs buyer_mode 5/5/12).
+    # Now: BUYER mode → use buyer_mode values; HEDGER → keep cfg/defaults.
+    # Env kill: SCALPER_BUYER_MODE_SYNC_DISABLED=1
+    base_sl  = cfg.get("sl_pct",  SCALPER_SL_PCT)
+    base_t1  = cfg.get("t1_pct",  SCALPER_T1_PCT)
+    base_t2  = cfg.get("t2_pct",  SCALPER_T2_PCT)
+    base_hold = SCALPER_MAX_HOLD_MIN
+    try:
+        import os as _os_sync
+        if _os_sync.environ.get("SCALPER_BUYER_MODE_SYNC_DISABLED", "").strip() not in ("1","true","on"):
+            from buyer_mode import get_thresholds as _bm_get
+            _bm = _bm_get() or {}
+            if (_bm.get("mode") or "").upper() == "BUYER":
+                _bm_sl  = _bm.get("scalper_sl_pct")
+                _bm_t1  = _bm.get("scalper_t1_pct")
+                _bm_t2  = _bm.get("scalper_t2_pct")
+                _bm_hold = _bm.get("scalper_max_hold_min")
+                if _bm_sl  is not None: base_sl  = float(_bm_sl)
+                if _bm_t1  is not None: base_t1  = float(_bm_t1)
+                if _bm_t2  is not None: base_t2  = float(_bm_t2)
+                if _bm_hold is not None: base_hold = int(_bm_hold)
+                print(f"[SCALPER_CFG] buyer_mode sync: sl={base_sl} t1={base_t1} t2={base_t2} hold={base_hold}m")
+    except Exception as _sync_e:
+        print(f"[SCALPER_CFG] buyer_mode sync error (using cfg): {_sync_e}")
+
     if is_expiry:
         return {
             **cfg,
-            "sl_pct":  round(cfg.get("sl_pct",  SCALPER_SL_PCT) * EXPIRY_SL_MULT, 4),
-            "t1_pct":  round(cfg.get("t1_pct",  SCALPER_T1_PCT) * EXPIRY_TARGET_MULT, 4),
-            "t2_pct":  round(cfg.get("t2_pct",  SCALPER_T2_PCT) * EXPIRY_TARGET_MULT, 4),
+            "sl_pct":  round(base_sl * EXPIRY_SL_MULT, 4),
+            "t1_pct":  round(base_t1 * EXPIRY_TARGET_MULT, 4),
+            "t2_pct":  round(base_t2 * EXPIRY_TARGET_MULT, 4),
             "qty_mult": EXPIRY_QTY_MULT,
             "max_hold_min": EXPIRY_MAX_HOLD_MIN,
             "is_expiry": True,
         }
     return {
         **cfg,
+        "sl_pct": base_sl,
+        "t1_pct": base_t1,
+        "t2_pct": base_t2,
         "qty_mult": 1.0,
-        "max_hold_min": SCALPER_MAX_HOLD_MIN,
+        "max_hold_min": base_hold,
         "is_expiry": False,
     }
 
