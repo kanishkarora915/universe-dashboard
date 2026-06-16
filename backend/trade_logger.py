@@ -288,6 +288,9 @@ def init_trades_db(db_path):
         "engine_scores_json": "TEXT DEFAULT ''",
         "signals_triggered": "TEXT DEFAULT ''",
         "gates_passed": "TEXT DEFAULT ''",
+        # 2026-06-16: Level context at entry (PDH/PDL/PDC/gap/day_high/low)
+        "level_context_json": "TEXT DEFAULT ''",
+        "level_zone_at_entry": "TEXT DEFAULT ''",
     }
     for col, col_type in migrations.items():
         if col not in existing_cols:
@@ -766,6 +769,29 @@ class TradeManager:
             _engine_scores_json = _json_es.dumps(_es_blob, default=str)[:4000]
         except Exception as _es_e:
             print(f"[TRADE] engine_attribution capture failed: {_es_e}")
+
+        # ── LEVEL CONTEXT CAPTURE AT ENTRY (2026-06-16) ──
+        # User insight: system buys expensive (near day_high for CE / day_low for PE)
+        # Capture PDH/PDL/PDC/gap/day_open/day_high/low to audit which level-zones
+        # produce wins vs losses.
+        _level_context_json = ""
+        _level_zone = ""
+        try:
+            from levels_context import get_levels_context as _glc
+            _spot_for_ctx = None
+            try:
+                if engine is not None:
+                    _tok = engine.spot_tokens.get(idx)
+                    if _tok:
+                        _spot_for_ctx = (engine.prices.get(_tok, {}) or {}).get("ltp")
+            except Exception:
+                pass
+            _ctx = _glc(engine, idx, _spot_for_ctx)
+            import json as _json_lc
+            _level_context_json = _json_lc.dumps(_ctx, default=str)[:2000]
+            _level_zone = (_ctx.get("zone") or "")[:32]
+        except Exception as _lc_e:
+            print(f"[TRADE] level_context capture failed: {_lc_e}")
         try:
             from entry_filters import detect_market_regime as _dmr
             spot_hist = getattr(engine, "_spot_history", {}).get(idx, []) if engine else []
@@ -796,9 +822,10 @@ class TradeManager:
                 breakeven_active, trailing_active, trail_level, alerts,
                 regime_at_entry, range_pct_at_entry, candle_pct_at_entry,
                 structure_5m, structure_15m, structure_1h,
-                engine_scores_json, signals_triggered, gates_passed)
+                engine_scores_json, signals_triggered, gates_passed,
+                level_context_json, level_zone_at_entry)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, 0, 0, '', '',
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             now.isoformat(), idx, action, strike, expiry,
             entry_price, sl_price, sl_price, t1_price, t2_price,
@@ -808,6 +835,7 @@ class TradeManager:
             _regime, _range_pct, _candle_pct,
             _s5m, _s15m, _s1h,
             _engine_scores_json, _signals_triggered, _gates_passed,
+            _level_context_json, _level_zone,
         ))
         trade_id = cursor.lastrowid
         conn.commit()

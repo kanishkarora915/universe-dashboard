@@ -126,6 +126,9 @@ def init_scalper_db():
         ("engine_scores_json", "ALTER TABLE scalper_trades ADD COLUMN engine_scores_json TEXT DEFAULT ''"),
         ("signals_triggered", "ALTER TABLE scalper_trades ADD COLUMN signals_triggered TEXT DEFAULT ''"),
         ("gates_passed", "ALTER TABLE scalper_trades ADD COLUMN gates_passed TEXT DEFAULT ''"),
+        # 2026-06-16: Level context at entry (PDH/PDL/PDC/gap/day_high/low)
+        ("level_context_json", "ALTER TABLE scalper_trades ADD COLUMN level_context_json TEXT DEFAULT ''"),
+        ("level_zone_at_entry", "ALTER TABLE scalper_trades ADD COLUMN level_zone_at_entry TEXT DEFAULT ''"),
     ]:
         if col not in cols:
             try: conn.execute(sql)
@@ -1564,6 +1567,23 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
         _engine_scores_json = _json_es.dumps(_es_blob, default=str)[:4000]
     except Exception as _es_e:
         print(f"[SCALPER] engine_attribution capture failed: {_es_e}")
+
+    # ── LEVEL CONTEXT CAPTURE (2026-06-16) ──
+    _level_context_json = ""
+    _level_zone = ""
+    try:
+        from levels_context import get_levels_context as _glc
+        from main import session as _msess
+        _eng_lc = (_msess or {}).get("engine") if _msess else None
+        _spot_lc = entry_spot if (entry_spot and entry_spot > 0) else None
+        if _eng_lc is None:
+            _eng_lc = type('E', (), {'spot_tokens': {}, 'prices': {}, '_spot_history': {}})()
+        _ctx_lc = _glc(_eng_lc, idx, _spot_lc)
+        import json as _json_lc
+        _level_context_json = _json_lc.dumps(_ctx_lc, default=str)[:2000]
+        _level_zone = (_ctx_lc.get("zone") or "")[:32]
+    except Exception as _lc_e:
+        print(f"[SCALPER] level_context capture failed: {_lc_e}")
     try:
         # engine accessed via main.session (set by app at startup)
         from main import session as _msession
@@ -1601,8 +1621,9 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
             entry_reasoning, entry_bull_pct, entry_bear_pct, entry_spot, capital_used,
             regime_at_entry, range_pct_at_entry, candle_pct_at_entry,
             structure_5m, structure_15m, structure_1h,
-            engine_scores_json, signals_triggered, gates_passed)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            engine_scores_json, signals_triggered, gates_passed,
+            level_context_json, level_zone_at_entry)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (now.isoformat(), idx, action, strike, expiry,
           entry_price, sl_price, t1_price, t2_price,
           entry_price, entry_price, lots, lot_size, qty,
@@ -1610,7 +1631,8 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
           entry_spot, capital_used,
           _regime, _range_pct, _candle_pct,
           _s5m, _s15m, _s1h,
-          _engine_scores_json, _signals_triggered, _gates_passed))
+          _engine_scores_json, _signals_triggered, _gates_passed,
+          _level_context_json, _level_zone))
     trade_id = cursor.lastrowid
     conn.commit()
     conn.close()

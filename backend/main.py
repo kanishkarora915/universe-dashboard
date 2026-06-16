@@ -4092,6 +4092,120 @@ async def _do_admin_trade_attribution(days: int, brokerage_per_trade: int):
     return out
 
 
+@app.get("/api/admin/level-attribution")
+async def admin_level_attribution(days: int = 60, brokerage_per_trade: int = 1500):
+    """Per-trade attribution grouped by LEVEL CONTEXT at entry.
+
+    Buckets:
+      - level_zone_at_entry: NEAR_PDH / NEAR_PDL / NEAR_PDC / NEAR_DAY_HIGH
+                             / NEAR_DAY_LOW / NEAR_DAY_OPEN / UPPER_RANGE
+                             / LOWER_RANGE / MID_RANGE / UNKNOWN
+      - by gap_up bucket (gap up/down/flat day)
+      - by distance-from-PDC bucket
+      - by zone × action (NEAR_PDH + BUY CE = chasing top, NEAR_PDL + BUY PE
+        = chasing bottom — likely losers)
+
+    Empty-string zones only exist for trades logged BEFORE this deploy
+    captured level_context (2026-06-16).
+    """
+    import sqlite3 as _sql
+    import json as _json
+    from collections import defaultdict
+    from datetime import datetime as _dt, timedelta as _td
+    cutoff_iso = (_dt.now() - _td(days=days)).strftime("%Y-%m-%d")
+
+    out = {"days_window": days, "brokerage_per_trade": brokerage_per_trade, "tables": {}}
+    for path, table, label in (
+        ("/data/trades.db", "trades", "main"),
+        ("/data/scalper_trades.db", "scalper_trades", "scalper"),
+    ):
+        if not os.path.exists(path):
+            continue
+        c = _sql.connect(path)
+        c.row_factory = _sql.Row
+        cols = {r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+        if "level_zone_at_entry" not in cols:
+            c.close()
+            continue
+        rows = c.execute(
+            f"SELECT idx, action, status, pnl_rupees, probability, "
+            f"level_zone_at_entry, level_context_json, entry_time "
+            f"FROM {table} WHERE status NOT IN ('OPEN','PENDING') "
+            f"AND substr(entry_time,1,10) >= ?",
+            (cutoff_iso,)
+        ).fetchall()
+        c.close()
+
+        # parse gap + distances out of level_context_json
+        parsed_rows = []
+        for r in rows:
+            d = {**dict(r)}
+            try:
+                lc = _json.loads(r["level_context_json"] or "{}")
+            except Exception:
+                lc = {}
+            d["gap_up_pct"] = lc.get("gap_up_pct")
+            d["dist_pdc_pct"] = lc.get("dist_pdc_pct")
+            d["dist_pdh_pct"] = lc.get("dist_pdh_pct")
+            d["dist_pdl_pct"] = lc.get("dist_pdl_pct")
+            d["vs_day_open_pct"] = lc.get("vs_day_open_pct")
+            parsed_rows.append(d)
+
+        def _agg(key_fn, sort_by="net_pnl"):
+            buckets = defaultdict(lambda: {"n": 0, "wins": 0, "losses": 0, "gross": 0.0})
+            for r in parsed_rows:
+                key = key_fn(r)
+                p = r["pnl_rupees"] or 0
+                b = buckets[key]
+                b["n"] += 1
+                b["gross"] += p
+                if p > 0: b["wins"] += 1
+                elif p < 0: b["losses"] += 1
+            result = []
+            for key, b in buckets.items():
+                brk = b["n"] * brokerage_per_trade
+                net = b["gross"] - brk
+                result.append({
+                    "key": key, "n": b["n"], "wins": b["wins"], "losses": b["losses"],
+                    "wr_pct": round(b["wins"] / b["n"] * 100, 1) if b["n"] else 0,
+                    "gross_pnl": round(b["gross"], 0),
+                    "brokerage": brk,
+                    "net_pnl": round(net, 0),
+                    "avg_net": round(net / b["n"], 0) if b["n"] else 0,
+                })
+            result.sort(key=lambda x: -x[sort_by])
+            return result
+
+        def _gap_bucket(gap):
+            if gap is None: return "no-data"
+            if gap > 0.5: return "gap_up_>0.5%"
+            if gap > 0.1: return "gap_up_0.1-0.5%"
+            if gap < -0.5: return "gap_down_>0.5%"
+            if gap < -0.1: return "gap_down_0.1-0.5%"
+            return "flat_open_±0.1%"
+
+        def _dist_pdc_bucket(d):
+            if d is None: return "no-data"
+            a = abs(d)
+            if a <= 0.15: return "at_PDC"
+            if d > 0:
+                return "above_PDC_>0.5%" if d > 0.5 else "above_PDC_0.15-0.5%"
+            else:
+                return "below_PDC_>0.5%" if d < -0.5 else "below_PDC_0.15-0.5%"
+
+        out["tables"][label] = {
+            "total_with_levels": sum(1 for r in parsed_rows if r["level_zone_at_entry"]),
+            "by_zone": _agg(lambda r: r["level_zone_at_entry"] or "no-level-data"),
+            "by_gap_bucket": _agg(lambda r: _gap_bucket(r["gap_up_pct"])),
+            "by_dist_pdc": _agg(lambda r: _dist_pdc_bucket(r["dist_pdc_pct"])),
+            "by_zone_x_dir": _agg(
+                lambda r: f"{r['level_zone_at_entry'] or 'NO_ZONE'} | "
+                          f"{'CE' if 'CE' in (r['action'] or '') else 'PE'}"
+            ),
+        }
+    return out
+
+
 @app.get("/api/admin/regime-deep-audit")
 async def admin_regime_deep_audit():
     """Returns a detailed regime × outcome breakdown for both modes.
