@@ -4092,6 +4092,37 @@ async def _do_admin_trade_attribution(days: int, brokerage_per_trade: int):
     return out
 
 
+@app.post("/api/admin/adaptive-weights/recompute")
+async def admin_adaptive_recompute():
+    """Manually trigger adaptive weights recompute. Returns summary of
+    rolling accuracies, streak classifications, and weight adjustments.
+
+    Set ADAPTIVE_WEIGHTS_ENABLED=on for changes to persist; otherwise
+    runs in shadow (computes everything, logs to audit DB, returns
+    what WOULD have changed without writing engine_weights.json).
+    """
+    try:
+        import adaptive_weights as _aw
+        return _aw.recompute_and_save()
+    except Exception as e:
+        import traceback
+        return JSONResponse(
+            {"error": str(e), "trace": traceback.format_exc()[:2000]},
+            status_code=500,
+        )
+
+
+@app.get("/api/admin/adaptive-weights/history")
+async def admin_adaptive_history(limit: int = 10):
+    """Return last N adaptive-weights recompute runs with per-engine
+    adjustment details. Read-only — does not run recompute."""
+    try:
+        import adaptive_weights as _aw
+        return {"runs": _aw.get_recent_runs(limit=limit)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/admin/level-attribution")
 async def admin_level_attribution(days: int = 60, brokerage_per_trade: int = 1500):
     """Per-trade attribution grouped by LEVEL CONTEXT at entry.
