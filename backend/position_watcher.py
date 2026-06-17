@@ -595,7 +595,7 @@ def _tighten_scalper_sl(trade_id: int, new_sl: float, reason: str):
         return False
 
 
-def _force_close_main(trade_id: int, exit_price: float, reason: str):
+def _force_close_main(trade_id: int, exit_price: float, reason: str, trigger: str = ""):
     try:
         conn = sqlite3.connect(_trades_db_path())
         now_iso = _ist_now_iso()  # B1.2 — was naive UTC datetime.now()
@@ -607,11 +607,12 @@ def _force_close_main(trade_id: int, exit_price: float, reason: str):
         entry_price, qty = row
         pnl_pts = round(exit_price - entry_price, 2)
         pnl_rupees = round(pnl_pts * qty, 2)
+        # 2026-06-17 (auditor NOTE #11): store trigger for attribution
         conn.execute("""
             UPDATE trades SET status='WATCHER_EXIT', exit_price=?, exit_time=?,
-                pnl_pts=?, pnl_rupees=?, exit_reason=?
+                pnl_pts=?, pnl_rupees=?, exit_reason=?, watcher_trigger=?
             WHERE id=? AND status='OPEN'
-        """, (exit_price, now_iso, pnl_pts, pnl_rupees, reason, trade_id))
+        """, (exit_price, now_iso, pnl_pts, pnl_rupees, reason, trigger, trade_id))
         conn.commit()
         conn.close()
         # Capital tracker hook
@@ -627,7 +628,7 @@ def _force_close_main(trade_id: int, exit_price: float, reason: str):
         return False
 
 
-def _force_close_scalper(trade_id: int, exit_price: float, reason: str):
+def _force_close_scalper(trade_id: int, exit_price: float, reason: str, trigger: str = ""):
     try:
         conn = sqlite3.connect(_scalper_db_path())
         # B1.2 FIX — must use IST so exit_time matches entry_time's tz
@@ -653,11 +654,12 @@ def _force_close_scalper(trade_id: int, exit_price: float, reason: str):
                 hold_sec = 0  # safety against clock skew
         except Exception:
             hold_sec = 0
+        # 2026-06-17 (auditor NOTE #11): store trigger for attribution
         conn.execute("""
             UPDATE scalper_trades SET status='WATCHER_EXIT', exit_price=?, exit_time=?,
-                exit_reason=?, pnl_pts=?, pnl_rupees=?, hold_seconds=?
+                exit_reason=?, pnl_pts=?, pnl_rupees=?, hold_seconds=?, watcher_trigger=?
             WHERE id=? AND status='OPEN'
-        """, (exit_price, now_iso, reason, pnl_pts, pnl_rupees, hold_sec, trade_id))
+        """, (exit_price, now_iso, reason, pnl_pts, pnl_rupees, hold_sec, trigger, trade_id))
         conn.commit()
         conn.close()
         try:
@@ -1080,9 +1082,9 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
         if profit_pct <= -3:
             reason_str = (f"OI_REVERSAL: hostile writers + losing {profit_pct:.2f}% — "
                           + " · ".join(oi_signals[:2]))
-            ok = (_force_close_main(trade_id, current_premium, reason_str)
+            ok = (_force_close_main(trade_id, current_premium, reason_str, trigger)
                   if source == "MAIN"
-                  else _force_close_scalper(trade_id, current_premium, reason_str))
+                  else _force_close_scalper(trade_id, current_premium, reason_str, trigger))
             if ok:
                 action_taken = "EXIT"
                 _log_exit(source, trade, current_premium, trigger,
@@ -1125,9 +1127,9 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
         actual_exit_price = floor_price if (entry_price > 0 and current_premium >= floor_price) else current_premium
         reason_str = (f"PEAK_FLOOR_HIT: peaked {peak:+.2f}% → exit @ "
                       f"₹{actual_exit_price} (lock +{floor_pct:.1f}%)")
-        ok = (_force_close_main(trade_id, actual_exit_price, reason_str)
+        ok = (_force_close_main(trade_id, actual_exit_price, reason_str, trigger)
               if source == "MAIN"
-              else _force_close_scalper(trade_id, actual_exit_price, reason_str))
+              else _force_close_scalper(trade_id, actual_exit_price, reason_str, trigger))
         if ok:
             action_taken = "EXIT"
             _log_exit(source, trade, actual_exit_price, trigger,
@@ -1155,9 +1157,9 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
                    else cfg.get("fast_loss_cap_pct", -5.0))
         reason_str = (f"{trigger}: loss {profit_pct:.2f}% breached cap {cap_pct:.1f}% — "
                       f"hold {health.get('hold_minutes',0):.1f}m")
-        ok = (_force_close_main(trade_id, current_premium, reason_str)
+        ok = (_force_close_main(trade_id, current_premium, reason_str, trigger)
               if source == "MAIN"
-              else _force_close_scalper(trade_id, current_premium, reason_str))
+              else _force_close_scalper(trade_id, current_premium, reason_str, trigger))
         if ok:
             action_taken = "EXIT"
             _log_exit(source, trade, current_premium, trigger,
@@ -1181,9 +1183,9 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
 
         # CRITICAL exits get hard close (if auto-exit on AND not warn_only)
         if health["score"] < cfg["min_score_for_exit"] and auto_exit and not _warn_only:
-            ok = (_force_close_main(trade_id, current_premium, f"{trigger}: {health['reasons'][0] if health['reasons'] else trigger}")
+            ok = (_force_close_main(trade_id, current_premium, f"{trigger}: {health['reasons'][0] if health['reasons'] else trigger}", trigger)
                   if source == "MAIN"
-                  else _force_close_scalper(trade_id, current_premium, f"{trigger}: {health['reasons'][0] if health['reasons'] else trigger}"))
+                  else _force_close_scalper(trade_id, current_premium, f"{trigger}: {health['reasons'][0] if health['reasons'] else trigger}", trigger))
             if ok:
                 action_taken = "EXIT"
                 _log_exit(source, trade, current_premium, trigger, health.get("reasons", []))

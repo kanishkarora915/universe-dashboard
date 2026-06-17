@@ -291,6 +291,12 @@ def init_trades_db(db_path):
         # 2026-06-16: Level context at entry (PDH/PDL/PDC/gap/day_high/low)
         "level_context_json": "TEXT DEFAULT ''",
         "level_zone_at_entry": "TEXT DEFAULT ''",
+        # 2026-06-17 (auditor NOTE #11): which watcher trigger caused exit
+        # (HARD_LOSS_CAP / FAST_LOSS_CAP / PEAK_FLOOR_HIT / OI_REVERSAL /
+        # REVERSAL_PATTERN / THETA_WINS / VIX_CRUSH / DAY_HIGH_TRAP /
+        # POST_LUNCH_STALL / PATTERN_LOSER). Status column always says
+        # WATCHER_EXIT — this column tells us which gate actually fired.
+        "watcher_trigger": "TEXT DEFAULT ''",
     }
     for col, col_type in migrations.items():
         if col not in existing_cols:
@@ -1348,6 +1354,15 @@ class TradeManager:
                         trail_level = "STOP_HUNT_CAPPED"
                         alerts_list.append(f"STOP HUNT detected — SL set to max-loss floor ₹{new_sl} (was wider, capped).")
                 elif context == "STOP_HUNT" and sl_raised_by_new_system:
+                    # 2026-06-17 (auditor NOTE #19): tag the detection so we
+                    # can grep history for trades where STOP_HUNT was seen but
+                    # not acted on (because Profit-Trail/Time-Decay already
+                    # raised SL above where widening would have placed it).
+                    trail_level = "STOP_HUNT_DETECTED_NO_ACTION"
+                    alerts_list.append(
+                        f"STOP_HUNT detected but skipped — Profit-Trail/Time-Decay "
+                        f"already raised SL to ₹{new_sl} (no widening needed)."
+                    )
                     print(f"[TRADE] STOP_HUNT detected but skipping — Profit-Trail/Time-Decay raised SL to ₹{new_sl}")
 
             # ══════════════════════════════════════════════
@@ -1455,6 +1470,13 @@ class TradeManager:
                     if (not _pf_disabled) and peak_pct >= _pf_peak_thresh:
                         floor_pct = peak_pct * _pf_factor
                         floor_price = round(entry * (1 + floor_pct/100), 1)
+                        # 2026-06-17 (auditor NOTE #17): respect AGG_FLOOR's
+                        # already-raised SL. If something else raised new_sl
+                        # ABOVE our computed floor, use the higher value.
+                        # Locks more profit when both gates agree.
+                        if new_sl > floor_price:
+                            floor_price = new_sl
+                            floor_pct = round((floor_price / entry - 1) * 100, 1)
                         if current_ltp >= floor_price:
                             new_status = "TRAIL_EXIT"
                             exit_price = floor_price
@@ -1476,6 +1498,10 @@ class TradeManager:
                         # Tiered: peak 2→+0.3, peak 3→+0.8, peak 4→+1.3
                         _mini_floor_pct = round(0.3 + (peak_pct - 2.0) * 0.5, 1)  # 2%→0.3, 3%→0.8, 4%→1.3
                         _mini_floor_price = round(entry * (1 + _mini_floor_pct/100), 1)
+                        # 2026-06-17 (auditor NOTE #17): respect AGG_FLOOR
+                        if new_sl > _mini_floor_price:
+                            _mini_floor_price = new_sl
+                            _mini_floor_pct = round((_mini_floor_price / entry - 1) * 100, 1)
                         if current_ltp >= _mini_floor_price:
                             new_status = "TRAIL_EXIT"
                             exit_price = _mini_floor_price

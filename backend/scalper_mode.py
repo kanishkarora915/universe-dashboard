@@ -129,6 +129,8 @@ def init_scalper_db():
         # 2026-06-16: Level context at entry (PDH/PDL/PDC/gap/day_high/low)
         ("level_context_json", "ALTER TABLE scalper_trades ADD COLUMN level_context_json TEXT DEFAULT ''"),
         ("level_zone_at_entry", "ALTER TABLE scalper_trades ADD COLUMN level_zone_at_entry TEXT DEFAULT ''"),
+        # 2026-06-17 (auditor NOTE #11): watcher trigger attribution
+        ("watcher_trigger", "ALTER TABLE scalper_trades ADD COLUMN watcher_trigger TEXT DEFAULT ''"),
     ]:
         if col not in cols:
             try: conn.execute(sql)
@@ -2562,6 +2564,11 @@ def check_scalper_exits(chains):
                 if (not _pf_disabled) and _peak_pct_now >= _pf_peak_thresh:
                     floor_pct = _peak_pct_now * _pf_factor
                     floor_price = round(entry * (1 + floor_pct/100), 2)
+                    # 2026-06-17 (auditor NOTE #17): respect AGG_FLOOR's
+                    # already-raised SL — never lock below it.
+                    if active_sl_used > floor_price:
+                        floor_price = active_sl_used
+                        floor_pct = round((floor_price / entry - 1) * 100, 2)
                     if current_ltp >= floor_price:
                         new_status = "PEAK_FLOOR_EXIT"
                         exit_price = floor_price
