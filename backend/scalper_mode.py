@@ -1540,10 +1540,13 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
     # Data (60d backfill): PE aligned 5m+15m DN = 100% WR;
     #                      CE aligned 5m+15m UP = ₹-29k loss bucket.
     # Boost PE-golden, cut CE-aligned. Other buckets unchanged.
-    # Env kill: ASYM_SIZE_DISABLED=1
+    # 2026-06-17: DEFAULT DISABLED. PE-aligned 1.5x boost amplified bad
+    # trades — scalper PE collapsed from +₹438k (older 50d) to -₹337k
+    # (recent 40d). Same WR, but bigger position size = bigger losses.
+    # Env: ASYM_SIZE_DISABLED=0 to re-enable.
     try:
         import os as _os_as
-        if _os_as.environ.get("ASYM_SIZE_DISABLED", "").strip() not in ("1","true","on"):
+        if _os_as.environ.get("ASYM_SIZE_DISABLED", "1").strip() not in ("1","true","on"):
             _pe_boost = float(_os_as.environ.get("ASYM_SIZE_PE_ALIGNED_MULT", "1.5"))
             _ce_cut = float(_os_as.environ.get("ASYM_SIZE_CE_ALIGNED_MULT", "0.5"))
             from structure_gate import get_cached_structure as _gcs
@@ -2160,7 +2163,11 @@ def check_scalper_exits(chains):
         #   EARLY_CUT_TRIGGER=-2.5          loss % to trigger early cut
         try:
             import os as _os_ec
-            if _os_ec.environ.get("EARLY_CUT_DISABLED", "").strip() not in ("1","true","on"):
+            # 2026-06-17: DEFAULT DISABLED. 14 trades cost ₹-136k recent 40d.
+            # Killed trades before they could develop into T1_HIT runners
+            # (T1_HIT collapsed 28→4 trades). HARD_LOSS_CAP at -10% handles
+            # catastrophic losses. Set EARLY_CUT_DISABLED=0 to re-enable.
+            if _os_ec.environ.get("EARLY_CUT_DISABLED", "1").strip() not in ("1","true","on"):
                 ec_window = float(_os_ec.environ.get("EARLY_CUT_WINDOW_MIN", "10")) * 60
                 ec_trigger = float(_os_ec.environ.get("EARLY_CUT_TRIGGER", "-2.5"))
                 hold_min = hold_sec / 60

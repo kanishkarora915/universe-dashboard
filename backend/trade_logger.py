@@ -713,10 +713,11 @@ class TradeManager:
         #   CE aligned 5m+15m UP: 53% WR, ₹-10k    (15 trades) → CUT 0.5x
         # Other buckets get 1.0x (no change).
         # Try to read structure from cache; failure → fall back to neutral.
-        # Env kill: ASYM_SIZE_DISABLED=1
+        # 2026-06-17: DEFAULT DISABLED. PE 1.5x boost backfired —
+        # see scalper_mode.py for full reasoning.
         try:
             import os as _os_as
-            if _os_as.environ.get("ASYM_SIZE_DISABLED", "").strip() not in ("1","true","on"):
+            if _os_as.environ.get("ASYM_SIZE_DISABLED", "1").strip() not in ("1","true","on"):
                 _pe_boost = float(_os_as.environ.get("ASYM_SIZE_PE_ALIGNED_MULT", "1.5"))
                 _ce_cut = float(_os_as.environ.get("ASYM_SIZE_CE_ALIGNED_MULT", "0.5"))
                 from structure_gate import get_cached_structure as _gcs
@@ -1031,7 +1032,11 @@ class TradeManager:
             # leak). Slipped past 3-min window because bled slowly.
             try:
                 import os as _os_ec
-                if (_os_ec.environ.get("MAIN_EARLY_CUT_DISABLED", "").strip() not in ("1","true","on")
+                # 2026-06-17: DEFAULT DISABLED after audit showed -₹136k bleed
+                # on scalper + -₹48k bleed on main. T1_HIT collapsed 28→4 trades
+                # because EARLY_CUT killed trades before they could develop.
+                # HARD_LOSS_CAP at -10% already catches catastrophic losses.
+                if (_os_ec.environ.get("MAIN_EARLY_CUT_DISABLED", "1").strip() not in ("1","true","on")
                         and new_status == "OPEN"):
                     ec_window = float(_os_ec.environ.get("MAIN_EARLY_CUT_WINDOW_MIN", "10")) * 60
                     ec_trigger = float(_os_ec.environ.get("MAIN_EARLY_CUT_TRIGGER", "-2.5"))
@@ -1168,7 +1173,10 @@ class TradeManager:
             # Catches: trade peaked briefly then died (the #267 BANKNIFTY pattern)
             try:
                 import os as _os_pg
-                if (_os_pg.environ.get("MAIN_PEAK_GIVEBACK_DISABLED", "").strip() not in ("1","true","on")
+                # 2026-06-17: DEFAULT DISABLED. PEAK_GIVEBACK only fired in narrow
+                # 1.5% band (after today's tightening) — essentially dead code.
+                # MINI_PEAK_FLOOR (peak ≥2%) handles real cases better.
+                if (_os_pg.environ.get("MAIN_PEAK_GIVEBACK_DISABLED", "1").strip() not in ("1","true","on")
                         and new_status == "OPEN"):
                     # 2026-06-15: min raised 0.5 → 1.0
                     # 2026-06-17 (auditor review): 1.0 still too aggressive —
@@ -2156,6 +2164,35 @@ class TradeManager:
             pass
         if win_pct < min_prob:
             return False
+
+        # ── PDC ZONE BLOCK (2026-06-17 — mirror scalper) ──
+        # Main mode at_PDC bucket -₹2,812/trade. PDC = magnet zone.
+        # Env: MAIN_PDC_BLOCK_DISABLED=1 to revert.
+        try:
+            import os as _os_pdc_m
+            if _os_pdc_m.environ.get("MAIN_PDC_BLOCK_DISABLED", "").strip() not in ("1","true","on"):
+                from levels_context import get_levels_context as _glc_m
+                _engine_m = None
+                try:
+                    from main import session as _msess_m
+                    _engine_m = (_msess_m or {}).get("engine")
+                except Exception:
+                    pass
+                _spot_m = 0
+                try:
+                    if _engine_m is not None:
+                        _tok_m = _engine_m.spot_tokens.get(idx)
+                        if _tok_m:
+                            _spot_m = (_engine_m.prices.get(_tok_m, {}) or {}).get("ltp") or 0
+                except Exception:
+                    pass
+                _ctx_m = _glc_m(_engine_m, idx, _spot_m)
+                _zone_m = (_ctx_m.get("zone") or "")
+                if _zone_m in ("NEAR_PDC",):
+                    print(f"[TRADE] REJECT entry: PDC_ZONE_BLOCK — spot {_spot_m} in {_zone_m}")
+                    return False
+        except Exception as _pdc_e_m:
+            print(f"[TRADE] PDC_ZONE_BLOCK error (allow): {_pdc_e_m}")
 
         # ── STEP 2 SURGICAL FIXES (2026-06-03 — 445-trade audit) ──
         # MAIN-mode specific fixes. Env-overridable, all default-safe.
