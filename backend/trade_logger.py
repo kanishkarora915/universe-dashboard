@@ -1053,7 +1053,11 @@ class TradeManager:
                 import os as _os_sk
                 if (_os_sk.environ.get("MAIN_STALE_KILL_DISABLED", "").strip() not in ("1","true","on")
                         and new_status == "OPEN"):
-                    sk_min_hold = float(_os_sk.environ.get("MAIN_STALE_KILL_MIN_HOLD_MIN", "15")) * 60
+                    # 2026-06-17 (auditor): min_hold 15→10 min so STALE_KILL
+                    # picks up immediately after EARLY_CUT's 10-min window.
+                    # Previously trades in the 10-15 min slot had no specific
+                    # guard if they bled past -2.5% (EARLY_CUT trigger).
+                    sk_min_hold = float(_os_sk.environ.get("MAIN_STALE_KILL_MIN_HOLD_MIN", "10")) * 60
                     sk_max_hold = float(_os_sk.environ.get("MAIN_STALE_KILL_MAX_HOLD_MIN", "30")) * 60
                     sk_max_peak = float(_os_sk.environ.get("MAIN_STALE_KILL_MAX_PEAK_PCT", "1.0"))
                     sk_loss_low = float(_os_sk.environ.get("MAIN_STALE_KILL_LOSS_LOW", "-5.0"))
@@ -1837,6 +1841,15 @@ class TradeManager:
                 """, (current_ltp, peak, final_pnl_pts, total_pnl,
                       new_sl, breakeven_active, trailing_active, trail_level,
                       new_status, exit_price, ist_now().isoformat(), exit_reason, alerts_str, t["id"]))
+                # 2026-06-17 (auditor): clean per-trade in-memory counters
+                # on exit so they don't leak across trades.
+                try:
+                    if hasattr(self, '_main_sl_breach_count'):
+                        self._main_sl_breach_count.pop(t["id"], None)
+                    if hasattr(self, '_sl_first_touch'):
+                        self._sl_first_touch.pop(t["id"], None)
+                except Exception:
+                    pass
                 print(f"[TRADE] CLOSED: {action} {idx} {strike} — {new_status} — PnL: ₹{total_pnl:+,.0f} (partial: ₹{already_booked_pnl:+,.0f} + exit: ₹{remaining_pnl_for_log:+,.0f})")
                 try:
                     from structured_logger import log
@@ -1913,12 +1926,19 @@ class TradeManager:
                     conn.execute("UPDATE trades SET sl_hit_time=?, oi_at_sl_hit=? WHERE id=?",
                                  (ist_now().isoformat(), oi_at_sl, t["id"]))
             else:
+                # 2026-06-17 (auditor): race-safe SL update.
+                # Previously blind UPDATE could DOWNGRADE sl_price that the
+                # position_watcher (separate thread) just raised in same
+                # cycle. Use CASE to keep the MAX of current DB and new_sl.
+                # Other fields update normally (they're per-cycle local state).
                 conn.execute("""
                     UPDATE trades SET current_ltp=?, peak_ltp=?, pnl_pts=?, pnl_rupees=?,
-                        sl_price=?, breakeven_active=?, trailing_active=?, trail_level=?, alerts=?
+                        sl_price=CASE WHEN sl_price > ? THEN sl_price ELSE ? END,
+                        breakeven_active=?, trailing_active=?, trail_level=?, alerts=?
                     WHERE id=?
                 """, (current_ltp, peak, pnl_pts, pnl_rupees,
-                      new_sl, breakeven_active, trailing_active, trail_level, alerts_str, t["id"]))
+                      new_sl, new_sl,
+                      breakeven_active, trailing_active, trail_level, alerts_str, t["id"]))
             conn.commit()
             conn.close()
 

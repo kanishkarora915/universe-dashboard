@@ -965,6 +965,21 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
     # Tracks highest profit_pct ever seen for THIS open trade. Once peak
     # crosses +5%, the loss floor tightens to -5% (vs default -8%).
     cur_profit_pct = health.get("profit_pct") or 0
+    # 2026-06-17 (auditor): on first health computation per process, seed
+    # cache from DB peak_ltp so deploy/restart doesn't wipe the peak.
+    # Previously after deploy, all PEAK_FLOOR_HIT logic broke until trade
+    # exceeded its prior peak again (never happens on decaying trades).
+    sid = f"{source}:{trade_id}"
+    if sid not in _peak_profit_cache:
+        try:
+            db_peak = float(trade.get("peak_ltp") or 0)
+            entry_p = float(trade.get("entry_price") or 0)
+            if db_peak > 0 and entry_p > 0:
+                seed_pct = (db_peak - entry_p) / entry_p * 100
+                if seed_pct > 0:
+                    _peak_profit_cache[sid] = seed_pct
+        except Exception:
+            pass
     peak_now = update_peak_profit(source, trade_id, cur_profit_pct)
     health["peak_profit_pct"] = peak_now
 
