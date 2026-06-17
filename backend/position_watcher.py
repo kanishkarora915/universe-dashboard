@@ -442,16 +442,22 @@ def _evaluate_triggers(trade: Dict, health: Dict, action: str,
             return "PEAK_FLOOR_HIT"
 
     # ──── PRIORITY 1: OI REVERSAL (per-strike writer/buyer activity) ────
-    # New: per-trade-strike OI delta from oi_minute_capture.
-    # Fires when writers HOSTILE to our position are stacking AND we're
-    # not already in solid profit. Profit ≥ +5% lets Profit-Trail manage.
+    # 2026-06-17 BUG FIX (user feedback "reversal exit + watcher exit bugs"):
+    # Previously fired when profit_pct < 5 → killed trades at +3-4% real
+    # profit because OI shifted slightly. Tightened to profit_pct < 1
+    # so only LOSING / scratch trades get watcher-exit on OI reversal.
+    # Profits ≥ +1% are protected by profit_floor / trailing SL instead.
+    # Env: WATCHER_OI_REV_PROFIT_THRESH (default 1.0)
     oi_comp = comps.get("oi", {})
     oi_penalty = oi_comp.get("penalty", 0)
-    if oi_penalty >= 1.0 and profit_pct < 5:
+    import os as _os_wr
+    _oi_rev_thresh = float(_os_wr.environ.get("WATCHER_OI_REV_PROFIT_THRESH", "1.0"))
+    if oi_penalty >= 1.0 and profit_pct < _oi_rev_thresh:
         return "OI_REVERSAL"
 
     candle = comps.get("candle", {})
-    if candle.get("penalty", 0) >= 1.5 and profit_pct < 5:
+    _rev_pat_thresh = float(_os_wr.environ.get("WATCHER_REV_PATTERN_PROFIT_THRESH", "1.0"))
+    if candle.get("penalty", 0) >= 1.5 and profit_pct < _rev_pat_thresh:
         # Strong reversal pattern post-entry, not in profit
         return "REVERSAL_PATTERN"
 
@@ -460,7 +466,8 @@ def _evaluate_triggers(trade: Dict, health: Dict, action: str,
         return "THETA_WINS"
 
     vix = comps.get("vix", {})
-    if vix.get("severity") == "HIGH" and profit_pct < 5:
+    _vix_thresh = float(_os_wr.environ.get("WATCHER_VIX_PROFIT_THRESH", "1.0"))
+    if vix.get("severity") == "HIGH" and profit_pct < _vix_thresh:
         return "VIX_CRUSH"
 
     prox = comps.get("proximity", {})
@@ -1080,17 +1087,32 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
 
     # ──── PEAK_FLOOR_HIT — bypass-gate exit ────
     # User's Rule 1: trade peaked ≥+5%, now down to ≤-5% → exit immediately.
-    # Saves the "I touched +12%, now I'm -10%" pain. Same bypass behavior
-    # as HARD_LOSS_CAP (ignores auto_exit_main/scalper gating).
+    # Saves the "I touched +12%, now I'm -10%" pain.
+    # 2026-06-17 BUG FIX: Previously exited at current_premium (already
+    # at -5%) — defeats the purpose. Now mirrors trade_logger.py:
+    # exit at peak × 0.4 floor (lock saved profit) IF current still above.
+    # Else fall through to natural HARD_LOSS_CAP.
+    # Env: WATCHER_PEAK_FLOOR_FACTOR (default 0.4 matches trade_logger).
     if trigger == "PEAK_FLOOR_HIT" and cfg.get("peak_aware_floor_enable", True) and not _warn_only:
         profit_pct = health.get("profit_pct", 0)
         peak = health.get("peak_profit_pct", 0)
-        peak_floor = float(cfg.get("peak_aware_floor_pct", -5.0))
-        reason_str = (f"PEAK_FLOOR_HIT: peaked {peak:+.2f}% then fell to "
-                      f"{profit_pct:+.2f}% — capped at {peak_floor:.0f}%")
-        ok = (_force_close_main(trade_id, current_premium, reason_str)
+        import os as _os_wpf
+        _wpf_factor = float(_os_wpf.environ.get("WATCHER_PEAK_FLOOR_FACTOR", "0.4"))
+        try:
+            entry_price = float(trade.get("entry_price") or 0)
+        except Exception:
+            entry_price = 0.0
+        # Compute target lock price: entry × (1 + peak×factor/100)
+        floor_pct = peak * _wpf_factor
+        floor_price = (round(entry_price * (1 + floor_pct/100), 1)
+                       if entry_price > 0 else current_premium)
+        # Use floor price only if current is still above (otherwise market exit)
+        actual_exit_price = floor_price if (entry_price > 0 and current_premium >= floor_price) else current_premium
+        reason_str = (f"PEAK_FLOOR_HIT: peaked {peak:+.2f}% → exit @ "
+                      f"₹{actual_exit_price} (lock +{floor_pct:.1f}%)")
+        ok = (_force_close_main(trade_id, actual_exit_price, reason_str)
               if source == "MAIN"
-              else _force_close_scalper(trade_id, current_premium, reason_str))
+              else _force_close_scalper(trade_id, actual_exit_price, reason_str))
         if ok:
             action_taken = "EXIT"
             _log_exit(source, trade, current_premium, trigger,

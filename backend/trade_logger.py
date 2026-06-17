@@ -1440,11 +1440,16 @@ class TradeManager:
                     _pf_disabled = _os_pf.environ.get("MAIN_PEAK_FLOOR_DISABLED", "").strip() in ("1","true","on")
                     _pf_peak_thresh = float(_os_pf.environ.get("MAIN_PEAK_FLOOR_PEAK_PCT", "5.0"))
                     _pf_factor = float(_os_pf.environ.get("MAIN_PEAK_FLOOR_FACTOR", "0.4"))
+                    # 2026-06-17 BUG FIX: intermediate peak floor for peak 2-5%.
+                    # Previously trades that peaked +2-4.99% had no protection —
+                    # exited at -5% market price. Now use mini-floor:
+                    #   peak 2-3%   → lock at +0.3%
+                    #   peak 3-4%   → lock at +0.8%
+                    #   peak 4-5%   → lock at +1.3%
+                    #   peak 5%+    → existing peak × 0.4 floor (e.g. 10% → 4%)
                     if (not _pf_disabled) and peak_pct >= _pf_peak_thresh:
                         floor_pct = peak_pct * _pf_factor
                         floor_price = round(entry * (1 + floor_pct/100), 1)
-                        # Only lock if current ltp is still above the floor (otherwise the
-                        # crash is past the floor too — exit at market is best we can do).
                         if current_ltp >= floor_price:
                             new_status = "TRAIL_EXIT"
                             exit_price = floor_price
@@ -1461,7 +1466,25 @@ class TradeManager:
                                            f"past floor ₹{floor_price}. Exit at market.")
                             print(f"[TRADE] MAX-LOSS (past floor) [{_bm['mode']}]: {action} {idx} {strike} "
                                   f"peak +{peak_pct:.1f}% but crashed past +{floor_pct:.1f}% floor")
+                    elif (not _pf_disabled) and peak_pct >= 2.0:
+                        # MINI-FLOOR for peak 2-5% (was unprotected — closing gap)
+                        # Tiered: peak 2→+0.3, peak 3→+0.8, peak 4→+1.3
+                        _mini_floor_pct = round(0.3 + (peak_pct - 2.0) * 0.5, 1)  # 2%→0.3, 3%→0.8, 4%→1.3
+                        _mini_floor_price = round(entry * (1 + _mini_floor_pct/100), 1)
+                        if current_ltp >= _mini_floor_price:
+                            new_status = "TRAIL_EXIT"
+                            exit_price = _mini_floor_price
+                            exit_reason = (f"MINI_PEAK_FLOOR [{_bm['mode']}] at ₹{_mini_floor_price} "
+                                           f"(+{_mini_floor_pct}%) — peak +{peak_pct:.1f}% saved from -5% cap.")
+                            print(f"[TRADE] MINI_PEAK_FLOOR [{_bm['mode']}]: {action} {idx} {strike} "
+                                  f"peak +{peak_pct:.1f}% → +{_mini_floor_pct}% (was about to -5%)")
+                        else:
+                            new_status = "REVERSAL_EXIT"
+                            exit_price = current_ltp
+                            exit_reason = f"HARD MAX-LOSS CAP [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — peak only +{peak_pct:.1f}%, crashed past mini-floor."
+                            print(f"[TRADE] MAX-LOSS (past mini-floor) [{_bm['mode']}]: peak +{peak_pct:.1f}%, mini-floor +{_mini_floor_pct}% but below.")
                     else:
+                        # Genuine wrong-direction trade (peak < +2%) — accept -5% cap
                         new_status = "REVERSAL_EXIT"
                         exit_price = current_ltp
                         exit_reason = f"HARD MAX-LOSS CAP [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — capital preservation, no overrides."
