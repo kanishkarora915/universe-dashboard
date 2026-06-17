@@ -2182,25 +2182,11 @@ class TradeManager:
                     return False
 
             # FIX D: Over-conviction cap
-            # Audit: MAIN prob 80+% = 42% WR, -₹111k (extreme = exhaustion)
-            # Block 85%+ unless capit confirms reversal (same logic as scalper).
-            overconv_cap = float(_os.environ.get("OVERCONVICTION_BLOCK", "90"))
+            # 2026-06-17 (90d audit): probability INVERTED. 85%+ bucket
+            # = -₹2.07L NET. Lowered 90→80, removed capit bypass.
+            overconv_cap = float(_os.environ.get("OVERCONVICTION_BLOCK", "80"))
             if win_pct >= overconv_cap:
-                try:
-                    from capitulation_engine import get_live_state as _gls
-                    cs = _gls() or {}
-                    _cidx = (cs.get("results") or {}).get(idx, {})
-                    _cb = (_cidx.get("bullish") or {}).get("score", 0)
-                    _cz = (_cidx.get("bearish") or {}).get("score", 0)
-                    is_ce_main = "CE" in action
-                    if is_ce_main and _cb >= 5:
-                        pass  # capit strongly confirms → allow
-                    elif (not is_ce_main) and _cz >= 5:
-                        pass
-                    else:
-                        return False
-                except Exception:
-                    pass
+                return False
         except Exception:
             # NEVER let surgical-fix block a legit trade on its own error
             pass

@@ -663,31 +663,17 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
                 print(f"[SCALPER] streak handler error (allow): {_e}")
 
         # FIX D: Over-conviction cap (both modes)
-        # Audit: prob 80+% → MAIN 42% WR -₹111k, SCALPER 32% WR -₹42k
-        # Extreme conviction = market exhaustion = reversal imminent.
-        # Block fresh entries above 85% unless capit confirms reversal.
-        # 2026-06-08 v2: raised 85 → 90. Was blocking legitimate high-conv
-        # entries. Only extreme 90%+ now considered "top/bottom risk".
-        overconv_cap = float(os.environ.get("OVERCONVICTION_BLOCK", "90"))
+        # 2026-06-17 (90d audit): probability calibration is INVERTED.
+        # 85%+ prob bucket: Main -₹2.07L, Scalper -₹42k.
+        # 75-80% bucket: Main -₹1L. 50-60% bucket: Main +₹2.46L, Scalper +₹2.16L.
+        # System most confident exactly when wrong. Lowered threshold 90→80
+        # and REMOVED capit bypass — capit was rubber-stamping bad trades.
+        overconv_cap = float(os.environ.get("OVERCONVICTION_BLOCK", "80"))
         if win_pct >= overconv_cap:
-            # capitulation reversal-confirmation can bypass
-            try:
-                from capitulation_engine import get_live_state as _gls
-                cs = _gls() or {}
-                _cidx = (cs.get("results") or {}).get(idx, {})
-                _cb = (_cidx.get("bullish") or {}).get("score", 0)
-                _cz = (_cidx.get("bearish") or {}).get("score", 0)
-                if is_ce and _cb >= 5:
-                    pass  # capit strongly confirms bull → allow
-                elif (not is_ce) and _cz >= 5:
-                    pass
-                else:
-                    print(f"[SCALPER] REJECT entry (Step 2 overconv-cap): "
-                          f"win_pct {win_pct}% ≥ {overconv_cap}% — "
-                          f"extreme conviction = top/bottom risk (audit -₹150k)")
-                    return False
-            except Exception:
-                pass
+            print(f"[SCALPER] REJECT entry (overconv-cap): "
+                  f"win_pct {win_pct}% ≥ {overconv_cap}% — "
+                  f"inverted calibration, high-prob = high-loss (90d audit ₹-2.5L)")
+            return False
     except Exception as _e:
         # NEVER let surgical-fix logic block a legit trade on its own error
         print(f"[SCALPER] Step 2 fix error (allow): {_e}")
@@ -840,6 +826,32 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
 
     conn.close()
 
+    # ── PDC ZONE BLOCK (2026-06-17 — 90d audit) ──
+    # at_PDC + NEAR_PDC entries lose -₹91k/90d combined (Scalper).
+    # PDC = previous day close — magnet zone, choppy whipsaws.
+    # Block fresh entries within 0.15% of PDC unless explicit override.
+    # Env: SCALPER_PDC_BLOCK_DISABLED=1 to revert.
+    try:
+        import os as _os_pdc
+        if _os_pdc.environ.get("SCALPER_PDC_BLOCK_DISABLED", "").strip() not in ("1","true","on"):
+            from levels_context import get_levels_context as _glc
+            _spot_pdc = 0
+            try:
+                if engine is not None:
+                    _tok = engine.spot_tokens.get(idx)
+                    if _tok:
+                        _spot_pdc = (engine.prices.get(_tok, {}) or {}).get("ltp") or 0
+            except Exception:
+                pass
+            _ctx_pdc = _glc(engine, idx, _spot_pdc)
+            _zone_pdc = (_ctx_pdc.get("zone") or "")
+            if _zone_pdc in ("NEAR_PDC",):
+                print(f"[SCALPER] REJECT entry: PDC_ZONE_BLOCK — spot {_spot_pdc} "
+                      f"in {_zone_pdc} (90d audit -₹91k bleed)")
+                return False
+    except Exception as _pdc_e:
+        print(f"[SCALPER] PDC_ZONE_BLOCK error (allow): {_pdc_e}")
+
     # ── B1.4: DIRECTION SANITY (OI delta + spot must AGREE with action) ──
     # Today (2026-05-04) cost ₹91k: "PE dominant 80%" reasoning kept saying
     # BUY CE while spot was falling and OI was rotating bearish.
@@ -901,16 +913,15 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         pass
 
     # ── GATE 11: ENTRY FILTERS (5-min trend + greeks + regime) ──
-    # PERMISSIVE MODE (2026-06-05) — user concern: "system jaise pehle
-    # trades lera tha waise hi le, miss na kare. SL smart hai."
-    #
-    # Default: entry_filter logs WARNING but doesn't block. Damage
-    # control (EARLY_CUT + BREAKEVEN) handles bad-setup losses at exit
-    # side. This matches the May behavior when system was firing 10-25
-    # trades/day instead of 0.
-    # Override: ENTRY_FILTER_MODE=strict to restore old hard-block.
+    # 2026-06-17 (90d audit): default flipped permissive→strict.
+    # CHOP bucket: 265 scalper trades = -₹1.47L NET. The permissive
+    # mode let CHOP through hoping damage-control catches it — but
+    # damage-control isn't catching enough. Strict + tightened
+    # CHOP override (AND not OR) keeps only setups where BOTH capit
+    # AND health AGGRESSIVE confirm.
+    # Override: ENTRY_FILTER_MODE=permissive to revert.
     if engine is not None and atm_strike is not None:
-        _ef_mode = os.environ.get("ENTRY_FILTER_MODE", "permissive").lower()
+        _ef_mode = os.environ.get("ENTRY_FILTER_MODE", "strict").lower()
         try:
             from entry_filters import check_all_filters
             filters_ok, filter_reason, regime_info = check_all_filters(
@@ -918,18 +929,19 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
             )
             if not filters_ok:
                 if _ef_mode == "strict":
-                    # Old strict behaviour — hard block
+                    # STRICT: hard block, with tightened CHOP override
                     if regime_info.get("regime") == "CHOP":
                         capit_confirms_direction = (
                             (is_ce and cap_bull >= 4) or
                             (not is_ce and cap_bear >= 4)
                         )
-                        if not capit_confirms_direction and not _allow_chop_health:
-                            print(f"[SCALPER] REJECT entry (G11 strict): {filter_reason}")
+                        # 2026-06-17: require BOTH capit AND health,
+                        # not EITHER. Previous OR was too lenient.
+                        if not (capit_confirms_direction and _allow_chop_health):
+                            print(f"[SCALPER] REJECT entry (G11 strict CHOP): {filter_reason}")
                             return False
                         else:
-                            _chop_why = "capit-confirmed" if capit_confirms_direction else "health AGGRESSIVE"
-                            print(f"[SCALPER] CHOP override ({_chop_why}): {filter_reason}")
+                            print(f"[SCALPER] CHOP override (capit AND health AGG): {filter_reason}")
                     else:
                         print(f"[SCALPER] REJECT entry (G11 strict): {filter_reason}")
                         return False

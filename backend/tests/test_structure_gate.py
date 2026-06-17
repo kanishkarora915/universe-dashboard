@@ -55,11 +55,12 @@ def _put_cache(idx, structures_by_tf, alignment):
 
 
 class TestMasterMode:
-    def test_default_shadow(self, monkeypatch):
-        # 2026-06-15: Default flipped off→shadow for observation (Fix D)
+    def test_default_live(self, monkeypatch):
+        # 2026-06-17: Default flipped shadow→live after 90d audit
+        # proved 5m+15m alignment edge.
         monkeypatch.delenv("STRUCTURE_MODE", raising=False)
         from structure_gate import master_mode
-        assert master_mode() == "shadow"
+        assert master_mode() == "live"
 
     def test_shadow(self, monkeypatch):
         monkeypatch.setenv("STRUCTURE_MODE", "shadow")
@@ -71,11 +72,11 @@ class TestMasterMode:
         from structure_gate import master_mode
         assert master_mode() == "live"
 
-    def test_invalid_falls_back_shadow(self, monkeypatch):
-        # 2026-06-15: Default flipped to shadow, so invalid values fall back to shadow too
+    def test_invalid_falls_back_live(self, monkeypatch):
+        # 2026-06-17: Invalid values fall back to default (now live)
         monkeypatch.setenv("STRUCTURE_MODE", "garbage")
         from structure_gate import master_mode
-        assert master_mode() == "shadow"
+        assert master_mode() == "live"
 
     def test_explicit_off(self, monkeypatch):
         monkeypatch.setenv("STRUCTURE_MODE", "off")
@@ -299,11 +300,11 @@ class TestNoData:
 
 class TestDiagnostics:
     def test_diagnostics_shape(self, monkeypatch):
-        # 2026-06-15: default is now 'shadow'; test the structure is intact
+        # 2026-06-17: default is now 'live'; test the structure is intact
         monkeypatch.delenv("STRUCTURE_MODE", raising=False)
         from structure_gate import diagnostics
         d = diagnostics()
-        assert d["master_mode"] == "shadow"
+        assert d["master_mode"] == "live"
         assert "mode_a_tuning" in d
         assert "mode_b_tuning" in d
         assert d["mode_a_tuning"]["size_mult"] == 1.0

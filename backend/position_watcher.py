@@ -82,8 +82,12 @@ DEFAULT_CONFIG = {
     # request: "agar position lete hi trade loss mein jara hai toh
     # max 5-8% loss hona chahiye". These run as hard exits regardless
     # of any other gating.
+    # 2026-06-17 (90d audit): WATCHER_EXIT = -₹4.96L over 90d, with
+    # bypass triggers firing on noise. -8% cap was hitting at same point
+    # as natural SL (7.7% avg), causing premature watcher kills.
+    # Raised to -10% so true SL handles normal cases.
     "hard_loss_enforce": True,         # master switch for the floor
-    "hard_loss_cap_pct": -8.0,         # absolute floor — exit if profit_pct <= this
+    "hard_loss_cap_pct": -10.0,        # absolute floor — exit if profit_pct <= this
     "fast_loss_cap_pct": -5.0,         # tighter floor within first window
     "fast_loss_window_min": 10,        # minutes from entry for fast-loss rule
     # ────── PEAK-AWARE FLOOR (NEW: user's 2-rule simplification) ──────
