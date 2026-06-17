@@ -2578,6 +2578,26 @@ def check_scalper_exits(chains):
                                        f"+{_peak_pct_now:.1f}% but premium crashed past "
                                        f"floor ₹{floor_price}.")
                         sl_reason_text = exit_reason
+                elif (not _pf_disabled) and _peak_pct_now >= 2.0:
+                    # ── MINI_PEAK_FLOOR (2026-06-17 — mirror main mode) ──
+                    # Peak 2-5% trades had no protection — exited at SL price.
+                    # Tiered: peak 2%→+0.3%, peak 3%→+0.8%, peak 4%→+1.3%
+                    _mini_floor_pct = round(0.3 + (_peak_pct_now - 2.0) * 0.5, 1)
+                    _mini_floor_price = round(entry * (1 + _mini_floor_pct/100), 2)
+                    if current_ltp >= _mini_floor_price:
+                        new_status = "PEAK_FLOOR_EXIT"
+                        exit_price = _mini_floor_price
+                        exit_reason = (f"MINI_PEAK_FLOOR at ₹{_mini_floor_price} (+{_mini_floor_pct}%) — "
+                                       f"peak +{_peak_pct_now:.1f}% saved from SL.")
+                        sl_reason_text = exit_reason
+                        print(f"[SCALPER] MINI_PEAK_FLOOR · #{t['id']} peak +{_peak_pct_now:.1f}% "
+                              f"→ +{_mini_floor_pct}% (was SL exit)")
+                    else:
+                        new_status = "SL_HIT"
+                        exit_price = active_sl_used
+                        exit_reason = (f"SL hit at ₹{active_sl_used:.2f} — peak +{_peak_pct_now:.1f}% "
+                                       f"but premium below mini-floor ₹{_mini_floor_price}.")
+                        sl_reason_text = exit_reason
                 else:
                     new_status = "SL_HIT"
                     exit_price = active_sl_used

@@ -1115,17 +1115,17 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
               else _force_close_scalper(trade_id, actual_exit_price, reason_str))
         if ok:
             action_taken = "EXIT"
-            _log_exit(source, trade, current_premium, trigger,
+            _log_exit(source, trade, actual_exit_price, trigger,
                       [reason_str] + (health.get("reasons") or []))
             snapshot["actions"].append({
                 "source": source, "trade_id": trade_id, "trigger": trigger,
-                "action": "EXIT", "exit_price": current_premium,
+                "action": "EXIT", "exit_price": actual_exit_price,
                 "profit_pct": profit_pct, "peak_profit_pct": peak,
-                "peak_floor_pct": peak_floor,
+                "floor_lock_pct": round(floor_pct, 2),
                 "bypass_gate": True,
             })
             print(f"[WATCHER] PEAK_FLOOR exit · {source} #{trade_id} · "
-                  f"peak {peak:+.2f}% → now {profit_pct:+.2f}% (cap {peak_floor:.0f}%)")
+                  f"peak {peak:+.2f}% → exit ₹{actual_exit_price} (lock +{floor_pct:.1f}%)")
             _log_health(source, trade_id, idx, action, health, trigger, action_taken)
             return
 
