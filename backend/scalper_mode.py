@@ -826,6 +826,19 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
 
     conn.close()
 
+    # ── DRAWDOWN GUARD (2026-06-18 — user feedback "give-back pattern") ──
+    # Locks today's peak P&L. If today's gains drop below 65% of peak,
+    # block new entries. Protects profitable days from being destroyed.
+    # Env: DRAWDOWN_GUARD_DISABLED=1 to revert.
+    try:
+        from drawdown_guard import check_drawdown_block as _ddb
+        blocked, reason = _ddb("scalper")
+        if blocked:
+            print(f"[SCALPER] REJECT entry: {reason}")
+            return False
+    except Exception as _dd_e:
+        print(f"[SCALPER] drawdown_guard error (allow): {_dd_e}")
+
     # ── PDC ZONE BLOCK (2026-06-17 — 90d audit) ──
     # at_PDC + NEAR_PDC entries lose -₹91k/90d combined (Scalper).
     # PDC = previous day close — magnet zone, choppy whipsaws.

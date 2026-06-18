@@ -2165,6 +2165,21 @@ class TradeManager:
         if win_pct < min_prob:
             return False
 
+        # ── DRAWDOWN GUARD (2026-06-18 — user feedback) ──
+        # Today gave back ₹80k of ₹100k morning profits. Lock daily peak.
+        # Default: stop entries if current < 65% of today's peak realized P&L,
+        # but only after peak ≥ ₹20k (don't protect tiny gains).
+        # Env: DRAWDOWN_GUARD_DISABLED=1 to revert; DRAWDOWN_KEEP_PCT,
+        # DRAWDOWN_MIN_PEAK to tune.
+        try:
+            from drawdown_guard import check_drawdown_block as _ddb
+            blocked, reason = _ddb("main")
+            if blocked:
+                print(f"[TRADE] REJECT entry: {reason}")
+                return False
+        except Exception as _dd_e:
+            print(f"[TRADE] drawdown_guard error (allow): {_dd_e}")
+
         # ── PDC ZONE BLOCK (2026-06-17 — mirror scalper) ──
         # Main mode at_PDC bucket -₹2,812/trade. PDC = magnet zone.
         # Env: MAIN_PDC_BLOCK_DISABLED=1 to revert.

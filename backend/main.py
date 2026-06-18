@@ -4174,6 +4174,16 @@ async def admin_adaptive_history(limit: int = 10):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/admin/drawdown-guard")
+async def admin_drawdown_status():
+    """Return current state of drawdown guard for both modes."""
+    try:
+        from drawdown_guard import diagnostics as _ddd
+        return _ddd()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/admin/level-attribution")
 async def admin_level_attribution(days: int = 60, brokerage_per_trade: int = 1500):
     """Per-trade attribution grouped by LEVEL CONTEXT at entry.
