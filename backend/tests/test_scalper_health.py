@@ -32,24 +32,32 @@ def _regime(**kw):
 # ── MODE PARSING ───────────────────────────────────────────────────────
 
 class TestMode:
-    def test_default_shadow(self):
+    def test_default_live(self, monkeypatch):
+        # Default flipped shadow → live on 2026-06-18 (W1 D5 activation)
+        monkeypatch.delenv("SCALPER_ADAPTIVE_HEALTH", raising=False)
         from scalper_health import _mode
-        assert _mode() == "shadow"
+        assert _mode() == "live"
 
     def test_off(self, monkeypatch):
         monkeypatch.setenv("SCALPER_ADAPTIVE_HEALTH", "off")
         from scalper_health import _mode
         assert _mode() == "off"
 
+    def test_shadow(self, monkeypatch):
+        monkeypatch.setenv("SCALPER_ADAPTIVE_HEALTH", "shadow")
+        from scalper_health import _mode
+        assert _mode() == "shadow"
+
     def test_live(self, monkeypatch):
         monkeypatch.setenv("SCALPER_ADAPTIVE_HEALTH", "live")
         from scalper_health import _mode
         assert _mode() == "live"
 
-    def test_invalid_falls_back_shadow(self, monkeypatch):
+    def test_invalid_falls_back_live(self, monkeypatch):
+        # Was shadow fallback; now live fallback (matches new default)
         monkeypatch.setenv("SCALPER_ADAPTIVE_HEALTH", "garbage")
         from scalper_health import _mode
-        assert _mode() == "shadow"
+        assert _mode() == "live"
 
 
 # ── OFF MODE ───────────────────────────────────────────────────────────
@@ -161,9 +169,10 @@ class TestTuningShape:
         assert TUNING["AGGRESSIVE"]["allow_chop"] is True
         assert TUNING["DEFENSIVE"]["allow_chop"] is False
 
-    def test_diagnostics_shape(self):
+    def test_diagnostics_shape(self, monkeypatch):
+        monkeypatch.delenv("SCALPER_ADAPTIVE_HEALTH", raising=False)
         from scalper_health import diagnostics
         d = diagnostics()
-        assert d["mode"] == "shadow"
+        assert d["mode"] == "live"  # default flipped 2026-06-18
         assert set(d["modes_available"]) == {"off", "shadow", "live"}
         assert set(d["levels"]) == {"AGGRESSIVE", "BALANCED", "DEFENSIVE"}

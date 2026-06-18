@@ -61,7 +61,10 @@ TUNING: Dict[str, Dict] = {
     },
     "BALANCED": {
         "threshold_delta": 0,
-        "daily_cap": 15,
+        # 2026-06-18: daily_cap=None → respect user's cfg (currently 30).
+        # Was 15 which silently demoted user-configured cap during normal
+        # market hours. AGGRESSIVE (35) and DEFENSIVE (8) still override.
+        "daily_cap": None,
         "cooldown_mult": 1.0,
         "target_mult": 1.0,
         "size_mult": 1.0,
@@ -82,9 +85,16 @@ _cache: Dict[str, tuple] = {}   # idx -> (ts, result)
 
 
 def _mode() -> str:
-    """Return 'off' | 'shadow' | 'live'."""
-    m = os.environ.get("SCALPER_ADAPTIVE_HEALTH", "shadow").lower().strip()
-    return m if m in ("off", "shadow", "live") else "shadow"
+    """Return 'off' | 'shadow' | 'live'.
+
+    Default flipped shadow → live on 2026-06-18 (user vision +
+    W1 D5 activation). Was blocking ALL scalper CHOP entries because
+    `_allow_chop_health` could only become True in live mode but
+    default was shadow → 0 trades on 2026-06-18 even though scalper
+    was enabled. Live = tuning auto-adapts per market health.
+    """
+    m = os.environ.get("SCALPER_ADAPTIVE_HEALTH", "live").lower().strip()
+    return m if m in ("off", "shadow", "live") else "live"
 
 
 def _recent_streak() -> int:
