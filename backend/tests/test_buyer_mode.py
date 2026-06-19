@@ -128,3 +128,61 @@ class TestNoFantasyTargets:
         assert BUYER_DEFAULTS["scalper_t1_pct"] <= 0.08, (
             "T1 must be ≤8% (must be hittable, not +50% fantasy)"
         )
+
+
+# ── Task #85 — BIG_PROFITS_MODE runner-friendly overrides ─────────────
+
+
+class TestBigProfitsMode:
+    """Big-profits mode = let runners run (Task #85, 2026-06-18).
+
+    Built after 90d exit attribution showed TRAIL_EXIT (147 trades) avg
+    only +₹10,332. System tightens too early on aligned winners.
+    """
+
+    def test_default_on(self, monkeypatch):
+        monkeypatch.delenv("BIG_PROFITS_MODE", raising=False)
+        from buyer_mode import _big_profits_enabled
+        assert _big_profits_enabled() is True
+
+    def test_can_disable(self, monkeypatch):
+        monkeypatch.setenv("BIG_PROFITS_MODE", "off")
+        from buyer_mode import _big_profits_enabled
+        assert _big_profits_enabled() is False
+
+    def test_buyer_mode_gets_runner_thresholds(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("BIG_PROFITS_MODE", raising=False)
+        # Force BUYER mode and read thresholds
+        import buyer_mode
+        buyer_mode.set_mode("BUYER")
+        th = buyer_mode.get_thresholds()
+        # Runner-friendly overrides applied
+        assert th["breakeven_pct"] == 6.0  # 3 → 6
+        assert th["trail_giveback_pct"] == 50.0  # 30 → 50
+        assert th["tight_trail_trigger_pct"] == 25.0  # 8 → 25
+        assert th["scalper_t1_pct"] == 0.08  # 0.05 → 0.08
+        assert th["scalper_t2_pct"] == 0.25  # 0.12 → 0.25
+
+    def test_disabling_reverts_to_buyer_defaults(self, monkeypatch):
+        monkeypatch.setenv("BIG_PROFITS_MODE", "off")
+        import buyer_mode
+        buyer_mode.set_mode("BUYER")
+        th = buyer_mode.get_thresholds()
+        # Back to original BUYER defaults
+        assert th["breakeven_pct"] == 3.0
+        assert th["trail_giveback_pct"] == 30.0
+        assert th["tight_trail_trigger_pct"] == 8.0
+        assert th["scalper_t1_pct"] == 0.05
+        assert th["scalper_t2_pct"] == 0.12
+
+    def test_hedger_mode_not_affected(self, monkeypatch):
+        """BIG_PROFITS_MODE only applies to BUYER, not HEDGER."""
+        monkeypatch.delenv("BIG_PROFITS_MODE", raising=False)
+        import buyer_mode
+        buyer_mode.set_mode("HEDGER")
+        th = buyer_mode.get_thresholds()
+        # Should be unchanged HEDGER defaults
+        assert th["breakeven_pct"] == HEDGER_DEFAULTS["breakeven_pct"]
+        assert th["scalper_t2_pct"] == HEDGER_DEFAULTS["scalper_t2_pct"]
+        # Restore for other tests
+        buyer_mode.set_mode("BUYER")

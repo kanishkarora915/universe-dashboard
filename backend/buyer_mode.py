@@ -144,13 +144,49 @@ def set_mode(mode):
         conn.close()
 
 
+BIG_PROFITS_BUYER_OVERRIDES = {
+    # Runner-friendly tuning derived from 90d exit attribution:
+    #   TRAIL_EXIT (147 trades, +₹10,332 avg) — system tightens too early
+    #   T2_HIT     (15 trades, +₹15,786 avg) — T2 too conservative
+    #   Goal: let winners run, average +₹10k → +₹18k per win.
+    #
+    # Trade-off: trades that would have hit tight-trail at +10% now risk
+    # giving back to +6% before exiting. Acceptable because structure
+    # alignment (Task #82, 2026-06-18) blocks noise entries — only quality
+    # setups remain. Quality entries deserve room to develop.
+    "breakeven_pct": 6.0,             # 3 → 6  (let trade breathe past noise)
+    "trail_giveback_pct": 50.0,       # 30 → 50  (wider room)
+    "tight_trail_giveback_pct": 30.0, # 20 → 30  (lock 70% not 80%)
+    "tight_trail_trigger_pct": 25.0,  # 8 → 25   (delay tighten — let runner run)
+    "reversal_exit_pct": -6.0,        # -5 → -6  (slight wider noise tolerance)
+    "reversal_exit_min_hold_sec": 300,  # 120 → 300 (5min before reversal kicks in)
+    "scalper_t1_pct": 0.08,           # 0.05 → 0.08  (T1 5% → 8%)
+    "scalper_t2_pct": 0.25,           # 0.12 → 0.25  (T2 12% → 25% — BIG runners)
+    "post_t2_trail_giveback_pct": 25.0,  # 30 → 25  (tighter post-T2 to lock 75%)
+}
+
+
+def _big_profits_enabled() -> bool:
+    """Task #85 — runner-friendly trail/target tuning for BUYER mode.
+
+    Activated by env BIG_PROFITS_MODE=on (default on as of 2026-06-18).
+    Disable with BIG_PROFITS_MODE=off to restore narrow-trail behavior.
+    """
+    import os
+    return os.environ.get("BIG_PROFITS_MODE", "on").lower() in ("on", "1", "true")
+
+
 def get_thresholds():
     """Returns full threshold dict for current mode (with any custom overrides applied)."""
     init_db()
     mode = get_mode()
     base = BUYER_DEFAULTS.copy() if mode == "BUYER" else HEDGER_DEFAULTS.copy()
 
-    # Apply custom overrides
+    # Apply BIG_PROFITS_MODE overrides on top of BUYER defaults (not HEDGER)
+    if mode == "BUYER" and _big_profits_enabled():
+        base.update(BIG_PROFITS_BUYER_OVERRIDES)
+
+    # Apply custom overrides (DB-stored — take final precedence over everything)
     conn = sqlite3.connect(str(DB_PATH))
     try:
         row = conn.execute("SELECT overrides_json FROM buyer_mode_overrides WHERE id=1").fetchone()
@@ -203,7 +239,9 @@ def get_summary():
     return {
         "mode": mode,
         "is_buyer": mode == "BUYER",
+        "big_profits_mode": _big_profits_enabled(),
         "thresholds": th,
         "hedger_defaults": HEDGER_DEFAULTS,
         "buyer_defaults": BUYER_DEFAULTS,
+        "big_profits_overrides": BIG_PROFITS_BUYER_OVERRIDES,
     }
