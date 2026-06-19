@@ -88,6 +88,27 @@ def counter_trend_enabled() -> bool:
     return os.environ.get("STRUCTURE_COUNTER_TREND_ENABLED", "on").lower() == "on"
 
 
+def strict_main_alignment_enabled() -> bool:
+    """Task #82 — HARD 5m+15m alignment for main mode.
+
+    90d audit (2026-06-18) showed CHOP-on-one-side trades are the
+    biggest loss bucket. Old _matches_or_neutral let UPTREND/CHOP +
+    CE through → -₹139k/90d (worst bucket). Strict rule enforces
+    the data-proven good patterns only.
+
+    Patterns allowed (data-derived):
+      BUY CE: 5m=UPTREND AND 15m=UPTREND       (+₹133k 90d)
+              5m=CHOP    AND 15m=CHOP          (+₹100k 90d, CHOP-only play)
+      BUY PE: 5m=DOWNTREND AND 15m=DOWNTREND   (+₹87k  90d)
+              5m=DOWNTREND AND 15m=CHOP        (+₹92k  90d, continuation)
+              5m=CHOP    AND 15m=CHOP          (CHOP-only play)
+      Anything else → SKIP (saves -₹430k aggregate in mismatch buckets)
+
+    Disable: STRUCTURE_STRICT_ALIGN_MAIN=off (revert to old _matches_or_neutral)
+    """
+    return os.environ.get("STRUCTURE_STRICT_ALIGN_MAIN", "on").lower() == "on"
+
+
 # ── Mode-specific tuning (env-overridable) ────────────────────────────
 
 
@@ -216,6 +237,44 @@ def clear_cache() -> None:
 # ── Mode decision ─────────────────────────────────────────────────────
 
 
+def _strict_pattern_match(d_5m: str, d_15m: str, target: str) -> Optional[str]:
+    """Data-driven 5m+15m alignment rules from 90d audit (2026-06-18).
+
+    Returns the matching pattern label (e.g. 'trend_aligned',
+    'chop_only', 'downtrend_continuation') or None if no match.
+
+    Bucket P&L over 90d (from /api/admin/trade-attribution?days=90):
+      UPTREND/UPTREND   = +₹132,642  (n=34, WR 70.6%) ← BULL trend aligned
+      DOWNTREND/DOWNTREND = +₹87,030 (n=13, WR 76.9%) ← BEAR trend aligned
+      DOWNTREND/CHOP    = +₹91,843  (n=30, WR 63.3%)  ← BEAR continuation
+      CHOP/CHOP         = +₹99,546  (n=32, WR 71.9%)  ← range play, both dir
+
+    Mismatch buckets we explicitly SKIP:
+      UPTREND/CHOP      = -₹139,060 (worst single bucket)
+      UPTREND/UNKNOWN   = -₹51,587
+      UPTREND/DOWNTREND = -₹51,098
+      CHOP/UPTREND      = -₹28,087
+      CHOP/DOWNTREND    = -₹28,335
+      DOWNTREND/UPTREND = -₹28,734
+      All UNKNOWN cells = -₹100k+ aggregate
+    """
+    if target == "BULL":
+        if d_5m == "BULL" and d_15m == "BULL":
+            return "trend_aligned"
+        if d_5m == "NEUTRAL" and d_15m == "NEUTRAL":
+            return "chop_only"
+        return None
+    if target == "BEAR":
+        if d_5m == "BEAR" and d_15m == "BEAR":
+            return "trend_aligned"
+        if d_5m == "BEAR" and d_15m == "NEUTRAL":
+            return "downtrend_continuation"
+        if d_5m == "NEUTRAL" and d_15m == "NEUTRAL":
+            return "chop_only"
+        return None
+    return None
+
+
 def _decide_mode(
     proposed_dir: Optional[str],
     structures: Dict[str, Dict],
@@ -247,6 +306,40 @@ def _decide_mode(
     d_1h = _dir(structures.get("1h", {}))
     breakdown = {"5m": d_5m, "15m": d_15m, "1h": d_1h}
 
+    # ── STRICT ALIGNMENT (Task #82, 2026-06-18) ──
+    # Data-driven 5m+15m only rule. 1h is informational, not gating
+    # (90d data shows 1h adds noise — UNKNOWN/missing 1h buckets bled).
+    if strict_main_alignment_enabled():
+        pattern = _strict_pattern_match(d_5m, d_15m, proposed_dir)
+        if pattern and aligned_enabled():
+            return {
+                "mode": "aligned", "allow": True,
+                "reason": (
+                    f"STRICT {pattern}: 5m={d_5m}, 15m={d_15m} → {proposed_dir}"
+                ),
+                "tf_breakdown": breakdown,
+            }
+        # Counter-trend Mode B kept for explicit 5m+15m aligned + 1h opposite
+        short_aligned = (d_5m == proposed_dir and d_15m == proposed_dir)
+        opposite = "BEAR" if proposed_dir == "BULL" else "BULL"
+        if short_aligned and d_1h == opposite and counter_trend_enabled():
+            return {
+                "mode": "counter_trend", "allow": True,
+                "reason": (
+                    f"Counter-trend scalp — 5m+15m {proposed_dir}, 1h {opposite}"
+                ),
+                "tf_breakdown": breakdown,
+            }
+        return {
+            "mode": "skip", "allow": False,
+            "reason": (
+                f"STRICT block — 5m={d_5m}, 15m={d_15m} does not match "
+                f"{proposed_dir} pattern (90d audit: mismatch buckets bled -₹430k)"
+            ),
+            "tf_breakdown": breakdown,
+        }
+
+    # ── LEGACY permissive alignment (STRUCTURE_STRICT_ALIGN_MAIN=off) ──
     # Aligned: all 3 TFs match the proposed direction (NEUTRAL counts as match)
     def _matches_or_neutral(tf_dir, target):
         return tf_dir == target or tf_dir == "NEUTRAL"
@@ -479,6 +572,7 @@ def diagnostics() -> Dict:
         "main_enabled": main_enabled(),
         "aligned_enabled": aligned_enabled(),
         "counter_trend_enabled": counter_trend_enabled(),
+        "strict_main_alignment": strict_main_alignment_enabled(),
         "mode_a_tuning": mode_a_tuning(),
         "mode_b_tuning": mode_b_tuning(),
         "cache_entries": len(cache_info),
