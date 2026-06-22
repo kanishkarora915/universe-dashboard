@@ -88,6 +88,26 @@ def counter_trend_enabled() -> bool:
     return os.environ.get("STRUCTURE_COUNTER_TREND_ENABLED", "on").lower() == "on"
 
 
+def block_on_nodata_enabled() -> bool:
+    """When True, refuse trades during structure-cache cold-start.
+
+    BUG OBSERVED 2026-06-22:
+      Morning session 9:20-12:30 fired 24 trades with structure_5m=UNKNOWN
+      and structure_15m=UNKNOWN. Background refresh thread had not yet
+      populated the cache; fail-safe in evaluate_entry returned allow=True
+      for every entry. STRICT alignment was effectively bypassed → 3
+      WATCHER_EXIT trades cost -₹65,025.
+
+      19-Jun (only 2 trades, +₹22,636) proved strict alignment works when
+      cache is populated. Issue is purely the cold-start window.
+
+    With STRUCTURE_BLOCK_ON_NODATA=on, evaluate_entry returns allow=False
+    when no cache + no engine to refresh. Default on.
+    Disable: STRUCTURE_BLOCK_ON_NODATA=off (reverts to fail-safe allow).
+    """
+    return os.environ.get("STRUCTURE_BLOCK_ON_NODATA", "on").lower() == "on"
+
+
 def strict_main_alignment_enabled() -> bool:
     """Task #82 — HARD 5m+15m alignment for main mode.
 
@@ -439,19 +459,44 @@ def evaluate_entry(
             print(f"[STRUCTURE_GATE] cache miss refresh failed: {e}")
 
     if not cached:
-        # Fail-safe: no structure data → allow trade
+        # 2026-06-22 BUG FIX: under STRUCTURE_BLOCK_ON_NODATA=on (default),
+        # refuse to trade during cold-start window. Today's session showed
+        # 24 morning trades passed with structure=UNKNOWN because cache
+        # wasn't populated by 9:20 — 3 of them hit WATCHER_EXIT for -₹65k.
+        # Block-on-no-data treats cache-miss as "do not trade yet" not
+        # "permissive fall-through".
+        block_nodata = block_on_nodata_enabled() and mm == "live"
         result = {
-            "allow": True, "mode": "no-data", "tuning": None,
+            "allow": not block_nodata, "mode": "no-data", "tuning": None,
             "alignment": None,
-            "reason": f"no structure data for {idx} — fail-safe allow",
+            "reason": (
+                f"no structure data for {idx} — "
+                f"{'BLOCKED (cold-start)' if block_nodata else 'fail-safe allow'}"
+            ),
             "master_mode": mm,
         }
         if mm in ("shadow", "live"):
             print(
                 f"[STRUCTURE_GATE_{mm.upper()}] {source} {idx} {proposed_action} "
-                f"→ NO-DATA allow=True"
+                f"→ NO-DATA allow={result['allow']}"
             )
         return result
+
+    # Cache present but verdicts UNKNOWN → same problem, treat as no-data
+    structures_check = cached.get("structures", {}) or {}
+    v5 = (structures_check.get("5m") or {}).get("verdict", "") or "UNKNOWN"
+    v15 = (structures_check.get("15m") or {}).get("verdict", "") or "UNKNOWN"
+    if v5 == "UNKNOWN" and v15 == "UNKNOWN" and block_on_nodata_enabled() and mm == "live":
+        print(
+            f"[STRUCTURE_GATE_LIVE] {source} {idx} {proposed_action} "
+            f"→ UNKNOWN verdicts (5m+15m both UNKNOWN) — BLOCKED"
+        )
+        return {
+            "allow": False, "mode": "no-data", "tuning": None,
+            "alignment": cached.get("alignment"),
+            "reason": f"5m+15m verdicts both UNKNOWN — BLOCKED (need fresh data)",
+            "master_mode": mm,
+        }
 
     structures = cached["structures"]
     alignment = cached["alignment"]
@@ -496,13 +541,38 @@ _refresh_thread: Optional[threading.Thread] = None
 _refresh_stop_evt = threading.Event()
 
 
+def _market_session_active() -> bool:
+    """True between 9:00 and 15:30 IST (10 min before open through close).
+
+    Used to pick refresh cadence — fast 60s during session, slow 300s off-hours.
+    """
+    try:
+        import pytz as _pytz
+        from datetime import datetime as _dt
+        _ist = _pytz.timezone("Asia/Kolkata")
+        now = _dt.now(_ist)
+        if now.weekday() >= 5:
+            return False
+        minute_of_day = now.hour * 60 + now.minute
+        return 9 * 60 <= minute_of_day <= 15 * 60 + 30
+    except Exception:
+        return False
+
+
 def _refresh_loop(engine_getter):
-    """Background loop — refresh structure for tracked indices every 5 min.
+    """Background loop — refresh structure for tracked indices.
+
+    2026-06-22 FIX: refresh cadence is now market-aware.
+      - In session (9:00-15:30 IST): every 60s — keeps cache fresh enough
+        that strict alignment can fire instantly at market open.
+      - Off-session: every 300s — saves Kite quota.
+      - First iteration: immediate refresh (no initial wait).
 
     engine_getter: callable that returns the current engine (so we always
     use the live one after token refreshes / engine swaps).
     """
-    print(f"[STRUCTURE_GATE] refresh loop started (every {_REFRESH_INTERVAL_SEC}s)")
+    print(f"[STRUCTURE_GATE] refresh loop started (session-aware cadence)")
+    first_run = True
     while not _refresh_stop_evt.is_set():
         try:
             if master_mode() == "off":
@@ -510,7 +580,7 @@ def _refresh_loop(engine_getter):
                 continue
             engine = engine_getter()
             if engine is None or not getattr(engine, "running", False):
-                _refresh_stop_evt.wait(60)
+                _refresh_stop_evt.wait(30 if _market_session_active() else 60)
                 continue
             kite = getattr(engine, "kite", None)
             if kite is None:
@@ -520,16 +590,29 @@ def _refresh_loop(engine_getter):
                 except Exception:
                     kite = None
             if kite is None:
-                _refresh_stop_evt.wait(60)
+                _refresh_stop_evt.wait(30 if _market_session_active() else 60)
                 continue
             for idx in ("NIFTY", "BANKNIFTY"):
                 try:
                     update_structure(kite, idx)
+                    if first_run:
+                        cur = get_cached_structure(idx)
+                        if cur:
+                            structs = cur.get("structures", {}) or {}
+                            v5 = (structs.get("5m") or {}).get("verdict", "?")
+                            v15 = (structs.get("15m") or {}).get("verdict", "?")
+                            print(
+                                f"[STRUCTURE_GATE] cache primed {idx}: "
+                                f"5m={v5}, 15m={v15}"
+                            )
                 except Exception as e:
                     print(f"[STRUCTURE_GATE] refresh {idx} error: {e}")
+            first_run = False
         except Exception as e:
             print(f"[STRUCTURE_GATE] refresh loop error: {e}")
-        _refresh_stop_evt.wait(_REFRESH_INTERVAL_SEC)
+        # Market-aware cadence — 60s in session keeps cache hot
+        wait_sec = 60 if _market_session_active() else _REFRESH_INTERVAL_SEC
+        _refresh_stop_evt.wait(wait_sec)
     print("[STRUCTURE_GATE] refresh loop stopped")
 
 
@@ -573,6 +656,7 @@ def diagnostics() -> Dict:
         "aligned_enabled": aligned_enabled(),
         "counter_trend_enabled": counter_trend_enabled(),
         "strict_main_alignment": strict_main_alignment_enabled(),
+        "block_on_nodata": block_on_nodata_enabled(),
         "mode_a_tuning": mode_a_tuning(),
         "mode_b_tuning": mode_b_tuning(),
         "cache_entries": len(cache_info),

@@ -290,15 +290,60 @@ class TestSubFlags:
 
 
 class TestNoData:
-    def test_no_data_live_fail_safe(self, monkeypatch):
+    def test_no_data_live_blocks_by_default(self, monkeypatch):
+        """Task #86 (2026-06-22): no-data now BLOCKS by default in live mode.
+
+        Was fail-safe ALLOW which let 24 trades fire on 22-Jun with
+        UNKNOWN structure → -₹65k from 3 WATCHER_EXIT bleeders.
+        """
         monkeypatch.setenv("STRUCTURE_MODE", "live")
+        monkeypatch.delenv("STRUCTURE_BLOCK_ON_NODATA", raising=False)
         from structure_gate import evaluate_entry
         r = evaluate_entry(
             engine=None, idx="NIFTY",
             proposed_action="BUY CE", source="test",
         )
-        # No cache + no engine to refresh → must allow (fail-safe)
+        assert r["allow"] is False
+        assert r["mode"] == "no-data"
+        assert "BLOCKED" in r["reason"]
+
+    def test_no_data_live_legacy_allow(self, monkeypatch):
+        """STRUCTURE_BLOCK_ON_NODATA=off reverts to legacy fail-safe allow."""
+        monkeypatch.setenv("STRUCTURE_MODE", "live")
+        monkeypatch.setenv("STRUCTURE_BLOCK_ON_NODATA", "off")
+        from structure_gate import evaluate_entry
+        r = evaluate_entry(
+            engine=None, idx="NIFTY",
+            proposed_action="BUY CE", source="test",
+        )
         assert r["allow"] is True
+        assert r["mode"] == "no-data"
+
+    def test_no_data_shadow_always_allow(self, monkeypatch):
+        """Shadow mode never blocks even with block_on_nodata=on."""
+        monkeypatch.setenv("STRUCTURE_MODE", "shadow")
+        monkeypatch.delenv("STRUCTURE_BLOCK_ON_NODATA", raising=False)
+        from structure_gate import evaluate_entry
+        r = evaluate_entry(
+            engine=None, idx="NIFTY",
+            proposed_action="BUY CE", source="test",
+        )
+        assert r["allow"] is True
+
+    def test_unknown_verdicts_blocked(self, monkeypatch):
+        """Cache present but both 5m+15m UNKNOWN → also blocked."""
+        monkeypatch.setenv("STRUCTURE_MODE", "live")
+        monkeypatch.delenv("STRUCTURE_BLOCK_ON_NODATA", raising=False)
+        _put_cache("NIFTY",
+            {"5m": _struct("UNKNOWN"), "15m": _struct("UNKNOWN"), "1h": _struct("UPTREND")},
+            {"direction": "UNKNOWN"},
+        )
+        from structure_gate import evaluate_entry
+        r = evaluate_entry(
+            engine=None, idx="NIFTY",
+            proposed_action="BUY CE", source="test",
+        )
+        assert r["allow"] is False
         assert r["mode"] == "no-data"
 
 
