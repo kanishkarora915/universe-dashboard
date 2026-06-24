@@ -39,30 +39,53 @@ class _FakeEngine:
 
 class TestDeadMarketHalt:
     def test_dead_market_blocks(self, monkeypatch):
-        """30min range < 0.2% should block."""
-        # Force time-of-day past 10:00
+        """Both day_range<0.45% AND 30min<0.10% → block.
+
+        Truly dead market: tiny intraday range with no recent move.
+        """
         monkeypatch.setattr("day_classifier._now_ist",
-                            lambda: IST.localize(datetime(2026, 6, 23, 11, 0)))
-        # All ticks near 24000 (tiny range)
-        now = IST.localize(datetime(2026, 6, 23, 11, 0))
-        hist = [{"t": (now - timedelta(minutes=i)).isoformat(), "ltp": 24000 + (i % 3)}
+                            lambda: IST.localize(datetime(2026, 6, 24, 11, 0)))
+        now = IST.localize(datetime(2026, 6, 24, 11, 0))
+        # Tiny ticks ~24000 ±2 = ~0.008% 30min range
+        hist = [{"t": (now - timedelta(minutes=i)).isoformat(), "ltp": 24000 + (i % 2)}
                 for i in range(30, 0, -1)]
-        eng = _FakeEngine(current=24001, history=hist, day_low=23999, day_high=24003)
+        # And tiny day range too
+        eng = _FakeEngine(current=24001, history=hist, day_low=23990, day_high=24010,
+                          day_open=24000)
         from day_classifier import check_dead_market_halt
         block, reason = check_dead_market_halt(eng, "NIFTY")
         assert block is True
         assert "DEAD_MARKET_HALT" in reason
 
-    def test_normal_range_allows(self, monkeypatch):
-        """30min range >0.2% should allow."""
+    def test_quiet_30min_but_active_day_allows(self, monkeypatch):
+        """24-Jun bug: 30min quiet (0.15%) but day was 0.66% — should ALLOW.
+
+        Day-level guard prevents halting on a tradeable day's mid-session pause.
+        """
         monkeypatch.setattr("day_classifier._now_ist",
-                            lambda: IST.localize(datetime(2026, 6, 23, 11, 0)))
-        now = IST.localize(datetime(2026, 6, 23, 11, 0))
+                            lambda: IST.localize(datetime(2026, 6, 24, 11, 0)))
+        now = IST.localize(datetime(2026, 6, 24, 11, 0))
+        # Last 30min flat near 24050
+        hist = [{"t": (now - timedelta(minutes=i)).isoformat(), "ltp": 24050 + (i % 2)}
+                for i in range(30, 0, -1)]
+        # But day range is meaningful (0.66%)
+        eng = _FakeEngine(current=24050, history=hist, day_low=23930, day_high=24090,
+                          day_open=23990)
+        from day_classifier import check_dead_market_halt
+        block, _ = check_dead_market_halt(eng, "NIFTY")
+        assert block is False
+
+    def test_normal_range_allows(self, monkeypatch):
+        """30min range above threshold should allow."""
+        monkeypatch.setattr("day_classifier._now_ist",
+                            lambda: IST.localize(datetime(2026, 6, 24, 11, 0)))
+        now = IST.localize(datetime(2026, 6, 24, 11, 0))
         hist = []
         for i in range(30, 0, -1):
             ltp = 24000 + i * 5  # 150-point range
             hist.append({"t": (now - timedelta(minutes=i)).isoformat(), "ltp": ltp})
-        eng = _FakeEngine(current=24050, history=hist, day_low=23950, day_high=24150)
+        eng = _FakeEngine(current=24050, history=hist, day_low=23950, day_high=24150,
+                          day_open=24000)
         from day_classifier import check_dead_market_halt
         block, _ = check_dead_market_halt(eng, "NIFTY")
         assert block is False
@@ -166,7 +189,8 @@ class TestDiagnostics:
         assert "strong_trend_fade" in d
         assert "down_day_ce_penalty" in d
         assert "thresholds" in d
-        assert d["thresholds"]["dead_market_range_pct"] == 0.20
+        assert d["thresholds"]["dead_market_range_pct"] == 0.10  # tightened 2026-06-24
+        assert d["thresholds"]["dead_market_day_range_pct"] == 0.45
         assert d["thresholds"]["down_day_threshold_bump"] == 10
 
     def test_diagnostics_with_engine(self):

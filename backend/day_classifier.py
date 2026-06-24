@@ -146,13 +146,19 @@ def get_day_stats(engine, idx: str) -> Dict:
 
 
 def check_dead_market_halt(engine, idx: str) -> Tuple[bool, str]:
-    """Block entries when 30-min spot range is sub-threshold.
+    """Block entries when BOTH the day and last 30min are very quiet.
 
-    Active after 10:00 IST (opening volatility is real). DEAD days had
-    91 trades / -₹89k aggregate; per-trade avg -₹982 means brokerage
-    routinely exceeded gross profit. Skip these entries entirely.
+    2026-06-24 BUG FIX: previous version checked ONLY 30-min range,
+    using a 0.20% threshold. Real-world observation: NIFTY range_30min
+    can dip to 0.15% during normal mid-session pauses on a day whose
+    overall range is 0.6-1%+. Single-window check halted BOTH indices
+    on 24-Jun, a tradeable day. 0 trades, both tabs.
 
-    Default threshold: 0.20% (override DEAD_MARKET_RANGE_PCT).
+    Now requires BOTH:
+      - day_range_pct < DEAD_MARKET_DAY_RANGE_PCT (default 0.45%)
+      - range_30min < DEAD_MARKET_RANGE_PCT (default 0.10%)
+
+    Active after 10:00 IST (opening volatility is real).
     Disable: DEAD_MARKET_HALT_DISABLED=on
     """
     if not _enabled("DEAD_MARKET_HALT_ENABLED", default=True):
@@ -169,11 +175,19 @@ def check_dead_market_halt(engine, idx: str) -> Tuple[bool, str]:
     if range_pct is None:
         return False, ""
 
-    threshold = _f("DEAD_MARKET_RANGE_PCT", 0.20)
+    # Day-level guard — only halt if the WHOLE day is dead, not just
+    # a quiet 30-min window during a normal/trending day.
+    day_range = get_day_stats(engine, idx).get("day_range_pct", 0)
+    day_thresh = _f("DEAD_MARKET_DAY_RANGE_PCT", 0.45)
+    if day_range >= day_thresh:
+        return False, ""
+
+    threshold = _f("DEAD_MARKET_RANGE_PCT", 0.10)
     if range_pct < threshold:
         return True, (
-            f"DEAD_MARKET_HALT: 30min range {range_pct:.2f}% < {threshold}% "
-            f"(60d data: 91 trades in DEAD days lost -₹89k)"
+            f"DEAD_MARKET_HALT: day_range {day_range:.2f}% AND 30min {range_pct:.2f}% "
+            f"both below thresholds ({day_thresh}% / {threshold}%) — "
+            f"60d data: 91 truly-dead-day trades lost -₹89k"
         )
     return False, ""
 
@@ -302,7 +316,8 @@ def diagnostics(engine=None) -> Dict:
         "down_day_ce_penalty": _enabled("DOWN_DAY_CE_PENALTY_ENABLED", True)
             and not os.environ.get("DOWN_DAY_CE_PENALTY_DISABLED", "").lower() in ("on","1","true"),
         "thresholds": {
-            "dead_market_range_pct": _f("DEAD_MARKET_RANGE_PCT", 0.20),
+            "dead_market_range_pct": _f("DEAD_MARKET_RANGE_PCT", 0.10),
+            "dead_market_day_range_pct": _f("DEAD_MARKET_DAY_RANGE_PCT", 0.45),
             "strong_trend_body_pct": _f("STRONG_TREND_BODY_PCT", 60.0),
             "strong_trend_range_pct": _f("STRONG_TREND_RANGE_PCT", 0.80),
             "down_day_trigger_pct": _f("DOWN_DAY_TRIGGER_PCT", -0.20),
@@ -315,11 +330,16 @@ def diagnostics(engine=None) -> Dict:
             stats = get_day_stats(engine, idx)
             r30 = get_recent_range_pct(engine, idx, minutes=30)
             trend = detect_strong_trend(engine, idx)
+            day_range = stats.get("day_range_pct", 0)
+            r30_thresh = _f("DEAD_MARKET_RANGE_PCT", 0.10)
+            day_thresh = _f("DEAD_MARKET_DAY_RANGE_PCT", 0.45)
+            is_dead = (r30 is not None and r30 < r30_thresh
+                       and day_range < day_thresh)
             out["indices"][idx] = {
                 "day_stats": {k: round(v, 3) if isinstance(v, float) else v
                               for k, v in stats.items()},
                 "range_30min_pct": round(r30, 3) if r30 is not None else None,
                 "strong_trend_dir": trend,
-                "is_dead_now": r30 is not None and r30 < _f("DEAD_MARKET_RANGE_PCT", 0.20),
+                "is_dead_now": is_dead,
             }
     return out
