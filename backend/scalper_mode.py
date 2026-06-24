@@ -1660,8 +1660,10 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
     _level_zone = ""
     try:
         from levels_context import get_levels_context as _glc
-        from main import session as _msess
-        _eng_lc = (_msess or {}).get("engine") if _msess else None
+        # 2026-06-23 wiring fix: was reading session.get("engine") which
+        # is always None — engine is a module-level global in main.py.
+        import main as _m_lc
+        _eng_lc = getattr(_m_lc, "engine", None)
         _spot_lc = entry_spot if (entry_spot and entry_spot > 0) else None
         if _eng_lc is None:
             _eng_lc = type('E', (), {'spot_tokens': {}, 'prices': {}, '_spot_history': {}})()
@@ -1672,9 +1674,9 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
     except Exception as _lc_e:
         print(f"[SCALPER] level_context capture failed: {_lc_e}")
     try:
-        # engine accessed via main.session (set by app at startup)
-        from main import session as _msession
-        _eng = (_msession or {}).get("engine")
+        # 2026-06-23 wiring fix: engine is main.engine global, not in session dict.
+        import main as _m_eng
+        _eng = getattr(_m_eng, "engine", None)
         if _eng is not None:
             try:
                 from entry_filters import detect_market_regime as _dmr

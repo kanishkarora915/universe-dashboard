@@ -4191,11 +4191,15 @@ async def admin_day_classifier():
     Per-index it shows day OHLC stats, 30-min range, strong-trend direction,
     and whether each gate is currently blocking. Used to verify Task #88
     gates fire correctly against live data.
+
+    2026-06-23: previously read engine from session dict which has no
+    `engine` key — was returning empty indices forever. Read the
+    module-level global engine variable instead, matching scalper_health.
     """
     try:
         from day_classifier import diagnostics as _dcd
-        eng = session.get("engine") if session else None
-        return _dcd(engine=eng)
+        global engine
+        return _dcd(engine=engine)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 

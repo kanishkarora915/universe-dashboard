@@ -2167,12 +2167,15 @@ class TradeManager:
         # Raise threshold +10pts for CE on days where spot is ≥0.2% below open.
         # Filters marginal 50-55% signals where direction confluence is weak.
         # Env: DOWN_DAY_CE_PENALTY_DISABLED=on / DOWN_DAY_THRESHOLD_BUMP=N
+        # 2026-06-23 wiring fix: `session` dict only holds api_key/kite —
+        # the engine is a SEPARATE module-level global in main.py. Earlier
+        # session.get("engine") returned None silently, bypassing the gate.
         try:
             from day_classifier import down_day_ce_threshold_bump as _dd_bump
             _engine_dc = None
             try:
-                from main import session as _msess_dc
-                _engine_dc = (_msess_dc or {}).get("engine")
+                import main as _m_dc
+                _engine_dc = getattr(_m_dc, "engine", None)
             except Exception:
                 pass
             bump = _dd_bump(_engine_dc, idx, action)
@@ -2211,8 +2214,8 @@ class TradeManager:
             from day_classifier import check_day_gates as _dgates
             _engine_dg = None
             try:
-                from main import session as _msess_dg
-                _engine_dg = (_msess_dg or {}).get("engine")
+                import main as _m_dg
+                _engine_dg = getattr(_m_dg, "engine", None)
             except Exception:
                 pass
             blocked, reason = _dgates(_engine_dg, idx, action)
@@ -2225,14 +2228,17 @@ class TradeManager:
         # ── PDC ZONE BLOCK (2026-06-17 — mirror scalper) ──
         # Main mode at_PDC bucket -₹2,812/trade. PDC = magnet zone.
         # Env: MAIN_PDC_BLOCK_DISABLED=1 to revert.
+        # 2026-06-23 wiring fix: was reading session.get("engine") which
+        # returns None (session only holds Kite credentials, not engine).
+        # Read the module-level global engine instead.
         try:
             import os as _os_pdc_m
             if _os_pdc_m.environ.get("MAIN_PDC_BLOCK_DISABLED", "").strip() not in ("1","true","on"):
                 from levels_context import get_levels_context as _glc_m
                 _engine_m = None
                 try:
-                    from main import session as _msess_m
-                    _engine_m = (_msess_m or {}).get("engine")
+                    import main as _m_pdc
+                    _engine_m = getattr(_m_pdc, "engine", None)
                 except Exception:
                     pass
                 _spot_m = 0
