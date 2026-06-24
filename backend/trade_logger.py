@@ -2162,6 +2162,28 @@ class TradeManager:
                 min_prob = 45
         except Exception:
             pass
+        # ── DOWN_DAY CE THRESHOLD BUMP (Task #88, 2026-06-23) ──
+        # 60d data: DOWN day + CE = 72 trades, 51% WR, -₹147,389.
+        # Raise threshold +10pts for CE on days where spot is ≥0.2% below open.
+        # Filters marginal 50-55% signals where direction confluence is weak.
+        # Env: DOWN_DAY_CE_PENALTY_DISABLED=on / DOWN_DAY_THRESHOLD_BUMP=N
+        try:
+            from day_classifier import down_day_ce_threshold_bump as _dd_bump
+            _engine_dc = None
+            try:
+                from main import session as _msess_dc
+                _engine_dc = (_msess_dc or {}).get("engine")
+            except Exception:
+                pass
+            bump = _dd_bump(_engine_dc, idx, action)
+            if bump > 0:
+                old_min = min_prob
+                min_prob = min(95, min_prob + bump)
+                print(f"[TRADE] DOWN_DAY CE penalty: threshold {old_min}% → {min_prob}% "
+                      f"(60d data: DOWN+CE bucket -₹147k)")
+        except Exception as _dc_e:
+            print(f"[TRADE] day_classifier bump error (no bump): {_dc_e}")
+
         if win_pct < min_prob:
             return False
 
@@ -2179,6 +2201,26 @@ class TradeManager:
                 return False
         except Exception as _dd_e:
             print(f"[TRADE] drawdown_guard error (allow): {_dd_e}")
+
+        # ── DAY GATES (Task #88, 2026-06-23 — CSV-driven) ──
+        # DEAD_MARKET_HALT — 30min range < 0.2% = theta vampire territory.
+        #   60d data: 91 trades / -₹89k aggregate.
+        # STRONG_TREND_FADE — block counter-trend on big move days.
+        #   60d data: 10 trades / 10% WR / -₹48k bucket.
+        try:
+            from day_classifier import check_day_gates as _dgates
+            _engine_dg = None
+            try:
+                from main import session as _msess_dg
+                _engine_dg = (_msess_dg or {}).get("engine")
+            except Exception:
+                pass
+            blocked, reason = _dgates(_engine_dg, idx, action)
+            if blocked:
+                print(f"[TRADE] REJECT entry: {reason}")
+                return False
+        except Exception as _dg_e:
+            print(f"[TRADE] day_classifier gates error (allow): {_dg_e}")
 
         # ── PDC ZONE BLOCK (2026-06-17 — mirror scalper) ──
         # Main mode at_PDC bucket -₹2,812/trade. PDC = magnet zone.

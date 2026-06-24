@@ -5309,6 +5309,34 @@ class MarketEngine:
                             _instant_new = int(os.environ.get("INSTANT_NEW_TRADE_PROB", "65"))
                         except (TypeError, ValueError):
                             _instant_new = 65
+
+                        # ── FAST REACTIVE ENTRY (Task #88, 2026-06-23) ──
+                        # When structure_gate says ALIGNED + day_classifier all
+                        # gates pass, lower instant-fire threshold by 7pts.
+                        # Rationale: strict alignment already filters quality
+                        # (Task #82), day gates filter bad days (Task #88) —
+                        # the trade pre-qualifies as high-confidence. React
+                        # faster to those without the marginal-prob risk.
+                        # Env: INSTANT_FIRE_ALIGNED_PROB (default 58)
+                        try:
+                            import structure_gate as _sg_fast
+                            import day_classifier as _dc_fast
+                            sg_fast = _sg_fast.evaluate_entry(
+                                engine=self, idx=idx,
+                                proposed_action=action,
+                                source="engine.fast_react",
+                            )
+                            day_blocked, _ = _dc_fast.check_day_gates(self, idx, action)
+                            if (sg_fast.get("mode") == "aligned"
+                                    and not day_blocked
+                                    and sg_fast.get("allow", False)):
+                                _aligned_thr = int(os.environ.get(
+                                    "INSTANT_FIRE_ALIGNED_PROB", "58"))
+                                if _aligned_thr < _instant_new:
+                                    _instant_new = _aligned_thr
+                        except Exception:
+                            pass
+
                         if prob_now >= _instant_new:
                             self.trade_manager._pending_entry[idx] = {
                                 "idx": idx, "action": action, "strike": int(atm),

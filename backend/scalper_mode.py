@@ -543,6 +543,18 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
     except Exception:
         pass
 
+    # ── DOWN_DAY CE PENALTY (Task #88, 2026-06-23 — CSV-driven) ──
+    # 60d: DOWN day + CE = 72 trades, 51% WR, -₹147k bucket. Bump CE threshold.
+    try:
+        from day_classifier import down_day_ce_threshold_bump as _dd_bump
+        _bump = _dd_bump(engine, idx, action_str)
+        if _bump > 0:
+            old_t = effective_threshold
+            effective_threshold = min(95, effective_threshold + _bump)
+            print(f"[SCALPER] DOWN_DAY CE penalty: threshold {old_t}% → {effective_threshold}%")
+    except Exception:
+        pass
+
     # ── STEP 2 SURGICAL FIXES (2026-06-03 — 445-trade audit) ──
     # Data-driven threshold tuning per context. All env-overridable.
     # No new module — just bias the existing effective_threshold.
@@ -838,6 +850,20 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
             return False
     except Exception as _dd_e:
         print(f"[SCALPER] drawdown_guard error (allow): {_dd_e}")
+
+    # ── DAY GATES (Task #88, 2026-06-23 — CSV-driven) ──
+    # Same gates as main mode:
+    #   DEAD_MARKET_HALT  — 30min range <0.2% (91 trades -₹89k)
+    #   STRONG_TREND_FADE — block counter-trend on big move days (-₹48k)
+    # Disable: DEAD_MARKET_HALT_DISABLED / STRONG_TREND_FADE_DISABLED
+    try:
+        from day_classifier import check_day_gates as _dgates
+        blocked, reason = _dgates(engine, idx, action_str)
+        if blocked:
+            print(f"[SCALPER] REJECT entry: {reason}")
+            return False
+    except Exception as _dg_e:
+        print(f"[SCALPER] day_classifier gates error (allow): {_dg_e}")
 
     # ── PDC ZONE BLOCK (2026-06-17 — 90d audit) ──
     # at_PDC + NEAR_PDC entries lose -₹91k/90d combined (Scalper).

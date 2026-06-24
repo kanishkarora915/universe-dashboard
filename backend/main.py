@@ -4184,6 +4184,22 @@ async def admin_drawdown_status():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/admin/day-classifier")
+async def admin_day_classifier():
+    """Day-level gate state — DEAD/STRONG_TREND/DOWN_DAY classification.
+
+    Per-index it shows day OHLC stats, 30-min range, strong-trend direction,
+    and whether each gate is currently blocking. Used to verify Task #88
+    gates fire correctly against live data.
+    """
+    try:
+        from day_classifier import diagnostics as _dcd
+        eng = session.get("engine") if session else None
+        return _dcd(engine=eng)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/admin/level-attribution")
 async def admin_level_attribution(days: int = 60, brokerage_per_trade: int = 1500):
     """Per-trade attribution grouped by LEVEL CONTEXT at entry.
