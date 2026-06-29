@@ -445,6 +445,28 @@ def _evaluate_triggers(trade: Dict, health: Dict, action: str,
         if peak >= peak_threshold and profit_pct <= peak_floor:
             return "PEAK_FLOOR_HIT"
 
+    # ──── WATCHER OPENING LOCKOUT (Task #89, 2026-06-25) ────
+    # Skip SOFT triggers (OI_REVERSAL, REVERSAL_PATTERN, THETA_WINS, etc)
+    # for the first N minutes of a trade. HARD safety triggers
+    # (HARD_LOSS_CAP, FAST_LOSS_CAP, PEAK_FLOOR_HIT) already evaluated
+    # ABOVE this point — they stay active.
+    #
+    # Forensic agent finding (14d):
+    #   WATCHER_EXIT  7 trades  avg -₹13,709
+    #   Multiple kills in 1-2 minute holds (e.g. today 11:56-11:56 -₹429)
+    #   System panics on opening-noise OI flicker / candle wick patterns
+    #   that would have settled if given air.
+    #
+    # Default: skip soft triggers for first 5 min.
+    # Env: WATCHER_OPENING_LOCKOUT_MIN (default 5; set 0 to disable).
+    import os as _os_ol
+    try:
+        _open_lockout_min = float(_os_ol.environ.get("WATCHER_OPENING_LOCKOUT_MIN", "5"))
+    except Exception:
+        _open_lockout_min = 5.0
+    if hold_min < _open_lockout_min:
+        return None  # in lockout — hard caps already passed, soft signals suppressed
+
     # ──── PRIORITY 1: OI REVERSAL (per-strike writer/buyer activity) ────
     # 2026-06-17 BUG FIX (user feedback "reversal exit + watcher exit bugs"):
     # Previously fired when profit_pct < 5 → killed trades at +3-4% real

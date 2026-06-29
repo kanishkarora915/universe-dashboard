@@ -1537,35 +1537,39 @@ class TradeManager:
                 # already locked SL above entry, so worst case = small profit.
                 # User feedback: "system catches move but exits small, want big wins"
                 elif hold_sec >= rev_min_hold and profit_pct <= early_neg_pct and profit_pct > rev_pct:
-                    # NEW: skip early-neg if trade had decent peak (runner protection)
+                    # 2026-06-25 (forensic agent finding): tier-(a) early-neg
+                    # exit was the loudest REVERSAL_EXIT bleeder.
+                    #   REVERSAL_EXIT  13 trades  avg -₹13,892
+                    #   SL_HIT          1 trade   avg -₹3,412
+                    # System cuts at -3% before the -5% HARD CAP gives the
+                    # trade space to mean-revert. Avg early-neg loss was 4x
+                    # the hard SL.
+                    # Default DISABLED — let HARD_LOSS_CAP at -5% (BIG_PROFITS:
+                    # -6%) handle the floor. Re-enable: MAIN_EARLY_NEG_EXIT_ENABLED=1
                     try:
                         import os as _os_lr
-                        runner_peak_thresh = float(_os_lr.environ.get("MAIN_RUNNER_PEAK_PCT", "3.0"))
-                        if peak_pct >= runner_peak_thresh and _os_lr.environ.get("MAIN_LET_RUNNERS_DISABLED", "").strip() not in ("1","true","on"):
-                            print(f"[TRADE] EARLY-NEG SUPPRESSED [{_bm['mode']}]: {action} {idx} {strike}: "
-                                  f"peak +{peak_pct:.1f}% ≥ {runner_peak_thresh}% — let profit_floor handle")
-                            # Skip — fall through, no exit
+                        if _os_lr.environ.get("MAIN_EARLY_NEG_EXIT_ENABLED", "").strip() not in ("1","true","on"):
+                            # Disabled — skip the whole early-neg path
+                            pass
                         else:
-                            trend = self._get_strike_30min_trend(idx, strike, opt, current_ltp)
-                            if trend in ("DOWN", "DOWN_HARD"):
-                                new_status = "REVERSAL_EXIT"
-                                exit_price = current_ltp
-                                exit_reason = (
-                                    f"Early neg exit [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — "
-                                    f"30-min trend {trend}, no recovery likely. Held {int(hold_sec/60)}min."
-                                )
-                                print(f"[TRADE] EARLY-NEG EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}%, trend={trend})")
+                            # Legacy behaviour — runner-aware early-neg exit
+                            runner_peak_thresh = float(_os_lr.environ.get("MAIN_RUNNER_PEAK_PCT", "3.0"))
+                            if peak_pct >= runner_peak_thresh and _os_lr.environ.get("MAIN_LET_RUNNERS_DISABLED", "").strip() not in ("1","true","on"):
+                                print(f"[TRADE] EARLY-NEG SUPPRESSED [{_bm['mode']}]: {action} {idx} {strike}: "
+                                      f"peak +{peak_pct:.1f}% ≥ {runner_peak_thresh}% — let profit_floor handle")
+                            else:
+                                trend = self._get_strike_30min_trend(idx, strike, opt, current_ltp)
+                                if trend in ("DOWN", "DOWN_HARD"):
+                                    new_status = "REVERSAL_EXIT"
+                                    exit_price = current_ltp
+                                    exit_reason = (
+                                        f"Early neg exit [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — "
+                                        f"30-min trend {trend}, no recovery likely. Held {int(hold_sec/60)}min."
+                                    )
+                                    print(f"[TRADE] EARLY-NEG EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}%, trend={trend})")
                     except Exception:
-                        # Fallback to legacy behavior
-                        trend = self._get_strike_30min_trend(idx, strike, opt, current_ltp)
-                        if trend in ("DOWN", "DOWN_HARD"):
-                            new_status = "REVERSAL_EXIT"
-                            exit_price = current_ltp
-                            exit_reason = (
-                                f"Early neg exit [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — "
-                                f"30-min trend {trend}, no recovery likely. Held {int(hold_sec/60)}min."
-                            )
-                            print(f"[TRADE] EARLY-NEG EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}%, trend={trend})")
+                        # On unexpected failure, do nothing (don't fire exit)
+                        pass
 
             # STAGE 2: TRAILING SL — HEDGER: 50%/25% give-back / BUYER: 25%/15% give-back
             if breakeven_active and new_status == "OPEN":
