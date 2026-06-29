@@ -974,13 +974,34 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
                             (is_ce and cap_bull >= 4) or
                             (not is_ce and cap_bear >= 4)
                         )
+                        # 2026-06-25: also bypass G11 CHOP when structure_gate
+                        # strict-alignment has the CHOP/CHOP pattern. Main mode
+                        # made +₹15,780 on 6 CE trades today using exactly this
+                        # CHOP/CHOP setup — scalper was being blocked from the
+                        # same proven-profitable structure.
+                        sg_chop_chop = False
+                        try:
+                            import structure_gate as _sg_chk
+                            _cached_chk = _sg_chk.get_cached_structure(idx)
+                            if _cached_chk:
+                                _s = _cached_chk.get("structures", {})
+                                _v5 = (_s.get("5m") or {}).get("verdict", "")
+                                _v15 = (_s.get("15m") or {}).get("verdict", "")
+                                sg_chop_chop = (_v5 == "CHOP" and _v15 == "CHOP")
+                        except Exception:
+                            pass
+
                         # 2026-06-17: require BOTH capit AND health,
                         # not EITHER. Previous OR was too lenient.
-                        if not (capit_confirms_direction and _allow_chop_health):
+                        # 2026-06-25: OR with sg_chop_chop — proven main-mode pattern.
+                        if not ((capit_confirms_direction and _allow_chop_health)
+                                or sg_chop_chop):
                             print(f"[SCALPER] REJECT entry (G11 strict CHOP): {filter_reason}")
                             return False
                         else:
-                            print(f"[SCALPER] CHOP override (capit AND health AGG): {filter_reason}")
+                            why = ("sg CHOP/CHOP aligned" if sg_chop_chop
+                                   else "capit AND health AGG")
+                            print(f"[SCALPER] CHOP override ({why}): {filter_reason}")
                     else:
                         print(f"[SCALPER] REJECT entry (G11 strict): {filter_reason}")
                         return False

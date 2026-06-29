@@ -205,6 +205,14 @@ def update_structure(kite, idx: str) -> Optional[Dict]:
     """Refresh structure for `idx` — fetch candles + detect + cache.
 
     Returns the new cache entry, or None on failure.
+
+    2026-06-25 fallback: if ALL three timeframes come back UNKNOWN
+    (most commonly when Kite REST historical_data rate-limits and
+    historical_loader returns empty for every call), preserve the
+    previously cached values instead of overwriting them with UNKNOWN.
+    The cache entry is marked stale=True so callers know it's last
+    known good. Without this, mid-day API blips silently lock out
+    every entry via block_on_nodata + UNKNOWN-verdict guards.
     """
     try:
         import price_structure as ps
@@ -223,11 +231,39 @@ def update_structure(kite, idx: str) -> Optional[Dict]:
         }
         alignment = ps.align_timeframes(structures)
 
+        # ── Stale-cache fallback: detect "all UNKNOWN" fetch failure ──
+        v5 = (structures.get("5m") or {}).get("verdict", "UNKNOWN")
+        v15 = (structures.get("15m") or {}).get("verdict", "UNKNOWN")
+        v1h = (structures.get("1h") or {}).get("verdict", "UNKNOWN")
+        all_unknown = (v5 == "UNKNOWN" and v15 == "UNKNOWN" and v1h == "UNKNOWN")
+
+        if all_unknown:
+            with _cache_lock:
+                prev = _structure_cache.get(idx)
+            prev_v5 = ((prev or {}).get("structures", {}).get("5m") or {}).get("verdict",
+                                                                              "UNKNOWN") if prev else "UNKNOWN"
+            if prev and prev_v5 != "UNKNOWN":
+                entry = {
+                    "ts": time.time(),
+                    "idx": idx,
+                    "structures": prev["structures"],
+                    "alignment": prev["alignment"],
+                    "stale": True,
+                    "stale_reason": "refresh returned all UNKNOWN — preserved last good",
+                }
+                with _cache_lock:
+                    _structure_cache[idx] = entry
+                print(f"[STRUCTURE_GATE] {idx} refresh ALL UNKNOWN — "
+                      f"preserving last good (5m={prev_v5}, "
+                      f"prev_age={time.time()-prev['ts']:.0f}s)")
+                return entry
+
         entry = {
             "ts": time.time(),
             "idx": idx,
             "structures": structures,
             "alignment": alignment,
+            "stale": False,
         }
         with _cache_lock:
             _structure_cache[idx] = entry
