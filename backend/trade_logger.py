@@ -1537,38 +1537,112 @@ class TradeManager:
                 # already locked SL above entry, so worst case = small profit.
                 # User feedback: "system catches move but exits small, want big wins"
                 elif hold_sec >= rev_min_hold and profit_pct <= early_neg_pct and profit_pct > rev_pct:
-                    # 2026-06-25 (forensic agent finding): tier-(a) early-neg
-                    # exit was the loudest REVERSAL_EXIT bleeder.
-                    #   REVERSAL_EXIT  13 trades  avg -₹13,892
-                    #   SL_HIT          1 trade   avg -₹3,412
-                    # System cuts at -3% before the -5% HARD CAP gives the
-                    # trade space to mean-revert. Avg early-neg loss was 4x
-                    # the hard SL.
-                    # Default DISABLED — let HARD_LOSS_CAP at -5% (BIG_PROFITS:
-                    # -6%) handle the floor. Re-enable: MAIN_EARLY_NEG_EXIT_ENABLED=1
+                    # ── SMART EARLY_NEG (Task #90, 2026-06-25) ──────────────
+                    # Distinguishes PULLBACK from REVERSAL using structure_15m.
+                    #
+                    # The old EARLY_NEG used a 30-min STRIKE PREMIUM trend
+                    # which conflates spot move + theta + bid/ask — noisy +
+                    # lagging. It cut pullbacks that would have recovered.
+                    #
+                    # New rule at -3% drawdown:
+                    #   Read live structure_15m for this index.
+                    #   - structure_15m STILL aligned with trade direction
+                    #     (CE held + UPTREND, PE held + DOWNTREND)
+                    #       → PULLBACK. HOLD. Let HARD_LOSS_CAP handle if
+                    #         it truly fails.
+                    #   - structure_15m FLIPPED against trade
+                    #     (CE held + DOWNTREND, PE held + UPTREND)
+                    #       → REAL REVERSAL. CUT now at -3% (save 2% before
+                    #         HARD_LOSS_CAP at -5%).
+                    #   - structure_15m CHOP / UNKNOWN
+                    #       → UNCERTAIN. Don't preemptively cut. Let
+                    #         HARD_LOSS_CAP handle.
+                    #
+                    # Disable: MAIN_SMART_EARLY_NEG_DISABLED=1
+                    # Revert to legacy 30-min check: MAIN_EARLY_NEG_LEGACY=1
                     try:
                         import os as _os_lr
-                        if _os_lr.environ.get("MAIN_EARLY_NEG_EXIT_ENABLED", "").strip() not in ("1","true","on"):
-                            # Disabled — skip the whole early-neg path
+                        _smart_off = _os_lr.environ.get(
+                            "MAIN_SMART_EARLY_NEG_DISABLED", "").strip() in ("1","true","on")
+                        _legacy = _os_lr.environ.get(
+                            "MAIN_EARLY_NEG_LEGACY", "").strip() in ("1","true","on")
+
+                        if _smart_off:
+                            # Skip entirely — same as pre-#90 disabled state
                             pass
-                        else:
-                            # Legacy behaviour — runner-aware early-neg exit
-                            runner_peak_thresh = float(_os_lr.environ.get("MAIN_RUNNER_PEAK_PCT", "3.0"))
-                            if peak_pct >= runner_peak_thresh and _os_lr.environ.get("MAIN_LET_RUNNERS_DISABLED", "").strip() not in ("1","true","on"):
-                                print(f"[TRADE] EARLY-NEG SUPPRESSED [{_bm['mode']}]: {action} {idx} {strike}: "
-                                      f"peak +{peak_pct:.1f}% ≥ {runner_peak_thresh}% — let profit_floor handle")
+                        elif _legacy:
+                            # Pre-#90 behaviour for emergency rollback
+                            runner_peak_thresh = float(_os_lr.environ.get(
+                                "MAIN_RUNNER_PEAK_PCT", "3.0"))
+                            if (peak_pct >= runner_peak_thresh
+                                    and _os_lr.environ.get(
+                                        "MAIN_LET_RUNNERS_DISABLED", "").strip()
+                                    not in ("1","true","on")):
+                                print(f"[TRADE] EARLY-NEG SUPPRESSED [{_bm['mode']}] "
+                                      f"(legacy mode, runner): peak +{peak_pct:.1f}%")
                             else:
-                                trend = self._get_strike_30min_trend(idx, strike, opt, current_ltp)
-                                if trend in ("DOWN", "DOWN_HARD"):
+                                _t = self._get_strike_30min_trend(idx, strike, opt, current_ltp)
+                                if _t in ("DOWN", "DOWN_HARD"):
                                     new_status = "REVERSAL_EXIT"
                                     exit_price = current_ltp
                                     exit_reason = (
-                                        f"Early neg exit [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — "
-                                        f"30-min trend {trend}, no recovery likely. Held {int(hold_sec/60)}min."
-                                    )
-                                    print(f"[TRADE] EARLY-NEG EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}%, trend={trend})")
+                                        f"Early neg LEGACY at ₹{current_ltp:.1f} "
+                                        f"({profit_pct:.1f}%) — 30-min trend {_t}")
+                        else:
+                            # ── SMART path: structure_15m gate ──
+                            sg_v5 = ""
+                            sg_v15 = ""
+                            try:
+                                from structure_gate import get_cached_structure as _gcs_sn
+                                _cached = _gcs_sn(idx)
+                                if _cached:
+                                    _structs = _cached.get("structures", {}) or {}
+                                    sg_v5 = (_structs.get("5m") or {}).get("verdict", "") or ""
+                                    sg_v15 = (_structs.get("15m") or {}).get("verdict", "") or ""
+                            except Exception as _sn_e:
+                                print(f"[TRADE] smart-early-neg structure read failed: {_sn_e}")
+
+                            is_ce = "CE" in (action or "").upper()
+                            structure_against = (
+                                (is_ce and sg_v15 == "DOWNTREND")
+                                or ((not is_ce) and sg_v15 == "UPTREND")
+                            )
+
+                            # Runner protection still applies — peak ≥+3% means
+                            # profit_floor has already locked SL above entry.
+                            runner_peak_thresh = float(_os_lr.environ.get(
+                                "MAIN_RUNNER_PEAK_PCT", "3.0"))
+                            is_runner = (
+                                peak_pct >= runner_peak_thresh
+                                and _os_lr.environ.get(
+                                    "MAIN_LET_RUNNERS_DISABLED", "").strip()
+                                not in ("1","true","on")
+                            )
+
+                            if is_runner:
+                                # Runners stay — profit_floor handles them.
+                                print(f"[TRADE] SMART-EARLY-NEG SUPPRESS (runner): "
+                                      f"{action} {idx} {strike} peak +{peak_pct:.1f}%")
+                            elif structure_against:
+                                # Real reversal — cut now (save 2% before HARD CAP).
+                                new_status = "REVERSAL_EXIT"
+                                exit_price = current_ltp
+                                exit_reason = (
+                                    f"SMART_REVERSAL_CUT [{_bm['mode']}] at ₹{current_ltp:.1f} "
+                                    f"({profit_pct:.1f}%) — structure_15m={sg_v15} "
+                                    f"FLIPPED against {action}. Held {int(hold_sec/60)}min."
+                                )
+                                print(f"[TRADE] SMART_REVERSAL_CUT [{_bm['mode']}]: "
+                                      f"{action} {idx} {strike} @ ₹{current_ltp} "
+                                      f"({profit_pct:.1f}%, s15={sg_v15}, s5={sg_v5})")
+                            else:
+                                # Aligned OR chop/unknown → treat as pullback.
+                                # Let HARD_LOSS_CAP handle if truly failing.
+                                print(f"[TRADE] SMART-EARLY-NEG HOLD (pullback "
+                                      f"likely): {action} {idx} {strike} "
+                                      f"@ {profit_pct:.1f}%, s15={sg_v15 or 'UNK'}")
                     except Exception:
-                        # On unexpected failure, do nothing (don't fire exit)
+                        # On any failure, do nothing (don't preemptively cut)
                         pass
 
             # STAGE 2: TRAILING SL — HEDGER: 50%/25% give-back / BUYER: 25%/15% give-back
