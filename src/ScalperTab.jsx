@@ -18,7 +18,6 @@ import { createChart, LineSeries } from "lightweight-charts";
 import SmartSLLadder from "./components/SmartSLLadder";
 import CapitalTracker from "./components/CapitalTracker";
 import PositionHealthCard from "./components/PositionHealthCard";
-import StructureBadge from "./StructureBadge";
 import ProfitTrailBadge from "./components/ProfitTrailBadge";
 import WatcherControls from "./components/WatcherControls";
 import WatcherStatusBadge from "./components/WatcherStatusBadge";
@@ -26,7 +25,6 @@ import LivePositionChart from "./components/LivePositionChart";
 import ReversalCockpit from "./components/ReversalCockpit";
 import SmartBiasIndicator from "./components/SmartBiasIndicator";
 import ForecastCard from "./components/ForecastCard";
-import EngineStatusBadge from "./EngineStatusBadge";
 
 const ACCENT = "#0A84FF";
 const GREEN = "#30D158";
@@ -426,7 +424,7 @@ export default function ScalperTab() {
     // Pause polling when tab not visible (huge CPU saving)
     const visGuard = (fn) => () => { if (document.visibilityState === "visible") fn(); };
     const ivFull = setInterval(visGuard(fullLoad), 15000);  // was 5s — too aggressive
-    const ivTick = setInterval(visGuard(livePoll), 2000);   // 2s — endpoint is in-memory cheap, 1s caused load spikes (2026-05-25)
+    const ivTick = setInterval(visGuard(livePoll), 1000);   // 1s — true live LTP (endpoint is in-memory, cheap)
     return () => { clearInterval(ivFull); clearInterval(ivTick); };
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -533,17 +531,11 @@ export default function ScalperTab() {
       {/* Header */}
       <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: "16px 20px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <div>
-              <div style={{ color: ORANGE, fontSize: 15, fontWeight: 900 }}>⚡ SCALPER MODE — Independent</div>
-              <div style={{ color: "#777", fontSize: 11, marginTop: 2 }}>
-                Own capital · Live tick LTP (2s) · Manual exit · Smart SL toggle
-              </div>
+          <div>
+            <div style={{ color: ORANGE, fontSize: 15, fontWeight: 900 }}>⚡ SCALPER MODE — Independent</div>
+            <div style={{ color: "#777", fontSize: 11, marginTop: 2 }}>
+              Own capital · Live tick LTP (1s) · Manual exit · Smart SL toggle
             </div>
-            {/* Engine live indicator — WS + auto-trade health (2026-06-08) */}
-            <EngineStatusBadge tab="scalper" />
-            {/* Phase 6 — live structure badge per index */}
-            <StructureBadge indices={["NIFTY", "BANKNIFTY"]} />
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
             {/* PDF Export Buttons */}

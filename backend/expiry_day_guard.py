@@ -51,17 +51,8 @@ IST = pytz.timezone("Asia/Kolkata")
 
 
 def is_enabled() -> bool:
-    """Master switch.
-
-    2026-06-12 v2: DEFAULT FLIPPED off → on after deep audit.
-    60-day data: Tuesday/expiry = ENTIRE system loss (₹-1.46L).
-    Specifically 9:00-10:00 AM Tuesday alone = ₹-1,53,854 from
-    morning gap-down PE chains (4 OI engines all fire bearish,
-    institutions cover, every PE = SL_HIT or STOP_HUNTED).
-    Task #30 originally disabled this — was a costly mistake.
-    Override: EXPIRY_DAY_SKIP_ENABLED=off to restore old behavior.
-    """
-    return os.environ.get("EXPIRY_DAY_SKIP_ENABLED", "on").lower() == "on"
+    """Master switch — default OFF for shadow validation."""
+    return os.environ.get("EXPIRY_DAY_SKIP_ENABLED", "off").lower() == "on"
 
 
 def is_shadow_enabled() -> bool:
@@ -80,19 +71,11 @@ def skip_monday() -> bool:
 
 
 def allow_late_hour() -> int:
-    """Allow entries after this hour even on expiry day (post-pin).
-
-    2026-06-12 v2: DEFAULT 14 → 10. Data shows:
-      9-10 AM Tuesday: -₹1,53,854 (catastrophic)
-      10-11 AM Tuesday: +₹48,919 (profitable!)
-    So block first hour only, allow from 10 AM onward.
-    Late afternoon also slightly losing (13-14: ₹-26,419)
-    but that's not enough to block — handled by smart bleed window.
-    """
+    """Allow entries after this hour even on expiry day (post-pin)."""
     try:
-        return int(os.environ.get("EXPIRY_DAY_ALLOW_LATE_HOUR", "10"))
+        return int(os.environ.get("EXPIRY_DAY_ALLOW_LATE_HOUR", "14"))
     except ValueError:
-        return 10
+        return 14
 
 
 def assess(now: Optional[datetime] = None) -> dict:

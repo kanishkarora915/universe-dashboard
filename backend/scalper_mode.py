@@ -38,10 +38,8 @@ SCALPER_DB = _data_dir / "scalper_trades.db"
 SCALPER_AUTO_TRADE_ENABLED = os.environ.get("SCALPER_AUTO_TRADE", "on").lower() != "off"
 
 # SCALPER CONFIG (tuned after 2026-05-04 -₹1.37L bleed)
-SCALPER_THRESHOLD = 50         # Lowered 55→50 (2026-06-05, user: "fast scalper, small profits")
-                               # Backtest: prob 50-54% bucket = 8 trades, 57% WR, +₹85k untapped
-                               # Damage control (EARLY_CUT + BREAKEVEN) handles the small losses
-SCALPER_DAILY_CAP = 30         # Raised 20→30 (user req 2026-06-15)
+SCALPER_THRESHOLD = 55         # Raised 45→55 (avoid weak signals)
+SCALPER_DAILY_CAP = 15         # 15 trades/day
 SCALPER_SL_PCT = 0.08          # 8% SL (lowered 12→8 per user safety rule, B1.1)
 SCALPER_T1_PCT = 0.10          # 10% T1 (lowered 15→10 per profit-mgmt #1 — more reachable)
 SCALPER_T2_PCT = 0.20          # 20% T2 (lowered 30→20 — better R:R 1:2.5 with -8% SL)
@@ -115,22 +113,6 @@ def init_scalper_db():
         ("smart_sl_value", "ALTER TABLE scalper_trades ADD COLUMN smart_sl_value REAL"),
         ("sl_hit_time", "ALTER TABLE scalper_trades ADD COLUMN sl_hit_time TEXT"),
         ("sl_reason", "ALTER TABLE scalper_trades ADD COLUMN sl_reason TEXT"),
-        # 2026-06-15: Regime capture at entry — for chop/structure analysis
-        ("regime_at_entry", "ALTER TABLE scalper_trades ADD COLUMN regime_at_entry TEXT DEFAULT ''"),
-        ("range_pct_at_entry", "ALTER TABLE scalper_trades ADD COLUMN range_pct_at_entry REAL DEFAULT 0"),
-        ("candle_pct_at_entry", "ALTER TABLE scalper_trades ADD COLUMN candle_pct_at_entry REAL DEFAULT 0"),
-        ("structure_5m", "ALTER TABLE scalper_trades ADD COLUMN structure_5m TEXT DEFAULT ''"),
-        ("structure_15m", "ALTER TABLE scalper_trades ADD COLUMN structure_15m TEXT DEFAULT ''"),
-        ("structure_1h", "ALTER TABLE scalper_trades ADD COLUMN structure_1h TEXT DEFAULT ''"),
-        # 2026-06-16: Per-engine attribution at entry (JSON blobs)
-        ("engine_scores_json", "ALTER TABLE scalper_trades ADD COLUMN engine_scores_json TEXT DEFAULT ''"),
-        ("signals_triggered", "ALTER TABLE scalper_trades ADD COLUMN signals_triggered TEXT DEFAULT ''"),
-        ("gates_passed", "ALTER TABLE scalper_trades ADD COLUMN gates_passed TEXT DEFAULT ''"),
-        # 2026-06-16: Level context at entry (PDH/PDL/PDC/gap/day_high/low)
-        ("level_context_json", "ALTER TABLE scalper_trades ADD COLUMN level_context_json TEXT DEFAULT ''"),
-        ("level_zone_at_entry", "ALTER TABLE scalper_trades ADD COLUMN level_zone_at_entry TEXT DEFAULT ''"),
-        # 2026-06-17 (auditor NOTE #11): watcher trigger attribution
-        ("watcher_trigger", "ALTER TABLE scalper_trades ADD COLUMN watcher_trigger TEXT DEFAULT ''"),
     ]:
         if col not in cols:
             try: conn.execute(sql)
@@ -175,7 +157,7 @@ def init_scalper_db():
             t1_pct REAL DEFAULT 0.10,
             t2_pct REAL DEFAULT 0.20,
             threshold INTEGER DEFAULT 55,
-            daily_cap INTEGER DEFAULT 30,
+            daily_cap INTEGER DEFAULT 15,
             updated_at TEXT
         )
     """)
@@ -188,17 +170,17 @@ def init_scalper_db():
     #   sl_pct ≥ 0.10  → 0.08 (B1.1 safety floor)
     #   t1_pct ≥ 0.13  → 0.10 (profit-mgmt #1 — T1 more reachable)
     #   t2_pct ≥ 0.25  → 0.20 (R:R 1:2.5)
-    #   daily_cap raised to 30 (user req 2026-06-15) — clamp old DB rows up to 30 too
+    #   daily_cap > 15 → 15
     try:
         conn.execute("""
             UPDATE scalper_config
                SET sl_pct = 0.08,
                    t1_pct = 0.10,
                    t2_pct = 0.20,
-                   daily_cap = MAX(daily_cap, 30),
+                   daily_cap = MIN(daily_cap, 15),
                    updated_at = ?
              WHERE id = 1 AND (sl_pct >= 0.10 OR t1_pct >= 0.13 OR t2_pct >= 0.25
-                               OR daily_cap < 30)
+                               OR daily_cap > 15)
         """, (ist_now().isoformat(),))
     except Exception:
         pass
@@ -247,51 +229,20 @@ def get_active_scalp_config():
     except Exception:
         pass
 
-    # ── CONFIG DRIFT FIX (Week 1, 2026-06-17) ──
-    # buyer_mode is the single source of truth for SL/T1/T2/max_hold.
-    # Previously scalper used its own SCALPER_SL/T1/T2_PCT constants
-    # which drifted from buyer_mode (live 8/10/20 vs buyer_mode 5/5/12).
-    # Now: BUYER mode → use buyer_mode values; HEDGER → keep cfg/defaults.
-    # Env kill: SCALPER_BUYER_MODE_SYNC_DISABLED=1
-    base_sl  = cfg.get("sl_pct",  SCALPER_SL_PCT)
-    base_t1  = cfg.get("t1_pct",  SCALPER_T1_PCT)
-    base_t2  = cfg.get("t2_pct",  SCALPER_T2_PCT)
-    base_hold = SCALPER_MAX_HOLD_MIN
-    try:
-        import os as _os_sync
-        if _os_sync.environ.get("SCALPER_BUYER_MODE_SYNC_DISABLED", "").strip() not in ("1","true","on"):
-            from buyer_mode import get_thresholds as _bm_get
-            _bm = _bm_get() or {}
-            if (_bm.get("mode") or "").upper() == "BUYER":
-                _bm_sl  = _bm.get("scalper_sl_pct")
-                _bm_t1  = _bm.get("scalper_t1_pct")
-                _bm_t2  = _bm.get("scalper_t2_pct")
-                _bm_hold = _bm.get("scalper_max_hold_min")
-                if _bm_sl  is not None: base_sl  = float(_bm_sl)
-                if _bm_t1  is not None: base_t1  = float(_bm_t1)
-                if _bm_t2  is not None: base_t2  = float(_bm_t2)
-                if _bm_hold is not None: base_hold = int(_bm_hold)
-                print(f"[SCALPER_CFG] buyer_mode sync: sl={base_sl} t1={base_t1} t2={base_t2} hold={base_hold}m")
-    except Exception as _sync_e:
-        print(f"[SCALPER_CFG] buyer_mode sync error (using cfg): {_sync_e}")
-
     if is_expiry:
         return {
             **cfg,
-            "sl_pct":  round(base_sl * EXPIRY_SL_MULT, 4),
-            "t1_pct":  round(base_t1 * EXPIRY_TARGET_MULT, 4),
-            "t2_pct":  round(base_t2 * EXPIRY_TARGET_MULT, 4),
+            "sl_pct":  round(cfg.get("sl_pct",  SCALPER_SL_PCT) * EXPIRY_SL_MULT, 4),
+            "t1_pct":  round(cfg.get("t1_pct",  SCALPER_T1_PCT) * EXPIRY_TARGET_MULT, 4),
+            "t2_pct":  round(cfg.get("t2_pct",  SCALPER_T2_PCT) * EXPIRY_TARGET_MULT, 4),
             "qty_mult": EXPIRY_QTY_MULT,
             "max_hold_min": EXPIRY_MAX_HOLD_MIN,
             "is_expiry": True,
         }
     return {
         **cfg,
-        "sl_pct": base_sl,
-        "t1_pct": base_t1,
-        "t2_pct": base_t2,
         "qty_mult": 1.0,
-        "max_hold_min": base_hold,
+        "max_hold_min": SCALPER_MAX_HOLD_MIN,
         "is_expiry": False,
     }
 
@@ -326,39 +277,6 @@ def set_scalper_config(capital=None, nifty_qty=None, banknifty_qty=None,
     conn.commit()
     conn.close()
     return updated
-
-
-def _last_n_outcomes(n: int = 2) -> list:
-    """Return the last N closed scalper trade outcomes (today only).
-    Returns list of 'WIN' / 'LOSS' / 'BE'. Empty list if fewer than N.
-
-    Used by streak-overconfidence handler (Fix 2 from 445-trade audit).
-    Today-only because cross-day streak isn't behavioral — yesterday's
-    wins don't cause today's first trade to over-fire.
-    """
-    try:
-        from datetime import datetime
-        import pytz as _pytz
-        _IST = _pytz.timezone("Asia/Kolkata")
-        today_iso = datetime.now(_IST).strftime("%Y-%m-%d")
-        conn = sqlite3.connect(str(SCALPER_DB), timeout=2.0)
-        cur = conn.execute(
-            "SELECT pnl_rupees FROM scalper_trades "
-            "WHERE substr(entry_time,1,10) = ? "
-            "AND COALESCE(status,'') NOT IN ('OPEN','') "
-            "AND exit_time IS NOT NULL "
-            "ORDER BY exit_time DESC LIMIT ?",
-            (today_iso, n)
-        )
-        rows = cur.fetchall()
-        conn.close()
-        out = []
-        for r in rows:
-            p = r[0] or 0
-            out.append('WIN' if p > 0 else 'LOSS' if p < 0 else 'BE')
-        return out
-    except Exception:
-        return []
 
 
 _scalper_pragma_done = False
@@ -543,153 +461,6 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
     except Exception:
         pass
 
-    # ── DOWN_DAY CE PENALTY (Task #88, 2026-06-23 — CSV-driven) ──
-    # 60d: DOWN day + CE = 72 trades, 51% WR, -₹147k bucket. Bump CE threshold.
-    try:
-        from day_classifier import down_day_ce_threshold_bump as _dd_bump
-        _bump = _dd_bump(engine, idx, action_str)
-        if _bump > 0:
-            old_t = effective_threshold
-            effective_threshold = min(95, effective_threshold + _bump)
-            print(f"[SCALPER] DOWN_DAY CE penalty: threshold {old_t}% → {effective_threshold}%")
-    except Exception:
-        pass
-
-    # ── STEP 2 SURGICAL FIXES (2026-06-03 — 445-trade audit) ──
-    # Data-driven threshold tuning per context. All env-overridable.
-    # No new module — just bias the existing effective_threshold.
-    try:
-        # FIX A: BANKNIFTY scalper threshold bias (RELAXED 2026-06-05)
-        # Audit said SCALPER BANKNIFTY = -₹50,586 baseline. But user
-        # principle: "smart not strict". A blanket +5 threshold hurts
-        # legitimate BNF setups. Now default 0 (no penalty) — let market
-        # context bonus + damage control handle it. Set env to 5 to
-        # restore previous behavior.
-        if idx == "BANKNIFTY":
-            effective_threshold += int(os.environ.get("SCALPER_BNF_THRESHOLD_BIAS", "0"))
-
-        # FIX B was: Scalper CE side bias (+3 pts for CE entries)
-        # DROPPED 2026-06-03 — backtest showed it BLOCKED MORE WINS THAN
-        # LOSSES (₹73k wins blocked vs only ₹22k losses = net -₹51k).
-        # The CE-loses-money insight is real, but the losses come from
-        # SPECIFIC conditions (BANKNIFTY + late entries + counter-trend),
-        # not generic "low conviction CE". The BNF threshold + bleed-zone
-        # + overconviction cap already catch those. A blanket CE penalty
-        # here would over-block.
-        # Override available: set SCALPER_CE_THRESHOLD_BIAS=N to enable.
-        _ce_bias = int(os.environ.get("SCALPER_CE_THRESHOLD_BIAS", "0"))
-        if is_ce and _ce_bias:
-            effective_threshold += _ce_bias
-
-        # FIX C2: Bleed-zone — RELAXED to OFF by default (2026-06-05)
-        # User: "smart not strict, strict only for loss-cap"
-        # Original intent: 13:30-14:00 had 26% WR + ₹257k losses.
-        # But damage control (EARLY_CUT + BREAKEVEN 3%) now handles the
-        # bad-decision losses at exit side. Don't double-block entries.
-        # Set BLEED_HOURS_MODE=smart or strict if you want to re-enable.
-        # FIX C: 13:30-14:00 IST bleed-zone — SMART CONDITIONAL block
-        # User insight: "worst window nahi, worst decision making" — big
-        # moves DO happen in this window; small pullbacks within bigger
-        # trends look like reversals to the system → bad entries.
-        # Audit deep-dive of 40 trades in this window:
-        #   WINNERS (10, ₹+138k): 60% NIFTY, avg conviction 34/66 (clear),
-        #     Multi-TF MOSTLY_* (partial alignment = early move)
-        #   LOSERS (29, ₹-395k): 69% BANKNIFTY, avg conviction 47/53 (mixed),
-        #     Multi-TF ALL_BEARISH/ALL_BULLISH (saturated = top/bottom)
-        # → Block only loss-prone setups, allow conviction-clear ones.
-        # Backtest: universal block +₹257k vs smart block +₹207k.
-        # ₹50k cost saves 17 winning trades from being blocked.
-        # BLEED_HOURS_MODE: smart (default) | strict | off
-        hour_min = now.hour * 60 + now.minute
-        _bleed_mode = os.environ.get("BLEED_HOURS_MODE", "off").lower()
-        if _bleed_mode != "off" and 13 * 60 + 30 <= hour_min < 14 * 60:
-            if _bleed_mode == "strict":
-                print(f"[SCALPER] REJECT (bleed-strict): 13:30-14:00 universal block")
-                return False
-            # SMART MODE: block only the loss-prone setups
-            # Rule 1: BANKNIFTY needs higher conviction (75%+) in this window
-            # Rule 2: Multi-TF ALL_* alignment = saturated move = reversal risk
-            reasoning_list = verdict_data.get('reasons') or []
-            reasoning_text = ' '.join(str(r) for r in reasoning_list).lower() if isinstance(reasoning_list, list) else str(reasoning_list).lower()
-            is_saturated_tf = ('all_bullish' in reasoning_text or 'all_bearish' in reasoning_text)
-            if idx == 'BANKNIFTY' and win_pct < 75:
-                print(f"[SCALPER] REJECT (bleed-smart): BANKNIFTY in 13:30 zone needs ≥75% (got {win_pct}%)")
-                return False
-            if is_saturated_tf:
-                print(f"[SCALPER] REJECT (bleed-smart): Multi-TF ALL_* in 13:30 zone = saturated move risk")
-                return False
-            # Else: allow — other gates (overconviction, BNF threshold, G16) still apply
-
-        # FIX F was: BANKNIFTY CE bad-hour filter (REMOVED 2026-06-03)
-        # User principle: "bad hours nahi hoti, bad decision/detection hoti
-        # hai". Hour-blocking is the lazy fix — same hour can produce
-        # massive winners or losers depending on the SETUP, not the clock.
-        # Reverted in favor of damage-control approach (EARLY_CUT + lower
-        # breakeven trigger) which:
-        #   • Saves ₹829k by limiting loss size (vs ₹305k by blocking)
-        #   • Doesn't block any winning trades
-        #   • Applies to ALL setups in ALL hours
-        # Env still available for emergency: BNF_CE_BAD_HOURS=11,13,15 to
-        # re-enable hour filter; default empty = off.
-        if (idx == "BANKNIFTY" and is_ce
-                and os.environ.get("BNF_CE_BAD_HOURS", "").strip()):
-            try:
-                bad_hrs = [int(h.strip()) for h in os.environ.get("BNF_CE_BAD_HOURS", "").split(",") if h.strip()]
-                if now.hour in bad_hrs:
-                    print(f"[SCALPER] REJECT (BNF-CE bad-hour override): "
-                          f"hour {now.hour} blocked by BNF_CE_BAD_HOURS env")
-                    return False
-            except Exception:
-                pass
-
-        # FIX E: Streak overconfidence handler (scalper-specific)
-        # Audit: SCALPER after 2 consecutive wins:
-        #   • 48 trades, 35% WR, -₹104,070 net (worse than baseline 47% WR)
-        # Cooldown timing DOESN'T help (35 of 48 within 10min were neutral).
-        # The REAL pattern: relaxed conviction + BANKNIFTY chasing.
-        # Fix: after 2W streak, raise threshold +5 AND block BANKNIFTY.
-        # Backtest: blocks 30 trades, saves ₹368k losses vs ₹182k wins
-        # blocked = net +₹186k. Best per-fix ROI of the bunch.
-        # Override:
-        #   STREAK_HANDLER_DISABLED=1     kill switch
-        #   STREAK_THRESHOLD_BIAS=5       extra threshold after 2W (default 5)
-        #   STREAK_BLOCK_BNF=1            block BANKNIFTY after 2W (default 1)
-        # 2026-06-08 v2: DEFAULT OFF. After 2 wins blocking BNF caused
-        # follow-on big winners to be missed. Damage control catches losses.
-        # Set STREAK_HANDLER_ENABLED=on to re-enable.
-        if os.environ.get("STREAK_HANDLER_ENABLED", "").strip() in ("1","true","on"):
-            try:
-                last_two = _last_n_outcomes(2)
-                if len(last_two) == 2 and last_two[0] == 'WIN' and last_two[1] == 'WIN':
-                    _streak_bias = int(os.environ.get("STREAK_THRESHOLD_BIAS", "5"))
-                    _streak_block_bnf = os.environ.get("STREAK_BLOCK_BNF", "1").strip() in ("1","true","on")
-                    if _streak_block_bnf and idx == "BANKNIFTY":
-                        print(f"[SCALPER] REJECT (streak): BANKNIFTY after 2 wins — "
-                              f"audit shows 35% WR + over-confidence chase")
-                        return False
-                    effective_threshold += _streak_bias
-                    print(f"[SCALPER] STREAK guard active (2W today): threshold "
-                          f"+{_streak_bias} (now {effective_threshold}%)")
-            except Exception as _e:
-                # NEVER block legit entry on streak handler error
-                print(f"[SCALPER] streak handler error (allow): {_e}")
-
-        # FIX D: Over-conviction cap (both modes)
-        # 2026-06-17 (90d audit): probability calibration is INVERTED.
-        # 85%+ prob bucket: Main -₹2.07L, Scalper -₹42k.
-        # 75-80% bucket: Main -₹1L. 50-60% bucket: Main +₹2.46L, Scalper +₹2.16L.
-        # System most confident exactly when wrong. Lowered threshold 90→80
-        # and REMOVED capit bypass — capit was rubber-stamping bad trades.
-        overconv_cap = float(os.environ.get("OVERCONVICTION_BLOCK", "80"))
-        if win_pct >= overconv_cap:
-            print(f"[SCALPER] REJECT entry (overconv-cap): "
-                  f"win_pct {win_pct}% ≥ {overconv_cap}% — "
-                  f"inverted calibration, high-prob = high-loss (90d audit ₹-2.5L)")
-            return False
-    except Exception as _e:
-        # NEVER let surgical-fix logic block a legit trade on its own error
-        print(f"[SCALPER] Step 2 fix error (allow): {_e}")
-
     if win_pct < effective_threshold:
         return False
     today_iso = now.strftime("%Y-%m-%d")
@@ -809,87 +580,7 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         conn.close()
         return False
 
-    # Guard 4: WATCHER_EXIT cooldown (Fix C, 2026-06-15)
-    # Targets WATCHER_EXIT ₹3.58L bleed (16 trades, avg peak 0.83%,
-    # hold 1.6 min — wrong-direction immediate kills).
-    # If ANY scalper trade in same index just got watcher-killed in
-    # last N min, the market is hostile to that idx — skip new entries.
-    # 2026-06-15 tweak: window 5 → 15 min after observing 3 WATCHER_EXIT
-    # trades spaced hours apart that all escaped 5-min cooldown.
-    # Env: SCALPER_WATCHER_COOLDOWN_DISABLED=1, SCALPER_WATCHER_COOLDOWN_MIN=15
-    try:
-        import os as _os_wc
-        if _os_wc.environ.get("SCALPER_WATCHER_COOLDOWN_DISABLED", "").strip() not in ("1","true","on"):
-            _wc_min = float(_os_wc.environ.get("SCALPER_WATCHER_COOLDOWN_MIN", "15"))
-            _wc_cutoff = (now - timedelta(minutes=_wc_min)).isoformat()
-            recent_watcher = conn.execute(
-                """SELECT COUNT(*) FROM scalper_trades
-                   WHERE idx=? AND status IN ('WATCHER_EXIT','EARLY_CUT','INSTANT_REJECT')
-                     AND exit_time > ?""",
-                (idx, _wc_cutoff)
-            ).fetchone()[0]
-            if recent_watcher > 0:
-                conn.close()
-                print(f"[SCALPER] REJECT entry: WATCHER_COOLDOWN — {recent_watcher} hostile "
-                      f"exit(s) on {idx} in last {_wc_min:.0f} min, market unfriendly")
-                return False
-    except Exception as _wc_e:
-        print(f"[SCALPER] WATCHER_COOLDOWN error (allow): {_wc_e}")
-
     conn.close()
-
-    # ── DRAWDOWN GUARD (2026-06-18 — user feedback "give-back pattern") ──
-    # Locks today's peak P&L. If today's gains drop below 65% of peak,
-    # block new entries. Protects profitable days from being destroyed.
-    # Env: DRAWDOWN_GUARD_DISABLED=1 to revert.
-    try:
-        from drawdown_guard import check_drawdown_block as _ddb
-        blocked, reason = _ddb("scalper")
-        if blocked:
-            print(f"[SCALPER] REJECT entry: {reason}")
-            return False
-    except Exception as _dd_e:
-        print(f"[SCALPER] drawdown_guard error (allow): {_dd_e}")
-
-    # ── DAY GATES (Task #88, 2026-06-23 — CSV-driven) ──
-    # Same gates as main mode:
-    #   DEAD_MARKET_HALT  — 30min range <0.2% (91 trades -₹89k)
-    #   STRONG_TREND_FADE — block counter-trend on big move days (-₹48k)
-    # Disable: DEAD_MARKET_HALT_DISABLED / STRONG_TREND_FADE_DISABLED
-    try:
-        from day_classifier import check_day_gates as _dgates
-        blocked, reason = _dgates(engine, idx, action_str)
-        if blocked:
-            print(f"[SCALPER] REJECT entry: {reason}")
-            return False
-    except Exception as _dg_e:
-        print(f"[SCALPER] day_classifier gates error (allow): {_dg_e}")
-
-    # ── PDC ZONE BLOCK (2026-06-17 — 90d audit) ──
-    # at_PDC + NEAR_PDC entries lose -₹91k/90d combined (Scalper).
-    # PDC = previous day close — magnet zone, choppy whipsaws.
-    # Block fresh entries within 0.15% of PDC unless explicit override.
-    # Env: SCALPER_PDC_BLOCK_DISABLED=1 to revert.
-    try:
-        import os as _os_pdc
-        if _os_pdc.environ.get("SCALPER_PDC_BLOCK_DISABLED", "").strip() not in ("1","true","on"):
-            from levels_context import get_levels_context as _glc
-            _spot_pdc = 0
-            try:
-                if engine is not None:
-                    _tok = engine.spot_tokens.get(idx)
-                    if _tok:
-                        _spot_pdc = (engine.prices.get(_tok, {}) or {}).get("ltp") or 0
-            except Exception:
-                pass
-            _ctx_pdc = _glc(engine, idx, _spot_pdc)
-            _zone_pdc = (_ctx_pdc.get("zone") or "")
-            if _zone_pdc in ("NEAR_PDC",):
-                print(f"[SCALPER] REJECT entry: PDC_ZONE_BLOCK — spot {_spot_pdc} "
-                      f"in {_zone_pdc} (90d audit -₹91k bleed)")
-                return False
-    except Exception as _pdc_e:
-        print(f"[SCALPER] PDC_ZONE_BLOCK error (allow): {_pdc_e}")
 
     # ── B1.4: DIRECTION SANITY (OI delta + spot must AGREE with action) ──
     # Today (2026-05-04) cost ₹91k: "PE dominant 80%" reasoning kept saying
@@ -926,11 +617,9 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         pass
 
     # ── B2.6: CAPITULATION REVERSAL GATE ──
-    # 2026-06-08 v2: STRICTER bypass — only block when capit score >= 7
-    # (was 5). Score 5-6 is borderline and was blocking legitimate
-    # high-conviction entries during today's reversal. Damage control
-    # catches loss if direction was wrong.
-    # Env: CAPIT_REVERSAL_THRESHOLD=7 (default), set =5 to restore old strict.
+    # If capitulation engine sees STRONG reversal AGAINST our direction, block.
+    # Prevents the 9:39–11:51 case today where 6 CE trades fired into a
+    # bearish capitulation that the engine had clearly flagged.
     try:
         from capitulation_engine import get_live_state
         cap_state = get_live_state() or {}
@@ -939,76 +628,46 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         bear = idx_state.get("bearish") or {}
         bull_score = float(bull.get("score") or 0)
         bear_score = float(bear.get("score") or 0)
-        capit_thr = float(os.environ.get("CAPIT_REVERSAL_THRESHOLD", "7"))
-        if is_ce and bear_score >= capit_thr and bear_score > bull_score:
+        if is_ce and bear_score >= 5 and bear_score > bull_score:
             print(f"[SCALPER] REJECT entry (B2.6): {idx} BUY CE blocked — "
-                  f"BEARISH capit {bear_score} (thr {capit_thr})")
+                  f"BEARISH capitulation score {bear_score} (bull {bull_score}) — "
+                  f"verdict {bear.get('verdict')}")
             return False
-        if not is_ce and bull_score >= capit_thr and bull_score > bear_score:
+        if not is_ce and bull_score >= 5 and bull_score > bear_score:
             print(f"[SCALPER] REJECT entry (B2.6): {idx} BUY PE blocked — "
-                  f"BULLISH capit {bull_score} (thr {capit_thr})")
+                  f"BULLISH capitulation score {bull_score} (bear {bear_score}) — "
+                  f"verdict {bull.get('verdict')}")
             return False
     except Exception:
         pass
 
     # ── GATE 11: ENTRY FILTERS (5-min trend + greeks + regime) ──
-    # 2026-06-17 (90d audit): default flipped permissive→strict.
-    # CHOP bucket: 265 scalper trades = -₹1.47L NET. The permissive
-    # mode let CHOP through hoping damage-control catches it — but
-    # damage-control isn't catching enough. Strict + tightened
-    # CHOP override (AND not OR) keeps only setups where BOTH capit
-    # AND health AGGRESSIVE confirm.
-    # Override: ENTRY_FILTER_MODE=permissive to revert.
+    # Engine may not be passed (legacy call sites). When missing, gates skip.
     if engine is not None and atm_strike is not None:
-        _ef_mode = os.environ.get("ENTRY_FILTER_MODE", "strict").lower()
         try:
             from entry_filters import check_all_filters
             filters_ok, filter_reason, regime_info = check_all_filters(
                 engine, idx, int(atm_strike), action_str
             )
             if not filters_ok:
-                if _ef_mode == "strict":
-                    # STRICT: hard block, with tightened CHOP override
-                    if regime_info.get("regime") == "CHOP":
-                        capit_confirms_direction = (
-                            (is_ce and cap_bull >= 4) or
-                            (not is_ce and cap_bear >= 4)
-                        )
-                        # 2026-06-25: also bypass G11 CHOP when structure_gate
-                        # strict-alignment has the CHOP/CHOP pattern. Main mode
-                        # made +₹15,780 on 6 CE trades today using exactly this
-                        # CHOP/CHOP setup — scalper was being blocked from the
-                        # same proven-profitable structure.
-                        sg_chop_chop = False
-                        try:
-                            import structure_gate as _sg_chk
-                            _cached_chk = _sg_chk.get_cached_structure(idx)
-                            if _cached_chk:
-                                _s = _cached_chk.get("structures", {})
-                                _v5 = (_s.get("5m") or {}).get("verdict", "")
-                                _v15 = (_s.get("15m") or {}).get("verdict", "")
-                                sg_chop_chop = (_v5 == "CHOP" and _v15 == "CHOP")
-                        except Exception:
-                            pass
-
-                        # 2026-06-17: require BOTH capit AND health,
-                        # not EITHER. Previous OR was too lenient.
-                        # 2026-06-25: OR with sg_chop_chop — proven main-mode pattern.
-                        if not ((capit_confirms_direction and _allow_chop_health)
-                                or sg_chop_chop):
-                            print(f"[SCALPER] REJECT entry (G11 strict CHOP): {filter_reason}")
-                            return False
-                        else:
-                            why = ("sg CHOP/CHOP aligned" if sg_chop_chop
-                                   else "capit AND health AGG")
-                            print(f"[SCALPER] CHOP override ({why}): {filter_reason}")
-                    else:
-                        print(f"[SCALPER] REJECT entry (G11 strict): {filter_reason}")
+                # CHOP regime blocked — but allow capit-confirmed override
+                # (capit ≥ 4 means high-conviction reversal, worth a shot)
+                if regime_info.get("regime") == "CHOP":
+                    capit_confirms_direction = (
+                        (is_ce and cap_bull >= 4) or
+                        (not is_ce and cap_bear >= 4)
+                    )
+                    if not capit_confirms_direction and not _allow_chop_health:
+                        print(f"[SCALPER] REJECT entry (G11): {filter_reason}")
                         return False
+                    else:
+                        _chop_why = "capit-confirmed" if capit_confirms_direction else "health AGGRESSIVE"
+                        print(f"[SCALPER] CHOP override ({_chop_why}): {filter_reason}")
                 else:
-                    # PERMISSIVE: log warning, let trade fire, trust damage control
-                    print(f"[SCALPER] G11 WARN (allow, damage-control will catch): {filter_reason}")
+                    print(f"[SCALPER] REJECT entry (G11): {filter_reason}")
+                    return False
             else:
+                # All filters pass — log regime for telemetry
                 if regime_info.get("regime") == "BREAKOUT":
                     print(f"[SCALPER] BREAKOUT detected — {regime_info.get('reason')}")
         except Exception as _e:
@@ -1048,130 +707,6 @@ def should_enter_scalp(idx, verdict_data, scalper_enabled=True, atm_strike=None,
         except Exception as _e:
             # NEVER let theta_gate exception block legit entries
             print(f"[SCALPER] theta_gate error (allow): {_e}")
-
-    # ── G15: TIME-OF-DAY BLEED GATE (2026-05-27) ──
-    # 60-day audit revealed 13:30-14:00 IST has 19% WR and lost ₹1.87L
-    # alone (worst single 30-min window). Lunch-end chop traps traders
-    # with false moves. Skip this hour entirely.
-    # Env: SCALPER_SKIP_BLEED_HOURS (default off — explicit opt-in).
-    if os.environ.get("SCALPER_SKIP_BLEED_HOURS", "off").lower() == "on":
-        hour_min = now.hour * 60 + now.minute
-        if 13 * 60 + 30 <= hour_min < 14 * 60:
-            print(f"[SCALPER] REJECT entry (G15): 13:30-14:00 IST is bleed zone "
-                  f"(historical WR 19%, -₹1.87L damage)")
-            return False
-
-    # ── G16: ANTI COUNTER-TREND GATE (2026-06-03 — always on) ──
-    # Today (Jun 3): scalper took 3 PE entries (13:31/13:58 #241 #242 lost
-    # ₹26k) during a 1,267-pt BANKNIFTY rally because 5-min OI flips
-    # showed brief CE-fall/PE-rise during minor pullbacks. The 1hr trend
-    # was clearly UP. Conviction was only 55% (right at threshold).
-    #
-    # Rule: if spot moved ≥ 0.4% in last 30 min in one direction AND the
-    # proposed trade is OPPOSITE direction AND probability < 65, REJECT.
-    # This blocks weak-conviction counter-trend chases without touching
-    # high-conviction reversal calls (≥65% can still buy reversals).
-    #
-    # Env overrides:
-    #   ANTI_COUNTER_DISABLED=1        kill switch
-    #   ANTI_COUNTER_MOVE_PCT=0.4      threshold % move (default 0.4)
-    #   ANTI_COUNTER_PROB_BYPASS=65    prob ≥ this skips the gate
-    # 2026-06-08 v2: DEFAULT NOW OFF. User feedback: "trades hi ruk gaye hai".
-    # G16 was blocking legitimate reversal entries during rallies — exactly
-    # the setups that catch 100+ pt swings. Damage control handles bad ones.
-    # Set ANTI_COUNTER_ENABLED=on to re-enable.
-    #
-    # 2026-06-15 (Fix F): DEFAULT FLIPPED BACK ON with smarter tuning:
-    #   - move_thresh raised to 0.6 (was 0.4) — only big moves count
-    #     as "in-trend" to be counter to
-    #   - prob_bypass kept at 60 — high-conviction trades still pass
-    # Combined with WATCHER cooldown (Fix C) and aggressive peak floor
-    # (Fix A), legitimate reversals are safer than they were June 8.
-    # Set ANTI_COUNTER_ENABLED=off to revert to fully off.
-    _ac_env = os.environ.get("ANTI_COUNTER_ENABLED", "on").strip().lower()
-    if engine is not None and _ac_env in ("1", "true", "on"):
-        try:
-            move_thresh = float(os.environ.get("ANTI_COUNTER_MOVE_PCT", "0.6"))
-            # Default lowered 65→60 (2026-06-05): faster fires when conviction
-            # is decent. Damage control catches the few bad ones at exit side.
-            prob_bypass = float(os.environ.get("ANTI_COUNTER_PROB_BYPASS", "60"))
-            hist = getattr(engine, "_spot_history", {}).get(idx, []) or []
-            if hist and win_pct < prob_bypass:
-                # Spot 30 min ago vs now
-                import time as _t
-                from datetime import datetime as _dt, timedelta as _td
-                # Find the tick closest to 30 min ago
-                cutoff = now - _td(minutes=30)
-                cutoff_iso = cutoff.isoformat()
-                ref = None
-                for h in hist:
-                    if h.get("t", "") <= cutoff_iso:
-                        ref = h
-                    else:
-                        break
-                # Fallback: oldest tick if hist < 30 min
-                if ref is None and hist:
-                    ref = hist[0]
-                cur_ltp = hist[-1].get("ltp", 0) if hist else 0
-                ref_ltp = ref.get("ltp", 0) if ref else 0
-                if ref_ltp > 0 and cur_ltp > 0:
-                    move_pct = (cur_ltp - ref_ltp) / ref_ltp * 100
-                    # Rally up & wants PE = counter-trend bearish
-                    if move_pct >= move_thresh and "PE" in action_str:
-                        print(
-                            f"[SCALPER] REJECT entry (G16 anti-counter): "
-                            f"spot +{move_pct:.2f}% last 30m, BUY PE counter-trend "
-                            f"@ {win_pct}% (need ≥{prob_bypass}% to override)"
-                        )
-                        return False
-                    # Selloff down & wants CE = counter-trend bullish
-                    if move_pct <= -move_thresh and "CE" in action_str:
-                        print(
-                            f"[SCALPER] REJECT entry (G16 anti-counter): "
-                            f"spot {move_pct:.2f}% last 30m, BUY CE counter-trend "
-                            f"@ {win_pct}% (need ≥{prob_bypass}% to override)"
-                        )
-                        return False
-        except Exception as _e:
-            # NEVER let G16 block a legit trade on its own error
-            print(f"[SCALPER] G16 anti-counter error (allow): {_e}")
-
-    # ── G14: STRUCTURE GATE (Phase 2 — 2026-05-27) ──
-    # Multi-timeframe HH/HL/LH/LL check via price_structure module.
-    # Decides MODE A (aligned trend) / MODE B (counter-trend scalp) / SKIP.
-    # Default master flag STRUCTURE_MODE=off → no behavior change. Failures
-    # fail-safe (allow trade). Tuning (size/SL/T1/hold) returned for the
-    # caller to apply downstream — log_scalp_trade reads it via the same
-    # structure_gate cache.
-    if engine is not None:
-        try:
-            import structure_gate as sg
-            if sg.master_mode() != "off" and sg.scalper_enabled():
-                sg_decision = sg.evaluate_entry(
-                    engine=engine, idx=idx,
-                    proposed_action=action_str,
-                    source="scalper.should_enter_scalp",
-                )
-                if not sg_decision.get("allow", True):
-                    print(
-                        f"[SCALPER] REJECT entry (G14 structure): "
-                        f"{sg_decision.get('reason', '')}"
-                    )
-                    return False
-                # If LIVE mode with a real mode-A/B decision, stash tuning
-                # for log_scalp_trade() to apply downstream. Only stash on
-                # 'live' — shadow doesn't change behavior.
-                if (sg.master_mode() == "live"
-                        and sg_decision.get("mode") in ("aligned", "counter_trend")
-                        and sg_decision.get("tuning")):
-                    _pending_structure_tuning[(idx, action_str)] = {
-                        "mode": sg_decision["mode"],
-                        "tuning": sg_decision["tuning"],
-                        "alignment": sg_decision.get("alignment"),
-                    }
-        except Exception as _e:
-            # NEVER let structure gate exception block a legit trade
-            print(f"[SCALPER] structure_gate error (allow): {_e}")
 
     # ── G13: EARLY-MOVE ENTRY GATE (2026-05-22) ──
     # Aggregator of 5 leading detectors. In 'veto'/'full' mode it can
@@ -1333,7 +868,7 @@ def calc_scalper_size(entry_price, sl_price, running_capital=1000000):
 
 def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
                     entry_reasoning=None, entry_bull_pct=None, entry_bear_pct=None,
-                    entry_spot=None, verdict_data=None):
+                    entry_spot=None):
     """Create new scalper trade with RUNNING capital (auto-adjusts after profit/loss).
 
     Returns trade_id on success, None if skipped/rejected.
@@ -1396,31 +931,6 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
         print(f"[SCALPER] EXPIRY config: SL={sl_pct*100:.1f}% T1={t1_pct*100:.1f}% "
               f"T2={t2_pct*100:.1f}% qty×{qty_mult} hold≤{cfg.get('max_hold_min')}m")
 
-    # ── STRUCTURE-MODE TUNING (Phase 4 — 2026-05-27) ──
-    # If G14 (structure_gate) chose Mode A (aligned) or Mode B (counter-
-    # trend), apply that mode's size/SL/T1/T2/hold params. Stored by
-    # should_enter_scalp() keyed by (idx, action). Default tuning unchanged
-    # when not present (e.g. STRUCTURE_MODE=off or 'shadow').
-    structure_mode_for_trade = None
-    try:
-        _st = _pending_structure_tuning.pop((idx, action), None)
-        if _st and _st.get("tuning"):
-            _t = _st["tuning"]
-            structure_mode_for_trade = _st["mode"]
-            old_sl, old_t1, old_t2 = sl_pct, t1_pct, t2_pct
-            sl_pct = _t.get("sl_pct", sl_pct) or sl_pct
-            t1_pct = _t.get("t1_pct", t1_pct) or t1_pct
-            if _t.get("t2_pct") is not None:
-                t2_pct = _t.get("t2_pct") or t2_pct
-            # qty_mult is applied later (multiplied with health qty_mult)
-            qty_mult = qty_mult * (_t.get("size_mult", 1.0) or 1.0)
-            print(f"[SCALPER] STRUCTURE-{structure_mode_for_trade.upper()} tuning — "
-                  f"SL {old_sl*100:.1f}%→{sl_pct*100:.1f}% "
-                  f"T1 {old_t1*100:.1f}%→{t1_pct*100:.1f}% "
-                  f"size×{_t.get('size_mult', 1.0)}")
-    except Exception as _e:
-        print(f"[SCALPER] structure tuning apply error (default): {_e}")
-
     # ── ADAPTIVE MARKET-HEALTH — exit-side tuning (2026-05-22) ──
     # Bigger targets when the market is AGGRESSIVE, smaller size when
     # DEFENSIVE. Reads the cached health level set by should_enter_scalp
@@ -1453,35 +963,6 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
     t1_price = round(entry_price * (1 + t1_pct))
     t2_price = round(entry_price * (1 + t2_pct))
 
-    # ── ADAPTIVE SL DISTANCE CAP BY PREMIUM (Fix 3, 2026-06-15) ──
-    # When sl_pct config is wide (8%+) AND premium is fat (₹1000+ BNF ATM),
-    # the absolute rupee risk per lot becomes ₹80k+. Cap SL distance by
-    # premium size. Audit: S-106 ₹1233 entry × 12% wide = ₹88k loss.
-    # Env kill: SCALPER_ADAPTIVE_SL_DISABLED=1
-    try:
-        import os as _os_asl
-        if _os_asl.environ.get("SCALPER_ADAPTIVE_SL_DISABLED", "").strip() not in ("1","true","on"):
-            _asl_fat = float(_os_asl.environ.get("SCALPER_ADAPTIVE_SL_FAT_PREMIUM", "1000"))
-            _asl_mid = float(_os_asl.environ.get("SCALPER_ADAPTIVE_SL_MID_PREMIUM", "500"))
-            _asl_fat_cap = float(_os_asl.environ.get("SCALPER_ADAPTIVE_SL_FAT_PCT", "7.0"))
-            _asl_mid_cap = float(_os_asl.environ.get("SCALPER_ADAPTIVE_SL_MID_PCT", "9.0"))
-            _asl_def_cap = float(_os_asl.environ.get("SCALPER_ADAPTIVE_SL_DEFAULT_PCT", "12.0"))
-            current_sl_dist_pct = (entry_price - sl_price) / entry_price * 100 if entry_price > 0 else 0
-            if entry_price >= _asl_fat:
-                cap_pct = _asl_fat_cap
-            elif entry_price >= _asl_mid:
-                cap_pct = _asl_mid_cap
-            else:
-                cap_pct = _asl_def_cap
-            if current_sl_dist_pct > cap_pct:
-                new_sl_price = round(entry_price * (1 - cap_pct/100))
-                print(f"[SCALPER] ADAPTIVE_SL: premium ₹{entry_price:.1f} → "
-                      f"capping SL distance from {current_sl_dist_pct:.1f}% to {cap_pct:.1f}% "
-                      f"(SL ₹{sl_price} → ₹{new_sl_price})")
-                sl_price = new_sl_price
-    except Exception as _asl_e:
-        print(f"[SCALPER] ADAPTIVE_SL error (keeping original): {_asl_e}")
-
     # Anti-stop-hunt SL wrapping (2026-05-19).
     # Scalper had 69 SL_HIT trades / -₹656k over 60d — many at obvious
     # round-number SLs that institutions sweep. smart_sl applies tick-
@@ -1499,11 +980,9 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
     except Exception as _e:
         print(f"[SCALPER] smart_sl wrap failed (keeping legacy): {_e}")
 
-    # Lot size — VERIFIED 2026-06-10 against Kite live NFO instruments.
-    # NSE revised: NIFTY 75→65, BANKNIFTY 35→30 (current as of June 2026).
-    # OLD hardcoded 75/35 caused #267 to deploy with wrong qty calc.
-    lot_sizes = {"NIFTY": 65, "BANKNIFTY": 30}
-    lot_size = lot_sizes.get(idx, 65)
+    # Lot size lookup (exchange-fixed) — current as of 2025
+    lot_sizes = {"NIFTY": 75, "BANKNIFTY": 35}
+    lot_size = lot_sizes.get(idx, 75)
 
     user_qty = cfg.get("nifty_qty") if idx == "NIFTY" else cfg.get("banknifty_qty")
     if user_qty and user_qty > 0:
@@ -1520,53 +999,6 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
         scaled_lots = max(1, scaled_qty // lot_size)
         qty = scaled_lots * lot_size
         lots = scaled_lots
-
-    # ── TIERED CONVICTION SIZING (2026-06-11 v2 — data-driven) ──
-    # 2026-06-13: DEFAULT DISABLED after forensic.
-    # Reason: tiered killed 65-69 sweet spot AND 80+ buckets where Main
-    # tab was profitable (Main 70-79: +₹146k, 80+%: +₹79k).
-    # Plus: scaling by raw_prob is unreliable when threshold itself
-    # is being raised to 65%. Below 65% trades don't exist anyway.
-    # Flat sizing = May 19 era full power on every entry.
-    # Override: SCALPER_TIERED_SIZING_DISABLED=0 to re-enable.
-    try:
-        import os as _os_oc
-        if _os_oc.environ.get("SCALPER_TIERED_SIZING_DISABLED", "1").strip() not in ("1","true","on"):
-            if probability and probability > 0:
-                p = probability
-                # Tiered multiplier from audit data
-                if 65 <= p <= 69:
-                    conv_mult = 1.5     # SWEET SPOT — boost
-                    tier_label = "SWEET_SPOT"
-                elif 60 <= p <= 64:
-                    conv_mult = 1.0     # decent
-                    tier_label = "DECENT"
-                elif 70 <= p <= 74:
-                    conv_mult = 1.0     # mild over-trap
-                    tier_label = "MILD_OVER"
-                elif 75 <= p <= 79:
-                    conv_mult = 0.7     # over-trap zone
-                    tier_label = "OVER_TRAP"
-                elif p >= 80:
-                    conv_mult = 0.5     # heavy over-trap (was OVERCONF)
-                    tier_label = "HEAVY_OVER"
-                elif 55 <= p <= 59:
-                    conv_mult = 0.7     # under-trap
-                    tier_label = "UNDER_TRAP"
-                else:
-                    conv_mult = 0.5     # very low, cautious
-                    tier_label = "VERY_LOW"
-
-                if conv_mult != 1.0:
-                    new_qty = int(qty * conv_mult)
-                    new_lots = max(1, new_qty // lot_size)
-                    old_qty = qty
-                    qty = new_lots * lot_size
-                    lots = new_lots
-                    print(f"[SCALPER] CONV_TIER · prob={p}% [{tier_label}] "
-                          f"× {conv_mult} → qty {old_qty} → {qty}")
-    except Exception as _oc_e:
-        print(f"[SCALPER] tiered sizing error (allow): {_oc_e}")
 
     # ── HARD CAPITAL ENFORCEMENT ──
     # Total committed (open trades) + this trade MUST NOT exceed user's capital.
@@ -1596,130 +1028,7 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
         lots = qty // lot_size
         print(f"[SCALPER] SHRUNK qty {old_qty}→{qty} ({lots} lots) to fit available ₹{available:,.0f} (was needing ₹{needed:,.0f})")
 
-    # ── ASYMMETRIC SIZING by direction × structure (Fix H + I, 2026-06-15) ──
-    # Data (60d backfill): PE aligned 5m+15m DN = 100% WR;
-    #                      CE aligned 5m+15m UP = ₹-29k loss bucket.
-    # Boost PE-golden, cut CE-aligned. Other buckets unchanged.
-    # 2026-06-17: DEFAULT DISABLED. PE-aligned 1.5x boost amplified bad
-    # trades — scalper PE collapsed from +₹438k (older 50d) to -₹337k
-    # (recent 40d). Same WR, but bigger position size = bigger losses.
-    # Env: ASYM_SIZE_DISABLED=0 to re-enable.
-    try:
-        import os as _os_as
-        if _os_as.environ.get("ASYM_SIZE_DISABLED", "1").strip() not in ("1","true","on"):
-            _pe_boost = float(_os_as.environ.get("ASYM_SIZE_PE_ALIGNED_MULT", "1.5"))
-            _ce_cut = float(_os_as.environ.get("ASYM_SIZE_CE_ALIGNED_MULT", "0.5"))
-            from structure_gate import get_cached_structure as _gcs
-            _cache = _gcs(idx) or {}
-            _structs = _cache.get("structures", {})
-            _s5m = (_structs.get("5m") or {}).get("verdict", "")
-            _s15m = (_structs.get("15m") or {}).get("verdict", "")
-            _is_ce = "CE" in action
-            _asym_mult = 1.0
-            if (not _is_ce) and _s5m == "DOWNTREND" and _s15m == "DOWNTREND":
-                _asym_mult = _pe_boost
-                print(f"[SCALPER] ASYM_SIZE: PE aligned 5m+15m DN → boost {_asym_mult}x")
-            elif _is_ce and _s5m == "UPTREND" and _s15m == "UPTREND":
-                _asym_mult = _ce_cut
-                print(f"[SCALPER] ASYM_SIZE: CE aligned 5m+15m UP → cut {_asym_mult}x")
-            if _asym_mult != 1.0:
-                new_qty = max(lot_size, int(qty * _asym_mult))
-                # If boosting, re-check capital; else just apply
-                if _asym_mult > 1.0:
-                    available_after = capital - committed
-                    if entry_price * new_qty <= available_after:
-                        qty = new_qty
-                        lots = qty // lot_size
-                    else:
-                        # not enough capital for boost — fall back to base
-                        print(f"[SCALPER] ASYM_SIZE: PE boost skipped (capital ₹{available_after:,.0f} insufficient for ₹{entry_price * new_qty:,.0f})")
-                else:
-                    qty = new_qty
-                    lots = qty // lot_size
-    except Exception as _as_e:
-        print(f"[SCALPER] ASYM_SIZE error (keep base): {_as_e}")
-
     capital_used = entry_price * qty
-
-    # ── REGIME CAPTURE AT ENTRY (2026-06-15) ──
-    # Snapshot of market regime + multi-TF structure for post-hoc chop audit.
-    # Wrapped in try — never blocks trade if computation fails.
-    _regime, _range_pct, _candle_pct = "", 0.0, 0.0
-    _s5m, _s15m, _s1h = "", "", ""
-    # ── ENGINE ATTRIBUTION CAPTURE (2026-06-16) ──
-    _engine_scores_json = ""
-    _signals_triggered = ""
-    _gates_passed = ""
-    try:
-        import json as _json_es
-        _es_blob = {"probability": probability, "action": action,
-                    "entry_bull_pct": entry_bull_pct, "entry_bear_pct": entry_bear_pct,
-                    "entry_reasoning": (entry_reasoning or "")[:500]}
-        if verdict_data:
-            for _k in ("winProbability", "bull", "bear", "reasons",
-                       "engineScores", "engine_scores",
-                       "voters", "council_votes", "modules", "callout"):
-                _v = verdict_data.get(_k)
-                if _v is not None:
-                    _es_blob[_k] = _v
-            _signals_triggered = " | ".join(
-                str(r) for r in (verdict_data.get("reasons") or [])
-            )[:1000]
-        try:
-            from capitulation_engine import get_live_state as _gls
-            _cap = (_gls() or {}).get("results", {}).get(idx, {})
-            _es_blob["capit_bull"] = (_cap.get("bullish") or {}).get("score", 0)
-            _es_blob["capit_bear"] = (_cap.get("bearish") or {}).get("score", 0)
-        except Exception:
-            pass
-        _engine_scores_json = _json_es.dumps(_es_blob, default=str)[:4000]
-    except Exception as _es_e:
-        print(f"[SCALPER] engine_attribution capture failed: {_es_e}")
-
-    # ── LEVEL CONTEXT CAPTURE (2026-06-16) ──
-    _level_context_json = ""
-    _level_zone = ""
-    try:
-        from levels_context import get_levels_context as _glc
-        # 2026-06-23 wiring fix: was reading session.get("engine") which
-        # is always None — engine is a module-level global in main.py.
-        import main as _m_lc
-        _eng_lc = getattr(_m_lc, "engine", None)
-        _spot_lc = entry_spot if (entry_spot and entry_spot > 0) else None
-        if _eng_lc is None:
-            _eng_lc = type('E', (), {'spot_tokens': {}, 'prices': {}, '_spot_history': {}})()
-        _ctx_lc = _glc(_eng_lc, idx, _spot_lc)
-        import json as _json_lc
-        _level_context_json = _json_lc.dumps(_ctx_lc, default=str)[:2000]
-        _level_zone = (_ctx_lc.get("zone") or "")[:32]
-    except Exception as _lc_e:
-        print(f"[SCALPER] level_context capture failed: {_lc_e}")
-    try:
-        # 2026-06-23 wiring fix: engine is main.engine global, not in session dict.
-        import main as _m_eng
-        _eng = getattr(_m_eng, "engine", None)
-        if _eng is not None:
-            try:
-                from entry_filters import detect_market_regime as _dmr
-                spot_hist = getattr(_eng, "_spot_history", {}).get(idx, [])
-                if spot_hist:
-                    _r = _dmr(spot_hist)
-                    _regime = _r.get("regime", "")
-                    _range_pct = float(_r.get("range_pct") or 0)
-                    _candle_pct = float(_r.get("candle_pct") or 0)
-            except Exception as _re:
-                print(f"[SCALPER] regime capture failed: {_re}")
-        try:
-            from structure_gate import get_cached_structure as _gcs
-            _cache = _gcs(idx) or {}
-            _structs = _cache.get("structures", {})
-            _s5m = (_structs.get("5m") or {}).get("verdict", "")
-            _s15m = (_structs.get("15m") or {}).get("verdict", "")
-            _s1h = (_structs.get("1h") or {}).get("verdict", "")
-        except Exception as _se:
-            print(f"[SCALPER] structure capture failed: {_se}")
-    except Exception as _ce:
-        print(f"[SCALPER] regime/structure capture skipped: {_ce}")
 
     now = ist_now()
     conn = _conn()
@@ -1728,37 +1037,16 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
             entry_price, sl_price, t1_price, t2_price,
             current_ltp, peak_ltp, lots, lot_size, qty,
             status, probability,
-            entry_reasoning, entry_bull_pct, entry_bear_pct, entry_spot, capital_used,
-            regime_at_entry, range_pct_at_entry, candle_pct_at_entry,
-            structure_5m, structure_15m, structure_1h,
-            engine_scores_json, signals_triggered, gates_passed,
-            level_context_json, level_zone_at_entry)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            entry_reasoning, entry_bull_pct, entry_bear_pct, entry_spot, capital_used)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?,?,?,?,?,?)
     """, (now.isoformat(), idx, action, strike, expiry,
           entry_price, sl_price, t1_price, t2_price,
           entry_price, entry_price, lots, lot_size, qty,
           probability, entry_reasoning, entry_bull_pct, entry_bear_pct,
-          entry_spot, capital_used,
-          _regime, _range_pct, _candle_pct,
-          _s5m, _s15m, _s1h,
-          _engine_scores_json, _signals_triggered, _gates_passed,
-          _level_context_json, _level_zone))
+          entry_spot, capital_used))
     trade_id = cursor.lastrowid
     conn.commit()
     conn.close()
-
-    # ── Track structure mode for this trade (Phase 4 — 2026-05-27) ──
-    # Used by check_scalper_exits to run structural-trail break check on
-    # Mode A trades. Stored in-memory keyed by trade_id; cleaned up on close.
-    if structure_mode_for_trade is not None:
-        _trade_structure_mode[trade_id] = {
-            "mode": structure_mode_for_trade,
-            "entry_spot": entry_spot or 0,
-            "entry_time": ist_now().isoformat(),
-            "direction": "BULL" if "CE" in action else "BEAR",
-        }
-        print(f"[SCALPER] STRUCTURE-MODE tracked for #{trade_id}: "
-              f"{structure_mode_for_trade} @ spot {entry_spot}")
 
     print(f"[SCALPER] OPENED #{trade_id}: {action} {idx} {strike} @ ₹{entry_price} | qty {qty} | capital used ₹{capital_used:,.0f} (of ₹{capital:,.0f}) | SL ₹{sl_price} T1 ₹{t1_price}")
 
@@ -2046,17 +1334,6 @@ def get_market_close_status():
 _sl_breach_count: dict = {}
 
 
-# Structure-mode handoff (Phase 4 — 2026-05-27)
-# should_enter_scalp() populates this when G14 (structure_gate) returns a
-# Mode A or Mode B decision. log_scalp_trade() consumes + clears it to
-# apply mode-specific size/SL/T1/T2/hold tuning. Keyed by (idx, action).
-_pending_structure_tuning: dict = {}
-
-# Per-trade mode + entry_spot — populated by log_scalp_trade, read by
-# check_scalper_exits for structural-trail break detection (Mode A only).
-_trade_structure_mode: dict = {}   # trade_id → {"mode": "aligned"/"counter_trend", "entry_spot": float}
-
-
 def check_scalper_exits(chains):
     """Monitor open scalper trades — quick exit logic.
     Smart SL applied if enabled in smart_sl_config (else static SL)."""
@@ -2188,151 +1465,12 @@ def check_scalper_exits(chains):
         try:
             import os as _os_be
             if _os_be.environ.get("SCALPER_BREAKEVEN_LOCK", "on").lower() == "on":
-                # DEFAULT CHANGED 2026-06-03: 4% → 3% (data-driven)
-                # 445-trade audit: 34 losing trades peaked between +3-5%
-                # then died at -5% SL (₹395k loss). Lowering trigger to
-                # +3% catches them at breakeven instead. The remaining
-                # +5%+ peaked trades still hit the PEAK_TRAIL SL.
-                # User principle: "bad trade ko bade loss me convert na
-                # hone dena = smart".
-                be_trigger = float(_os_be.environ.get("SCALPER_BREAKEVEN_TRIGGER", "3"))
+                be_trigger = float(_os_be.environ.get("SCALPER_BREAKEVEN_TRIGGER", "4"))
                 if cur_profit_pct >= be_trigger and sl < entry:
                     sl = entry
                     t["sl_price"] = sl
                     print(f"[SCALPER] BREAKEVEN #{t['id']}: profit {cur_profit_pct:+.1f}% "
-                          f"≥ {be_trigger}% — SL locked to entry ₹{entry} (risk-free)")
-        except Exception:
-            pass
-
-        # ─── EARLY-WARNING ADAPTIVE SL (2026-06-03 — damage control) ───
-        # User principle: "bad detection ko bade loss me convert na hone
-        # dena = smart". Audit found 19 loss trades that NEVER went
-        # positive (avg -₹13k loss = ₹246k total). These are the trades
-        # where setup was wrong from tick 1 — letting them ride to -5%
-        # default SL is irrational. Cut them at -2.5%.
-        # Logic: if no positive peak in first 10 min AND already at -2%,
-        # exit immediately at -2.5% (small loss). Saves ~₹434k estimated.
-        #
-        # 2026-06-11 v2 — WINDOW EXTENDED 3 → 10 min based on data audit.
-        # 60d exit audit found 14 NEVER_POSITIVE trades held 22-26 min
-        # before hitting SL (-₹22k avg = ₹3.08L total leak). They slipped
-        # past 3-min window because they bled slowly.
-        # New window 10 min catches them. Plus added INSTANT_REJECT rule
-        # below for the < 60s crash pattern.
-        # Env:
-        #   EARLY_CUT_DISABLED=1            kill switch
-        #   EARLY_CUT_WINDOW_MIN=10         observation window (default 10)
-        #   EARLY_CUT_TRIGGER=-2.5          loss % to trigger early cut
-        try:
-            import os as _os_ec
-            # 2026-06-17: DEFAULT DISABLED. 14 trades cost ₹-136k recent 40d.
-            # Killed trades before they could develop into T1_HIT runners
-            # (T1_HIT collapsed 28→4 trades). HARD_LOSS_CAP at -10% handles
-            # catastrophic losses. Set EARLY_CUT_DISABLED=0 to re-enable.
-            if _os_ec.environ.get("EARLY_CUT_DISABLED", "1").strip() not in ("1","true","on"):
-                ec_window = float(_os_ec.environ.get("EARLY_CUT_WINDOW_MIN", "10")) * 60
-                ec_trigger = float(_os_ec.environ.get("EARLY_CUT_TRIGGER", "-2.5"))
-                hold_min = hold_sec / 60
-                peak_pct = peak_profit_pct_local
-                if (hold_sec >= 60 and hold_sec <= ec_window
-                        and peak_pct <= 0.5  # never reached even +0.5%
-                        and cur_profit_pct <= ec_trigger
-                        and new_status == "OPEN"):
-                    new_status = "EARLY_CUT"
-                    exit_price = current_ltp
-                    exit_reason = (f"EARLY_CUT: setup wrong from start "
-                                   f"(peak {peak_pct:+.1f}%, now {cur_profit_pct:+.1f}%, "
-                                   f"hold {hold_min:.1f}m) — small loss not big loss")
-                    sl_reason_text = exit_reason
-                    print(f"[SCALPER] EARLY_CUT · #{t['id']} {idx} {action} {strike} · "
-                          f"never positive, cut at {cur_profit_pct:+.1f}%")
-        except Exception:
-            pass
-
-        # ─── STALE_TRADE_KILL (Fix 4, 2026-06-15) ───
-        # Catches GAP between EARLY_CUT (10min, -2.5%) and ZOMBIE_KILL
-        # (30min, profit band -1..+1). Bleed-trades that drift below -1%
-        # before 30min escape both. Audit: 14 such trades held 180m avg
-        # lost ₹3.08L scalper-side. Kill at 15-30 min if peak <1% and loss
-        # -2% to -5%. Direction wrong → theta will keep widening loss.
-        # Env kill: SCALPER_STALE_KILL_DISABLED=1
-        try:
-            import os as _os_sk
-            if (_os_sk.environ.get("SCALPER_STALE_KILL_DISABLED", "").strip() not in ("1","true","on")
-                    and new_status == "OPEN"):
-                sk_min_hold = float(_os_sk.environ.get("SCALPER_STALE_KILL_MIN_HOLD_MIN", "15")) * 60
-                sk_max_hold = float(_os_sk.environ.get("SCALPER_STALE_KILL_MAX_HOLD_MIN", "30")) * 60
-                sk_max_peak = float(_os_sk.environ.get("SCALPER_STALE_KILL_MAX_PEAK_PCT", "1.0"))
-                sk_loss_low = float(_os_sk.environ.get("SCALPER_STALE_KILL_LOSS_LOW", "-5.0"))
-                sk_loss_high = float(_os_sk.environ.get("SCALPER_STALE_KILL_LOSS_HIGH", "-2.0"))
-                if (sk_min_hold <= hold_sec <= sk_max_hold
-                        and peak_profit_pct_local <= sk_max_peak
-                        and sk_loss_low <= cur_profit_pct <= sk_loss_high):
-                    new_status = "STALE_TRADE_KILL"
-                    exit_price = current_ltp
-                    exit_reason = (f"STALE_TRADE_KILL: hold {hold_sec/60:.0f}m, "
-                                   f"peak {peak_profit_pct_local:+.1f}% (never broke {sk_max_peak}%), "
-                                   f"loss {cur_profit_pct:+.1f}% — direction wrong, "
-                                   f"prevent slow-bleed to -5% SL")
-                    sl_reason_text = exit_reason
-                    print(f"[SCALPER] STALE_KILL · #{t['id']} {idx} {action} {strike} · "
-                          f"hold {hold_sec/60:.0f}m, peak {peak_profit_pct_local:+.1f}%, "
-                          f"now {cur_profit_pct:+.1f}% — bleeding stopped")
-        except Exception:
-            pass
-
-        # ─── INSTANT_REJECT — < 60s crash exit (2026-06-11) ───
-        # 2026-06-11 v2: DEFAULT DISABLED per user feedback.
-        # Was firing 5-6 times today, sometimes on legitimate dips
-        # that would have recovered. User: "trade leke chut mut price change toh
-        # hota rehta hai".
-        # Env: SCALPER_INSTANT_REJECT_DISABLED=0 to re-enable.
-        try:
-            import os as _os_ir
-            if (_os_ir.environ.get("SCALPER_INSTANT_REJECT_DISABLED", "1").strip() not in ("1","true","on")
-                    and new_status == "OPEN"):
-                ir_max_hold = float(_os_ir.environ.get("SCALPER_INSTANT_REJECT_HOLD_SEC", "90"))
-                ir_trigger = float(_os_ir.environ.get("SCALPER_INSTANT_REJECT_TRIGGER", "-1.0"))
-                if (hold_sec <= ir_max_hold
-                        and cur_profit_pct <= ir_trigger
-                        and peak_profit_pct_local <= 0.5):
-                    new_status = "INSTANT_REJECT"
-                    exit_price = current_ltp
-                    exit_reason = (f"INSTANT_REJECT: hold {hold_sec:.0f}s, peak {peak_profit_pct_local:+.2f}%, "
-                                   f"now {cur_profit_pct:+.2f}% — market rejected entry, cut quick")
-                    sl_reason_text = exit_reason
-                    print(f"[SCALPER] INSTANT_REJECT · #{t['id']} {idx} {action} {strike} · "
-                          f"crashed at {cur_profit_pct:+.1f}% in {hold_sec:.0f}s")
-        except Exception:
-            pass
-
-        # ─── ZOMBIE_TRADE_KILL (2026-06-11 — bear-trader fix) ───
-        # PEAK_GIVEBACK was capped to peak ≤+1.5% to avoid overlap with
-        # profit_floor. But profit_floor only RAISES SL — doesn't EXIT.
-        # Trades stuck at +0.3% above entry bleed theta until SL hits.
-        # Rule: hold > 30 min, peak < +2%, profit in (-1%, +1%) → exit.
-        # Disabled by env: SCALPER_ZOMBIE_KILL_DISABLED=1
-        try:
-            import os as _os_zk
-            if (_os_zk.environ.get("SCALPER_ZOMBIE_KILL_DISABLED", "").strip() not in ("1","true","on")
-                    and new_status == "OPEN"):
-                zk_min_hold_min = float(_os_zk.environ.get("SCALPER_ZOMBIE_MIN_HOLD_MIN", "30"))
-                zk_max_peak_pct = float(_os_zk.environ.get("SCALPER_ZOMBIE_MAX_PEAK_PCT", "2.0"))
-                zk_band_low = float(_os_zk.environ.get("SCALPER_ZOMBIE_BAND_LOW", "-1.0"))
-                zk_band_high = float(_os_zk.environ.get("SCALPER_ZOMBIE_BAND_HIGH", "1.0"))
-                hold_min = hold_sec / 60
-                peak_pct = peak_profit_pct_local
-                if (hold_min >= zk_min_hold_min
-                        and peak_pct < zk_max_peak_pct
-                        and zk_band_low <= cur_profit_pct <= zk_band_high):
-                    new_status = "ZOMBIE_KILL"
-                    exit_price = current_ltp
-                    exit_reason = (f"ZOMBIE_KILL: hold {hold_min:.0f}m, no momentum "
-                                   f"(peak {peak_pct:+.1f}%, now {cur_profit_pct:+.1f}%) — "
-                                   f"free capital, theta bleeding")
-                    sl_reason_text = exit_reason
-                    print(f"[SCALPER] ZOMBIE_KILL · #{t['id']} {idx} {action} {strike} · "
-                          f"hold {hold_min:.0f}m, stuck at {cur_profit_pct:+.1f}%")
+                          f"≥ {be_trigger}% — SL locked to entry ₹{entry} (trade now risk-free)")
         except Exception:
             pass
 
@@ -2370,81 +1508,11 @@ def check_scalper_exits(chains):
             except Exception:
                 pass
 
-        # ─── STRUCTURE-TRAIL break (Phase 4 — 2026-05-27) ───
-        # Only for Mode A (aligned) trades. If post-entry candles formed
-        # a new LL (in BULL trade) or new HH (in BEAR trade), trend is
-        # broken — exit at MARKET (not at premium SL). Captures the move
-        # break before the % SL fires, locking better exit prices.
-        structure_break_exit = False
-        structure_break_reason = None
-        _struct_info = _trade_structure_mode.get(t["id"])
-        if _struct_info and _struct_info.get("mode") == "aligned":
-            try:
-                import structure_gate as sg
-                import structure_trail as st_trail
-                if sg.master_mode() == "live":
-                    cached = sg.get_cached_structure(idx)
-                    if cached:
-                        # Build candle list from historical loader (cached too)
-                        import historical_loader as hl
-                        # Reuse the structure_gate's source — fetch 5m candles
-                        # via historical_loader (which caches 30 min).
-                        kite = None
-                        try:
-                            from main import session as _s
-                            kite = _s.get("kite") if _s else None
-                        except Exception:
-                            pass
-                        if kite is not None:
-                            candles_5m = hl.load_index_history(kite, idx, "5minute", days=2)
-                            decision = st_trail.should_exit_on_break(
-                                candles_5m=candles_5m,
-                                trade_direction=_struct_info.get("direction", "BULL"),
-                                entry_spot=_struct_info.get("entry_spot"),
-                                entry_ts=_struct_info.get("entry_time"),
-                            )
-                            if decision.get("should_exit"):
-                                structure_break_exit = True
-                                structure_break_reason = (
-                                    f"STRUCTURE_BREAK: {decision.get('reason', '')}"
-                                )
-            except Exception as _e:
-                # Never block on trail error
-                print(f"[SCALPER] structure_trail check error #{t['id']}: {_e}")
-
-        if structure_break_exit and new_status == "OPEN":
-            new_status = "STRUCTURE_BREAK"
-            exit_price = current_ltp
-            exit_reason = structure_break_reason
-            sl_reason_text = structure_break_reason
-            print(f"[SCALPER] {structure_break_reason} · trade #{t['id']} "
-                  f"{idx} {action} {strike} @ ₹{exit_price}")
-
         # ─── B2.5 + B3.8: REVERSAL & VELOCITY pre-emptive exits ───
         # Run BEFORE SL/T1/T2 — if market context says exit, do it at LIVE
         # price (not at SL price), saves 2-5% slippage on big moves.
         reversal_exit = False
         reversal_reason = None
-
-        # ── MIN-HOLD GUARD (2026-05-27) ──
-        # 60-day audit: 38 PREMATURE_REVERSAL trades held only 3.3 min avg
-        # then got OI-reversal-exited at -0.7%. Trade didn't get chance to
-        # develop. ₹3.1L lost in this category.
-        # Fix: skip reversal/velocity exits if trade hasn't held minimum
-        # time. Min SL/T1/T2 logic still runs normally — just OI-based
-        # premature exit suppressed.
-        # Env: SCALPER_REVERSAL_MIN_HOLD_MIN
-        # DEFAULT CHANGED 2026-06-03: 0 → 5 (data-driven)
-        # 445-trade audit: 107 fast exits (<3min) total, 58 were REVERSAL
-        # exits with -₹71k net loss. These are premature OI-flip panic
-        # exits — most would have recovered if held the original setup's
-        # natural exit (SL/T1/trail).
-        # Override via env to test other values: 0=off, 3-10 reasonable.
-        try:
-            _rev_min_hold = int(os.environ.get("SCALPER_REVERSAL_MIN_HOLD_MIN", "5") or 5)
-        except Exception:
-            _rev_min_hold = 5
-        _reversal_blocked_by_min_hold = (_rev_min_hold > 0 and (hold_sec / 60) < _rev_min_hold)
 
         # B2.5: OI delta reversal trigger
         try:
@@ -2480,25 +1548,10 @@ def check_scalper_exits(chains):
         except Exception:
             pass
 
-        # B3.8: Premium velocity collapse (DISABLED 2026-06-03 by data audit)
-        # 445-trade audit revealed VELOCITY_EXIT:
-        #   • 34 trades, 3% win rate, -₹344,936 net loss
-        #   • Average loss per fire: -₹10,145
-        #   • Worst exit category after WATCHER_EXIT
-        # Theta decay alone is NOT a reason to exit a recoverable trade.
-        # The math: a -3% premium drop in 10 min ≠ trade is dead. Most of
-        # these recovered if held to TRAIL_EXIT (99% WR, +₹13k avg) or
-        # T1_HIT (100% WR, +₹30k avg). Velocity exit was cutting flowers,
-        # watering weeds.
-        #
-        # 2026-06-12 v2: DEFAULT FLIPPED off → on after deep audit.
-        # Original audit was MISCOUNTED — VELOCITY_EXIT was exiting LOSERS,
-        # looked like "losses" when it was actually loss-cutting.
-        # Disabling it caused SL_HIT avg hold to balloon 30min → 203min (3.5hr!)
-        # Same losers now compound to -8% SL instead of being cut at -3%.
-        # Scalper avg/trade collapsed ₹1,224 → ₹275 (-78%) since disabling.
-        # Re-enable as default. Override: VELOCITY_EXIT_ENABLED=off to disable.
-        if not reversal_exit and os.environ.get("VELOCITY_EXIT_ENABLED", "on").lower() == "on":
+        # B3.8: Premium velocity collapse (theta winning / direction wrong)
+        # Only fires if currently profitable enough to make exit worthwhile (>+2%)
+        # or if velocity warning is HIGH severity.
+        if not reversal_exit:
             try:
                 from premium_velocity import register as _pv_reg, push as _pv_push, assess as _pv_assess
                 sid = f"SCALPER:{t['id']}"
@@ -2506,69 +1559,18 @@ def check_scalper_exits(chains):
                 # If first time seeing this trade, register
                 if pv and pv.get("samples", 0) == 0:
                     _pv_reg(sid, entry, t.get("entry_spot", 0) or 0, action)
+                # Push current sample (need spot — try inferring; otherwise skip)
+                # Spot is not directly available here; skip push if missing
+                # (engine.py pushes premium velocity globally already via watcher)
                 if pv and pv.get("severity") == "HIGH":
                     profit_now_pct = ((current_ltp - entry) / entry * 100) if entry > 0 else 0
+                    # Only act if not deep in loss (else SL handles) and not big win (else T1 handles)
                     if -5 <= profit_now_pct <= 12:
                         reversal_exit = True
                         reversal_reason = (f"VELOCITY_EXIT: {pv.get('warning', 'velocity collapse')} "
                                            f"(profit {profit_now_pct:+.1f}%)")
             except Exception:
                 pass
-
-        # Honour min-hold guard: suppress reversal-exit if trade is too young.
-        # This filters the 38 PREMATURE_REVERSAL trades (₹3.1L damage in 60d).
-        if reversal_exit and _reversal_blocked_by_min_hold:
-            print(f"[SCALPER] REVERSAL suppressed by min-hold #{t['id']} "
-                  f"(hold {hold_sec/60:.1f}m < {_rev_min_hold}m threshold) — "
-                  f"would have been: {reversal_reason}")
-            reversal_exit = False
-            reversal_reason = None
-
-        # ─── 3-TIER PEAK-BASED SUPPRESSION (2026-06-11 — let runners run) ───
-        # User feedback: "200 wins × ₹1.25k = ₹2.5L vs 200 losses × ₹1k = ₹2L.
-        # Net ₹50k = death by thousand wins. Need bigger wins per trade."
-        #
-        # Today's data: REVERSAL_EXIT 12 trades, avg peak +2.77%, avg exit +2%.
-        # System exits at +2% when trades could have run to +5-10%.
-        #
-        # Logic (env-overridable):
-        #   Peak <+2%:        Exit normal (don't ride scratches)
-        #   Peak +2% to +5%:  Only exit if giveback > 1.5pp from peak
-        #   Peak >=+5%:       NEVER exit via REVERSAL (trust profit_floor)
-        #
-        # Estimated impact: 3x improvement on REVERSAL_EXIT category
-        # (₹90k today → ₹270k if rides held to +5-8% peak avg)
-        if reversal_exit:
-            try:
-                import os as _os_rs
-                if _os_rs.environ.get("SCALPER_REVERSAL_SMART_DISABLED", "").strip() not in ("1","true","on"):
-                    # Compute peak/profit context
-                    peak_local = max(t.get("peak_ltp", entry) or entry, current_ltp)
-                    peak_pct_local = ((peak_local - entry) / entry * 100) if entry > 0 else 0
-                    curr_profit_local = ((current_ltp - entry) / entry * 100) if entry > 0 else 0
-                    giveback_pp = peak_pct_local - curr_profit_local
-
-                    runner_threshold = float(_os_rs.environ.get("SCALPER_REVERSAL_RUNNER_PEAK", "5.0"))
-                    mid_peak_min = float(_os_rs.environ.get("SCALPER_REVERSAL_MID_PEAK_MIN", "2.0"))
-                    mid_max_giveback = float(_os_rs.environ.get("SCALPER_REVERSAL_MID_MAX_GIVEBACK", "1.5"))
-
-                    if peak_pct_local >= runner_threshold:
-                        # RUNNER ZONE — never kill via reversal
-                        print(f"[SCALPER] REVERSAL_SUPPRESS · #{t['id']} {idx} {action}: "
-                              f"RUNNER (peak +{peak_pct_local:.1f}% ≥ {runner_threshold}%) — "
-                              f"trust profit_floor + trail. Would have: {reversal_reason}")
-                        reversal_exit = False
-                        reversal_reason = None
-                    elif peak_pct_local >= mid_peak_min and giveback_pp < mid_max_giveback:
-                        # MID ZONE — small giveback, hold
-                        print(f"[SCALPER] REVERSAL_SUPPRESS · #{t['id']} {idx} {action}: "
-                              f"HEALTHY (peak +{peak_pct_local:.1f}%, giveback {giveback_pp:.1f}pp < {mid_max_giveback}pp) — "
-                              f"let it ride. Would have: {reversal_reason}")
-                        reversal_exit = False
-                        reversal_reason = None
-                    # else: peak < +2% OR giveback >= 1.5pp → exit normal (small win/scratch)
-            except Exception as _rs_e:
-                print(f"[SCALPER] reversal smart suppress error (allow exit): {_rs_e}")
 
         if reversal_exit:
             new_status = "REVERSAL_EXIT"
@@ -2579,39 +1581,6 @@ def check_scalper_exits(chains):
 
         # ─── Exit logic (priority order) ───
         active_sl_used = smart_active_sl if smart_enabled else sl
-
-        # ─── AGGRESSIVE PEAK FLOOR (Fix A, 2026-06-15) ──────────────────
-        # Belt-and-suspenders: independent of profit_floor / smart_sl /
-        # profit_trailing_sl chain. Guarantees peak-based floor is honored
-        # even if upstream systems missed it. Targets scalper SL_HIT bleed
-        # (₹6.29L over 60d, avg peak 5.46% — moves came but weren't locked).
-        # Tiers chosen to be MORE aggressive than profit_floor (starts at +3%).
-        # Env kill: SCALPER_AGG_FLOOR_DISABLED=1
-        try:
-            import os as _os_af
-            if _os_af.environ.get("SCALPER_AGG_FLOOR_DISABLED", "").strip() not in ("1","true","on"):
-                _af_peak_pct = peak_profit_pct_local
-                if _af_peak_pct >= 3.0:
-                    if _af_peak_pct >= 12.0:
-                        _af_floor_pct = 6.0
-                    elif _af_peak_pct >= 8.0:
-                        _af_floor_pct = 4.0
-                    elif _af_peak_pct >= 5.0:
-                        _af_floor_pct = 2.5
-                    elif _af_peak_pct >= 3.5:
-                        _af_floor_pct = 1.5
-                    else:  # 3.0 - 3.5
-                        _af_floor_pct = 0.5
-                    _af_floor_price = round(entry * (1 + _af_floor_pct/100), 2)
-                    if _af_floor_price > active_sl_used:
-                        old_sl = active_sl_used
-                        active_sl_used = _af_floor_price
-                        sl = active_sl_used
-                        t["sl_price"] = sl
-                        print(f"[SCALPER] AGG_FLOOR #{t['id']}: peak {_af_peak_pct:.1f}% → "
-                              f"floor +{_af_floor_pct}% (SL ₹{old_sl:.2f} → ₹{active_sl_used:.2f})")
-        except Exception:
-            pass
 
         # Wick-hunt protection: reset the consecutive-breach counter the
         # moment premium climbs back clear of SL.
@@ -2633,68 +1602,14 @@ def check_scalper_exits(chains):
             _confirm_ticks = max(1, int(_os_wk.environ.get("SCALPER_SL_CONFIRM_TICKS", "2") or 2))
             _sl_breach_count[t["id"]] = _sl_breach_count.get(t["id"], 0) + 1
             if _sl_breach_count[t["id"]] >= _confirm_ticks:
-                # ── PEAK-AWARE FLOOR (Fix 2, 2026-06-15) ──
-                # If trade peaked +5%+ during lifetime, don't dump full SL.
-                # Lock at peak × 0.4 (or current ltp if past floor).
-                # Catches trades like #51 (peak +17% → SL hit) — would lock +6.8%.
-                # Env kill: SCALPER_PEAK_FLOOR_DISABLED=1
-                _pf_disabled = _os_wk.environ.get("SCALPER_PEAK_FLOOR_DISABLED", "").strip() in ("1","true","on")
-                _pf_peak_thresh = float(_os_wk.environ.get("SCALPER_PEAK_FLOOR_PEAK_PCT", "5.0"))
-                _pf_factor = float(_os_wk.environ.get("SCALPER_PEAK_FLOOR_FACTOR", "0.4"))
-                _peak_pct_now = peak_profit_pct_local
-                if (not _pf_disabled) and _peak_pct_now >= _pf_peak_thresh:
-                    floor_pct = _peak_pct_now * _pf_factor
-                    floor_price = round(entry * (1 + floor_pct/100), 2)
-                    # 2026-06-17 (auditor NOTE #17): respect AGG_FLOOR's
-                    # already-raised SL — never lock below it.
-                    if active_sl_used > floor_price:
-                        floor_price = active_sl_used
-                        floor_pct = round((floor_price / entry - 1) * 100, 2)
-                    if current_ltp >= floor_price:
-                        new_status = "PEAK_FLOOR_EXIT"
-                        exit_price = floor_price
-                        exit_reason = (f"PEAK_FLOOR_LOCK at ₹{floor_price} (+{floor_pct:.1f}%) — "
-                                       f"trade peaked +{_peak_pct_now:.1f}% then SL approach. "
-                                       f"Floor saved profit (was SL at ₹{active_sl_used:.2f}).")
-                        sl_reason_text = exit_reason
-                        print(f"[SCALPER] PEAK_FLOOR · #{t['id']} {idx} {action} {strike} · "
-                              f"peak +{_peak_pct_now:.1f}% → exit +{floor_pct:.1f}% (was SL exit)")
-                    else:
-                        new_status = "SL_HIT"
-                        exit_price = active_sl_used
-                        exit_reason = (f"SL hit at ₹{active_sl_used:.2f} — peak was "
-                                       f"+{_peak_pct_now:.1f}% but premium crashed past "
-                                       f"floor ₹{floor_price}.")
-                        sl_reason_text = exit_reason
-                elif (not _pf_disabled) and _peak_pct_now >= 2.0:
-                    # ── MINI_PEAK_FLOOR (2026-06-17 — mirror main mode) ──
-                    # Peak 2-5% trades had no protection — exited at SL price.
-                    # Tiered: peak 2%→+0.3%, peak 3%→+0.8%, peak 4%→+1.3%
-                    _mini_floor_pct = round(0.3 + (_peak_pct_now - 2.0) * 0.5, 1)
-                    _mini_floor_price = round(entry * (1 + _mini_floor_pct/100), 2)
-                    if current_ltp >= _mini_floor_price:
-                        new_status = "PEAK_FLOOR_EXIT"
-                        exit_price = _mini_floor_price
-                        exit_reason = (f"MINI_PEAK_FLOOR at ₹{_mini_floor_price} (+{_mini_floor_pct}%) — "
-                                       f"peak +{_peak_pct_now:.1f}% saved from SL.")
-                        sl_reason_text = exit_reason
-                        print(f"[SCALPER] MINI_PEAK_FLOOR · #{t['id']} peak +{_peak_pct_now:.1f}% "
-                              f"→ +{_mini_floor_pct}% (was SL exit)")
-                    else:
-                        new_status = "SL_HIT"
-                        exit_price = active_sl_used
-                        exit_reason = (f"SL hit at ₹{active_sl_used:.2f} — peak +{_peak_pct_now:.1f}% "
-                                       f"but premium below mini-floor ₹{_mini_floor_price}.")
-                        sl_reason_text = exit_reason
+                new_status = "SL_HIT"
+                exit_price = active_sl_used
+                if smart_enabled:
+                    exit_reason = f"Smart SL hit (Stage {smart_stage} - {smart_label}) at ₹{active_sl_used:.2f}"
+                    sl_reason_text = f"Profit ladder triggered: Stage {smart_stage} ({smart_label}). Premium ₹{current_ltp:.2f} hit SL ₹{active_sl_used:.2f}"
                 else:
-                    new_status = "SL_HIT"
-                    exit_price = active_sl_used
-                    if smart_enabled:
-                        exit_reason = f"Smart SL hit (Stage {smart_stage} - {smart_label}) at ₹{active_sl_used:.2f}"
-                        sl_reason_text = f"Profit ladder triggered: Stage {smart_stage} ({smart_label}). Premium ₹{current_ltp:.2f} hit SL ₹{active_sl_used:.2f}"
-                    else:
-                        exit_reason = f"SL hit at ₹{sl:.2f}"
-                        sl_reason_text = f"Static SL hit. Premium ₹{current_ltp:.2f} ≤ SL ₹{sl:.2f}"
+                    exit_reason = f"SL hit at ₹{sl:.2f}"
+                    sl_reason_text = f"Static SL hit. Premium ₹{current_ltp:.2f} ≤ SL ₹{sl:.2f}"
             else:
                 print(f"[SCALPER] SL wick #{t['id']}: premium ₹{current_ltp:.2f} ≤ SL "
                       f"₹{active_sl_used:.2f} but only {_sl_breach_count[t['id']]}/{_confirm_ticks} "
@@ -2726,17 +1641,9 @@ def check_scalper_exits(chains):
             #   Side effect = SL_HIT will increment instead of T1_HIT,
             #                 but exit_reason makes the distinction clear.
             #
-            # DEFAULT CHANGED 2026-06-03: off → on (data-driven Fix 3)
-            # 445-trade audit revealed:
-            #   • 31 T1_HIT scalper trades (avg +5%, +₹921k total) — capped
-            #   • Only 2 T2_HIT (T2 is 12% — too far without floor lock)
-            #   • 31 trades peaked between T1 and T2 (avg peak 19.5%)
-            # Those 31 mid-runners would have ridden to avg 19.5% if T1
-            # floor lock were on — locking in T1 as floor while letting
-            # price run to T2 or higher. Worst case = T1 profit (same as
-            # before). Best case = full runner captured.
+            # Env-gated: T1_FLOOR_LOCK_ENABLED=on
             import os as _os
-            t1_lock_enabled = _os.environ.get("T1_FLOOR_LOCK_ENABLED", "on").lower() != "off"
+            t1_lock_enabled = _os.environ.get("T1_FLOOR_LOCK_ENABLED", "off").lower() == "on"
             if t1_lock_enabled and active_sl_used < t1:
                 # Lock SL to T1 — apply small buffer to avoid same-tick re-fire
                 new_floor_sl = round(t1 * 0.995, 2)  # T1 - 0.5% buffer
@@ -2824,7 +1731,6 @@ def check_scalper_exits(chains):
         conn2 = _conn()
         if new_status != "OPEN":
             _sl_breach_count.pop(t["id"], None)  # clean wick counter on close
-            _trade_structure_mode.pop(t["id"], None)  # clean structure-mode tracking
             final_pnl = round((exit_price - entry) * t["qty"], 2)
             conn2.execute("""
                 UPDATE scalper_trades SET

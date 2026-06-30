@@ -66,28 +66,6 @@ def kite_login():
 
     session = requests.Session()
 
-    # Browser-like headers — Kite's anti-bot detection rejects naked
-    # requests.Session() calls. Mimicking a real Chrome request avoids
-    # silent CAPTCHA challenges and "Invalid request" rejections that
-    # caused the daily 8:50 AM login failures.
-    session.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        # Drop "br" — requests doesn't auto-decompress brotli without the
-        # brotli package installed. Kite was returning brotli-encoded JSON
-        # and the response body was binary garbage → JSONDecodeError.
-        # gzip + deflate are always auto-decompressed by urllib3.
-        "Accept-Encoding": "gzip, deflate",
-        "DNT": "1",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-    })
-
     # Step 1: POST credentials
     print(f"[AUTO-LOGIN] Step 1: Logging in as {USER_ID}...")
     login_resp = session.post("https://kite.zerodha.com/api/login", data={
@@ -95,28 +73,12 @@ def kite_login():
         "password": PASSWORD,
     })
 
-    # Capture response details for debugging — Kite sometimes returns
-    # HTML/CAPTCHA challenges instead of JSON (anti-bot detection).
     if login_resp.status_code != 200:
-        raise Exception(
-            f"Step 1 HTTP {login_resp.status_code} — "
-            f"headers={dict(login_resp.headers)} — "
-            f"body[:400]={login_resp.text[:400]}"
-        )
+        raise Exception(f"Login failed: {login_resp.status_code} — {login_resp.text[:200]}")
 
-    # Try to parse JSON — if Kite returned HTML/non-JSON, expose what they sent
-    try:
-        login_data = login_resp.json()
-    except Exception as je:
-        raise Exception(
-            f"Step 1 non-JSON response (status {login_resp.status_code}, "
-            f"content-type='{login_resp.headers.get('content-type', '?')}', "
-            f"body_len={len(login_resp.text)}): "
-            f"body[:500]={login_resp.text[:500]!r}"
-        )
-
+    login_data = login_resp.json()
     if login_data.get("status") != "success":
-        raise Exception(f"Step 1 failed: {login_data}")
+        raise Exception(f"Login failed: {login_data}")
 
     request_id = login_data["data"]["request_id"]
     print(f"[AUTO-LOGIN] Step 1 OK — request_id: {request_id[:10]}...")

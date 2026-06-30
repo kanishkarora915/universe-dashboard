@@ -55,11 +55,6 @@ if not _SCALPER_DB.exists():
 # ── Env flags ──────────────────────────────────────────────────────────
 
 def is_enabled() -> bool:
-    # 2026-06-11 v4 — FLIPPED off per user feedback.
-    # "merko koi greed ni hai, system loss bhi karega"
-    # Daily cap was blocking entries after 3 small losses. Trust per-trade
-    # damage control (EARLY_CUT, profit_floor, ZOMBIE_KILL).
-    # Override: DAILY_LOSS_CAP_ENABLED=on to restore.
     return os.environ.get("DAILY_LOSS_CAP_ENABLED", "off").lower() == "on"
 
 
@@ -68,20 +63,15 @@ def is_shadow_enabled() -> bool:
 
 
 def daily_loss_limit(tab: str) -> float:
-    """Per-tab daily loss limit (negative number — represents max loss).
-
-    2026-06-11: raised default 15k → 20k. Gives 33% more rope to avoid
-    the original "tripping on 3 small losses by lunch" complaint, while
-    still capping runaway days (worst was -₹1.02L single day).
-    """
+    """Per-tab daily loss limit (negative number — represents max loss)."""
     if tab.upper() == "MAIN":
-        v = os.environ.get("DAILY_LOSS_LIMIT_MAIN", "20000")
+        v = os.environ.get("DAILY_LOSS_LIMIT_MAIN", "15000")
     else:
-        v = os.environ.get("DAILY_LOSS_LIMIT_SCALPER", "20000")
+        v = os.environ.get("DAILY_LOSS_LIMIT_SCALPER", "15000")
     try:
         return float(v)
     except ValueError:
-        return 20000
+        return 15000
 
 
 def consecutive_loss_limit() -> int:

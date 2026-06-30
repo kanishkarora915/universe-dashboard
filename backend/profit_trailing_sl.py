@@ -223,7 +223,6 @@ def update_main_trail(trade: Dict, current_premium: float) -> Optional[Dict]:
         )
         floor_sl = _pf_min(
             entry_price=entry, peak_price=peak_price, current_sl=current_sl,
-            idx=trade.get("idx"),  # per-index bands (BANKNIFTY noise-shifted)
         )
         # Floor wins if higher than current legacy
         if floor_sl > legacy_new_sl:
@@ -315,18 +314,6 @@ def update_main_trail(trade: Dict, current_premium: float) -> Optional[Dict]:
         return None
 
     _log_trail("MAIN", trade, calc, current_premium, "auto-raise")
-    # SL attribution log (bear-trader fix — track which ladder raised SL)
-    try:
-        from profit_floor import attribution_log
-        attribution_log(
-            trade_id=trade.get("id"), tab="MAIN",
-            old_sl=current_sl, new_sl=calc["new_sl"],
-            source=method_tag.lower(),
-            peak_price=peak_price, entry_price=entry,
-            extra=f"stage={calc.get('stage_threshold','?')}",
-        )
-    except Exception:
-        pass
     print(f"[TRAIL] MAIN #{trade.get('id')} {trade.get('idx')} {trade.get('action')} "
           f"{trade.get('strike')}: profit {calc['profit_pct']:+.1f}%, "
           f"SL ₹{current_sl} → ₹{calc['new_sl']} (locked {calc['locked_pct']:+.1f}%)")
@@ -360,7 +347,6 @@ def update_scalper_trail(trade: Dict, current_premium: float) -> Optional[Dict]:
         )
         floor_sl = _pf_min(
             entry_price=entry, peak_price=peak_price, current_sl=current_sl,
-            idx=trade.get("idx"),  # per-index bands (BANKNIFTY noise-shifted)
         )
         if floor_sl > legacy_new_sl:
             calc = calc or {}
@@ -443,19 +429,6 @@ def update_scalper_trail(trade: Dict, current_premium: float) -> Optional[Dict]:
         return None
 
     _log_trail("SCALPER", trade, calc, current_premium, "auto-raise")
-    # SL attribution log (bear-trader fix — track which ladder raised SL)
-    try:
-        from profit_floor import attribution_log
-        method_tag2 = "aggressive_peak" if calc.get("aggressive_override") else "profit_trail"
-        attribution_log(
-            trade_id=trade.get("id"), tab="SCALPER",
-            old_sl=current_sl, new_sl=calc["new_sl"],
-            source=method_tag2,
-            peak_price=peak_price, entry_price=entry,
-            extra=f"stage={calc.get('stage_threshold','?')}",
-        )
-    except Exception:
-        pass
     print(f"[TRAIL] SCALPER #{trade.get('id')} {trade.get('idx')} {trade.get('action')} "
           f"{trade.get('strike')}: profit {calc['profit_pct']:+.1f}%, "
           f"SL ₹{current_sl} → ₹{calc['new_sl']} (locked {calc['locked_pct']:+.1f}%)")

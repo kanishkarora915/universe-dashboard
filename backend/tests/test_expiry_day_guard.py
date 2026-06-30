@@ -36,14 +36,7 @@ def _ist(year, month, day, hour=10, minute=30):
 # ── ENV FLAGS ──────────────────────────────────────────────────────────
 
 class TestEnvFlags:
-    def test_default_master_enabled(self):
-        # 2026-06-12: default FLIPPED off → on after deep audit
-        # showed Tuesday morning was ₹-1.54L loss.
-        from expiry_day_guard import is_enabled
-        assert is_enabled() is True
-
-    def test_disabled_when_off(self, monkeypatch):
-        monkeypatch.setenv("EXPIRY_DAY_SKIP_ENABLED", "off")
+    def test_default_master_disabled(self):
         from expiry_day_guard import is_enabled
         assert is_enabled() is False
 
@@ -60,12 +53,9 @@ class TestEnvFlags:
         from expiry_day_guard import skip_monday
         assert skip_monday() is False
 
-    def test_late_hour_default_10(self):
-        # 2026-06-12: default FLIPPED 14 → 10 after data showed
-        # 9-10 AM Tuesday was the killer hour (-₹1.54L).
-        # Block first hour only; allow from 10 AM onward.
+    def test_late_hour_default_14(self):
         from expiry_day_guard import allow_late_hour
-        assert allow_late_hour() == 10
+        assert allow_late_hour() == 14
 
     def test_late_hour_configurable(self, monkeypatch):
         monkeypatch.setenv("EXPIRY_DAY_ALLOW_LATE_HOUR", "15")
@@ -77,21 +67,13 @@ class TestEnvFlags:
 
 class TestAssess:
     def test_tuesday_morning_skips(self):
-        """Tuesday 9:30 AM — should be flagged to skip (in 9-10 AM danger zone)."""
+        """Tuesday 10:30 AM — should be flagged to skip."""
         from expiry_day_guard import assess
-        # 2026-05-19 is a Tuesday. Use 9:30 (before allow_late_hour=10).
-        d = assess(now=_ist(2026, 5, 19, 9, 30))
+        # 2026-05-19 is a Tuesday
+        d = assess(now=_ist(2026, 5, 19, 10, 30))
         assert d["is_tuesday"] is True
         assert d["skip"] is True
         assert "Tuesday" in d["reason"]
-
-    def test_tuesday_after_10am_allowed(self):
-        """Tuesday 10:30 AM — past killer hour, allowed (data shows 10-11 AM is profitable)."""
-        from expiry_day_guard import assess
-        d = assess(now=_ist(2026, 5, 19, 10, 30))
-        assert d["is_tuesday"] is True
-        assert d["is_late_hour"] is True
-        assert d["skip"] is False
 
     def test_tuesday_late_hour_passes(self):
         """Tuesday 2:30 PM — after pin action, allowed."""
@@ -146,18 +128,17 @@ class TestAssess:
 # ── should_skip — public API ───────────────────────────────────────────
 
 class TestShouldSkip:
-    def test_disabled_never_blocks(self, monkeypatch):
-        """When master flag is OFF (via env), never blocks regardless of day."""
-        monkeypatch.setenv("EXPIRY_DAY_SKIP_ENABLED", "off")
+    def test_disabled_never_blocks(self):
+        """When master flag is OFF, never blocks regardless of day."""
         from expiry_day_guard import should_skip
-        result = should_skip(source="test", now=_ist(2026, 5, 19, 9, 30))  # Tuesday morning
+        result = should_skip(source="test", now=_ist(2026, 5, 19, 10, 30))  # Tuesday
+        # Master flag default off → no block
         assert result is False
 
-    def test_enabled_blocks_tuesday_morning(self, monkeypatch):
-        """Tuesday 9:30 AM (in danger window) is BLOCKED when enabled."""
+    def test_enabled_blocks_tuesday(self, monkeypatch):
         monkeypatch.setenv("EXPIRY_DAY_SKIP_ENABLED", "on")
         from expiry_day_guard import should_skip
-        result = should_skip(source="test", now=_ist(2026, 5, 19, 9, 30))
+        result = should_skip(source="test", now=_ist(2026, 5, 19, 10, 30))  # Tuesday
         assert result is True
 
     def test_enabled_allows_wednesday(self, monkeypatch):

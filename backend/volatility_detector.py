@@ -60,12 +60,8 @@ def get_time_window():
         return "OPENING_FIRST_5MIN"
     if hm < 1030:
         return "MORNING_TREND"
-    if hm < 1100:
+    if hm < 1130:
         return "MID_MORNING"
-    # 2026-06-11: 11:00-12:00 added as PRE_LUNCH_CHOP based on 60d data.
-    # SL_HIT loss in this window: ₹-2,25,936 / 21 trades (worst hour by far!).
-    if hm < 1200:
-        return "PRE_LUNCH_CHOP"
     if hm < 1230:
         return "LUNCH_CHOP"
     if hm < 1400:
@@ -259,48 +255,30 @@ def build_recommendations(regime, time_window, vix, atr_ratio, expiry):
         rec["sl_multiplier"] = 0.7  # tighter SL on expiry (theta crush)
         rec["target_multiplier"] = 0.7  # smaller targets (less time)
         rec["qty_multiplier"] = 0.5
-        # 2026-06-09: DEFAULT FLIPPED — allow PnL on expiry by default.
-        # User: "aur volatile hai toh kya, let system trade, will see how
-        # smart it is and how fast react".
-        # Trust trade engine + damage control. Expiry-day risk handled by:
-        #   1. expiry_day_guard.py (surgical Tuesday NIFTY block, env on)
-        #   2. min_prob raised to 70% on expiry (this module)
-        #   3. qty multiplier 0.5 (this module)
-        #   4. EARLY_CUT / BREAKEVEN damage control (scalper_mode)
-        # Set BLOCK_PNL_ON_EXPIRY=1 to restore old "block all main" behavior.
+        # User-configurable: allow PnL trades on expiry if user opts in.
+        # Default ON (safer), but can be overridden via env var or DB toggle.
+        # Env: ALLOW_PNL_ON_EXPIRY=1 → don't pause PnL on expiry days.
         import os
-        block_pnl_expiry = os.getenv("BLOCK_PNL_ON_EXPIRY", "").lower() in ("1", "true", "yes")
-        if block_pnl_expiry:
-            rec["main_pnl_allowed"] = False
-            rec["warnings"].append("EXPIRY DAY — main P&L paused (legacy block)")
+        allow_pnl_expiry = os.getenv("ALLOW_PNL_ON_EXPIRY", "").lower() in ("1", "true", "yes")
+        if not allow_pnl_expiry:
+            rec["main_pnl_allowed"] = False  # only scalper on expiry
+            rec["warnings"].append("EXPIRY DAY — main P&L paused, scalper only with tight SL")
         else:
-            # Tightened threshold + smaller qty, but allow firing.
-            rec["min_probability"] = max(rec.get("min_probability", 50), 70)
-            rec["qty_multiplier"] = min(rec.get("qty_multiplier", 1.0), 0.5)
-            rec["warnings"].append("EXPIRY DAY — trading enabled, min_prob 70%, qty 50%")
+            rec["warnings"].append("EXPIRY DAY — PnL allowed (user override) but min_prob 70%, qty 50%")
 
     # ── Time-window adjustments ──
-    # 2026-06-10: REMOVED min_prob raises (60 was blocking Main mode).
-    # User principle: smart not strict — trust damage control on exit.
-    # Kept qty_multipliers (smaller position size during chop is sensible).
-    # Kept target_multiplier expand on power hour (catch bigger moves).
     if time_window == "OPENING_FIRST_5MIN":
         rec["trade_allowed"] = False
         rec["warnings"].append("First 5 min — wait for stabilization")
-    elif time_window == "PRE_LUNCH_CHOP":
-        # 2026-06-11: NEW window. 60d audit showed 11:00-12:00 had
-        # ₹-2.26L SL_HIT damage across 21 trades — worst hour of day.
-        # Smart not strict: 0.7x qty + warning. Damage control still fires.
-        rec["qty_multiplier"] *= 0.7
-        rec["warnings"].append("Pre-lunch chop (11-12) — historical worst hour, smaller qty")
     elif time_window == "LUNCH_CHOP":
-        # min_prob NOT raised (was forcing 60 — blocked legit setups)
-        rec["qty_multiplier"] *= 0.6  # smaller position is sensible safety
-        rec["warnings"].append("Lunch chop — smaller qty (entries still allowed)")
+        # TUNED: 70 was over-blocking valid lunch trades. 60 keeps quality
+        # bar high while capturing post-lunch trend setups.
+        rec["min_probability"] = max(rec["min_probability"], 60)  # was 70
+        rec["qty_multiplier"] *= 0.6
+        rec["warnings"].append("Lunch chop — higher conviction needed (60%+)")
     elif time_window == "POWER_HOUR":
-        # min_prob NOT raised (was forcing 60 — blocked Main mode 14:00+)
+        rec["min_probability"] = max(rec["min_probability"], 60)
         rec["target_multiplier"] *= 1.3  # bigger moves possible
-        rec["warnings"].append("Power hour — bigger targets possible")
     elif time_window in ("PRE_MARKET", "POST_MARKET", "CLOSING"):
         rec["trade_allowed"] = False
         rec["warnings"].append(f"{time_window} — no new trades")

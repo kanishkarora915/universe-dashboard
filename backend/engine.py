@@ -5,7 +5,6 @@ ALL DATA IS REAL — fetched via Kite REST API at startup + live ticks via WebSo
 """
 
 import math
-import os
 import time
 import threading
 import asyncio
@@ -42,13 +41,7 @@ TRADING_DAYS = 252
 #   2) Respect regime.recommend.main_pnl_allowed flag
 #   3) Consecutive-loss circuit breaker per (idx, side)
 #   4) OI confirmation on entry (not just exit)
-#   5) [resolved 2026-06-15 — verified in regime audit] Verdict action
-#      derives from symmetric weighted vote (engine_weights.json applies
-#      equally to CE/PE). Earlier "CE-first" wording referred to a
-#      speculative concern in this comment, not actual scan-order code.
-#      Practical asymmetry was traced to market_context.py +5 bonus in
-#      200d UPTREND — now made adaptive in Fix E. No CE-first scan bias
-#      exists in production code.
+#   5) Fair CE/PE scan order (currently CE-first biased)
 # Verdict-based engine (54% winrate, +₹18,869 over 14 days, 126 trades)
 # remains the production trading path.
 REVERSAL_ZONE_ENABLED = False
@@ -527,25 +520,10 @@ class MarketEngine:
         STAGE_COOLDOWN_SEC = 30
 
         # Stage durations (seconds of stale time before stage fires)
-        # 2026-06-08 v2: BASICS-LEVEL fix. kiteconnect's KiteTicker uses
-        # Twisted reactor — a SINGLETON per Python process that can only
-        # run ONCE. Once disconnected (network blip / Kite server restart
-        # / overnight idle), ticker.connect() in same process silently
-        # fails because the reactor is dead. ONLY fix that works:
-        # new Python process = new reactor.
-        #
-        # Previous stages 1-4 (soft restart, resubscribe, token reload,
-        # fresh login) all run in the SAME process with the SAME dead
-        # reactor — they CANNOT work. They were cosmetic bandaids.
-        #
-        # New behavior: Stage 1 still tries soft restart (in case it's a
-        # transient blip), but stages 2-5 collapsed into one — at 60s
-        # stale, self-kill. Render auto-restarts → fresh process →
-        # fresh reactor → ticker connects.
-        STAGE_2_AT = 60   # collapsed: this is now self-kill threshold
-        STAGE_3_AT = 60   # (unused — kept for code compat)
-        STAGE_4_AT = 60   # (unused)
-        STAGE_5_AT = 60   # (unused)
+        STAGE_2_AT = 45
+        STAGE_3_AT = 90
+        STAGE_4_AT = 150
+        STAGE_5_AT = 210
 
         def _send_telegram(msg, key):
             try:
@@ -710,28 +688,50 @@ class MarketEngine:
                             print(f"[WS-WATCHDOG] Stage 1 FAILED: {e}")
                             _log_event("ws_stage_1_failed", error=str(e))
 
-                    # ── Stages 2-4 COLLAPSED (2026-06-08 v2) ──
-                    # Per Twisted reactor analysis: soft restarts can't fix
-                    # a dead reactor in the same process. Jumping straight
-                    # to self-kill if Stage 1 restart didn't recover within
-                    # 60s. All branches below kept as no-ops for safety
-                    # (current_stage never reaches them now).
-                    elif False:  # disabled
+                    # ── Stage 2: restart + force re-subscribe ──
+                    elif (current_stage == 1
+                          and stale_duration >= STAGE_2_AT
+                          and cooldown_ok):
                         current_stage = 2
                         last_action_ts = now
+                        print(f"[WS-WATCHDOG] STAGE 2: restart + force re-subscribe "
+                              f"(stale {stale_duration:.0f}s, Stage 1 didn't recover)")
+                        _send_telegram(
+                            f"⚠️ *WS Stage 2* — restart + resubscribe "
+                            f"(stale {stale_duration:.0f}s)",
+                            key="ws_stage_2"
+                        )
+                        _log_event("ws_stage_2_resubscribe",
+                                   stale_sec=round(stale_duration, 1))
                         try:
                             self._restart_ticker()
-                            _time.sleep(2)
+                            _time.sleep(2)  # give ticker time to connect
                             _force_resubscribe()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"[WS-WATCHDOG] Stage 2 FAILED: {e}")
+                            _log_event("ws_stage_2_failed", error=str(e))
 
-                    elif False:  # disabled
+                    # ── Stage 3: reload token from /data cache ──
+                    elif (current_stage == 2
+                          and stale_duration >= STAGE_3_AT
+                          and cooldown_ok):
                         current_stage = 3
                         last_action_ts = now
+                        print(f"[WS-WATCHDOG] STAGE 3: reload token from cache "
+                              f"(stale {stale_duration:.0f}s)")
+                        _send_telegram(
+                            f"⚠️ *WS Stage 3* — reloading cached token "
+                            f"(stale {stale_duration:.0f}s)",
+                            key="ws_stage_3"
+                        )
+                        _log_event("ws_stage_3_token_reload",
+                                   stale_sec=round(stale_duration, 1))
                         _reload_token_from_cache()
 
-                    elif False:  # disabled — see Stage 2 collapse
+                    # ── Stage 4: full fresh Kite login ──
+                    elif (current_stage == 3
+                          and stale_duration >= STAGE_4_AT
+                          and cooldown_ok):
                         current_stage = 4
                         last_action_ts = now
                         print(f"[WS-WATCHDOG] STAGE 4: full fresh Kite login "
@@ -745,62 +745,27 @@ class MarketEngine:
                                    stale_sec=round(stale_duration, 1))
                         _trigger_fresh_login()
 
-                    # ── Stage 5 also collapsed — direct path to self-kill ──
-                    elif False:  # disabled
+                    # ── Stage 5: CRITICAL — manual intervention ──
+                    elif (current_stage == 4
+                          and stale_duration >= STAGE_5_AT
+                          and cooldown_ok):
                         current_stage = 5
                         last_action_ts = now
+                        print(f"[WS-WATCHDOG] STAGE 5 CRITICAL: all auto-recovery "
+                              f"failed (stale {stale_duration:.0f}s)")
+                        _send_telegram(
+                            f"🚨 *WS CRITICAL — MANUAL ACTION NEEDED*\n"
+                            f"All 4 auto-recovery stages failed.\n"
+                            f"Stale {stale_duration:.0f}s. WS dead.\n"
+                            f"Login to dashboard manually NOW.",
+                            key="ws_stage_5_critical"
+                        )
                         _log_event("ws_stage_5_critical",
                                    stale_sec=round(stale_duration, 1))
 
-                    # ── Stage 6: PROCESS SELF-KILL (2026-06-08) ──
-                    # Permanent fix for recurring WS dead-but-engine-running bug.
-                    # When all soft recoveries fail (token refresh, ticker
-                    # restart, resubscribe, fresh login), the only thing that
-                    # has historically worked is a full container restart on
-                    # Render (clears DNS cache, socket file descriptors,
-                    # KiteTicker internal state corruption).
-                    #
-                    # os._exit(1) bypasses Python's normal shutdown handlers
-                    # and exits the process immediately with non-zero status.
-                    # Render's service manager treats non-zero exit as crash
-                    # and auto-restarts the container — fresh DNS, fresh
-                    # sockets, fresh process state. ~30-60 sec total downtime.
-                    #
-                    # SAFETY: only fires during market hours (already gated by
-                    # is_market check at top of loop) AND only after 5 full
-                    # stages of soft recovery attempts (~5 minutes total).
-                    # Cannot accidentally fire — needs the system to be truly
-                    # stuck for minutes.
-                    # ── ROOT-CAUSE FIX (2026-06-08 v2) ──
-                    # Per Twisted reactor analysis: soft restart (Stage 1)
-                    # may work for true transient blips. If it doesn't
-                    # recover within 60s, reactor is dead and ONLY new
-                    # process can fix it. Fire self-kill at 60s stale.
-                    STAGE_KILL_AT = 60  # was STAGE_5_AT + 90 = 210
-                    if (current_stage >= 1
-                            and stale_duration >= STAGE_KILL_AT
-                            and cooldown_ok):
-                        last_action_ts = now
-                        print(f"[WS-WATCHDOG] SELF-KILL: Stage 1 restart "
-                              f"didn't recover (stale {stale_duration:.0f}s). "
-                              f"Twisted reactor likely dead — process exit "
-                              f"for Render fresh-container restart.")
-                        _send_telegram(
-                            f"💀 *WS SELF-KILL*\n"
-                            f"Soft restart failed (stale {stale_duration:.0f}s).\n"
-                            f"Reactor likely dead → process exit.\n"
-                            f"Render auto-restart in 60-90 sec.",
-                            key="ws_selfkill"
-                        )
-                        _log_event("ws_selfkill",
-                                   stale_sec=round(stale_duration, 1))
-                        _time.sleep(2)  # let Telegram fire
-                        import os as _os_exit
-                        _os_exit._exit(1)  # Render auto-restarts
-
-                    # ── Already at Stage 6 or post-action settle ──
-                    # If recovery happens organically, healthy branch fires
-                    # and resets state.
+                    # ── Already at Stage 5 or post-action settle ──
+                    # Just keep checking; if recovery happens, healthy branch
+                    # will fire and reset state.
 
                 except Exception as e:
                     print(f"[WS-WATCHDOG] Loop error: {e}")
@@ -979,11 +944,11 @@ class MarketEngine:
                 except Exception as e:
                     print(f"[CACHE-POP] outer error: {e}")
 
-                # 2026-06-08: bumped 1s → 3s. Load avg hit 12.85 on
-                # Render's 0.5-CPU container with 1s cadence + 22 threads.
-                # 3s is plenty fresh for non-trading UI (chain, OI, signals).
-                # Trade decisions use direct engine state, not this cache.
-                _time.sleep(3.0)
+                # Real-time freshness: 3s → 1s (2026-05-14).
+                # If a cycle takes longer than 1s (chain rebuild can take
+                # 200-500ms), cycles naturally run back-to-back — no race,
+                # no overlap. Cache entries become at most 1s stale.
+                _time.sleep(1.0)
             print("[CACHE-POP] Stopped")
 
         t = threading.Thread(target=_populator_loop, daemon=True, name="cache-populator")
@@ -1362,48 +1327,16 @@ class MarketEngine:
             print(f"[ENGINE] Trap scanner init failed: {e}")
             self.trap_scanner = None
 
-    def stop(self, wait_sec: float = 3.0):
-        """Stop engine cleanly.
-
-        OLD BUG: stop() returned immediately. Background watcher threads
-        (verdict loop, candle builder, position watcher, premium velocity,
-        trap scanner) all loop on `while self.running:` with internal
-        sleeps. They exit at their next iteration — up to 60 sec later.
-        Meanwhile _start_engine_with_token() would already have built a
-        new MarketEngine, causing dual-engine overlap: two WS subscriptions
-        on the same tokens, two DB writers, and the OLD engine's threads
-        still hitting Kite with the OLD access_token (403 storm).
-
-        Fix: close the ticker first (kills WS), set running=False (signals
-        all loops to exit), then sleep `wait_sec` to give threads time to
-        notice the flag and exit. Not a join() (threads are daemon=True
-        and we don't track them all), but enough to clear the overlap
-        window in practice.
-        """
-        # Close ticker FIRST — stops new ticks and WS auth attempts
+    def stop(self):
+        self.running = False
+        if hasattr(self, 'trap_scanner') and self.trap_scanner:
+            self.trap_scanner.stop()
         if self.ticker:
             try:
                 self.ticker.close()
             except Exception:
                 pass
-            self.ticker = None
-        # Flag-flip — every `while self.running:` loop exits on next check
-        self.running = False
-        if hasattr(self, 'trap_scanner') and self.trap_scanner:
-            try:
-                self.trap_scanner.stop()
-            except Exception:
-                pass
-        # Give threads up to wait_sec to notice the flag. Most loops sleep
-        # 1-5 sec, so 3 sec catches the majority. Caller (engine swap)
-        # uses a lock that holds till stop() returns — no new engine
-        # spawns during this window.
-        try:
-            import time as _t
-            _t.sleep(max(0.1, wait_sec))
-        except Exception:
-            pass
-        print(f"[ENGINE] Market engine stopped (waited {wait_sec:.1f}s for threads).")
+        print("[ENGINE] Market engine stopped.")
 
     def register_ws(self, ws):
         with self._ws_lock:
@@ -2733,28 +2666,12 @@ class MarketEngine:
             bear_count = sum(1 for d in directions if d == "BEARISH")
             total_tf = len(directions)
 
-            # ── ALL_* CONFLUENCE NEUTRALIZED 2026-06-03 (data audit) ──
-            # 445-trade audit revealed:
-            #   • ALL_BULLISH appeared in 19 trades, 32% WR, -₹136,611
-            #   • ALL_BEARISH appeared in 17 trades, 29% WR, -₹206,337
-            #   • Multi-TF as keyword: 59 trades, 39% WR, -₹324,660
-            # Full timeframe alignment is a TRAILING signal — by the time
-            # 5m+15m+1h all agree, the move is already mature → reversal
-            # imminent. The +15 pt boost was actively pushing the system
-            # into top/bottom catches.
-            # MOSTLY_* (partial alignment) keeps the +8 pt boost because
-            # partial agreement = early-stage move = good entry signal.
-            # Override via env: MULTITF_ALL_PTS=15 to restore old behavior.
-            try:
-                _all_pts = int(os.environ.get("MULTITF_ALL_PTS", "0"))
-            except (TypeError, ValueError):
-                _all_pts = 0
             if bull_count == total_tf and total_tf >= 2:
                 confluence = "ALL_BULLISH"
-                conf_score = _all_pts  # was 15 — now 0 (extreme = contrarian)
+                conf_score = 15
             elif bear_count == total_tf and total_tf >= 2:
                 confluence = "ALL_BEARISH"
-                conf_score = _all_pts  # was 15 — now 0
+                conf_score = 15
             elif bull_count > bear_count:
                 confluence = "MOSTLY_BULLISH"
                 conf_score = 8
@@ -4588,22 +4505,8 @@ class MarketEngine:
 
         def on_connect(ws, response):
             print(f"[TICKER] Connected. Subscribing {len(self._subscribe_tokens)} tokens...")
-            # Route through ws_contract.safe_subscribe so silent subscribe
-            # no-ops get verified by the contract layer (smoke test 30s later
-            # will detect missing prices + alert + force restart).
-            try:
-                from ws_contract import safe_subscribe as _safe_sub
-                r = _safe_sub(ws, self._subscribe_tokens)
-                if r.get("error"):
-                    print(f"[TICKER] safe_subscribe error: {r['error']}")
-                else:
-                    print(f"[TICKER] subscribed={r['subscribed']} mode_set={r['mode_set']} took={r['took_sec']}s")
-            except Exception as _ce:
-                # Hard fallback to original behaviour — contract is OPT-IN,
-                # never block ticker connect on import failure.
-                print(f"[TICKER] ws_contract unavailable ({_ce}); using raw subscribe")
-                ws.subscribe(self._subscribe_tokens)
-                ws.set_mode(ws.MODE_FULL, self._subscribe_tokens)
+            ws.subscribe(self._subscribe_tokens)
+            ws.set_mode(ws.MODE_FULL, self._subscribe_tokens)
 
         def on_close(ws, code, reason):
             print(f"[TICKER] Closed: {code} — {reason}. Will auto-reconnect.")
@@ -5053,7 +4956,7 @@ class MarketEngine:
                     print(f"[REJECTION] capture error: {e}")
             threading.Thread(target=_capture_rejection, daemon=True, name="rejection-capture").start()
 
-        # Auto-trade: SL/target check every 5s (lightweight), verdict every 30s (heavy, background)
+        # Auto-trade: SL/target check every 5s (lightweight), verdict every 60s (heavy, background)
         if hasattr(self, 'trade_manager') and self.trade_manager and now - self.trade_manager._last_sl_check >= 5:
             self.trade_manager._last_sl_check = now
             # Split exceptions: SL monitor error must NOT block verdict scheduling
@@ -5062,19 +4965,8 @@ class MarketEngine:
             except Exception as e:
                 print(f"[TRADE] check_and_update error: {e}")
 
-            # ── DECISION SPEED FIX (2026-06-03) ──
-            # Verdict cycle dropped 60s → 30s so Main mode catches fast moves
-            # like today's BANKNIFTY +1267-pt rally that scalper caught 8 trades
-            # on but Main missed entirely. 30s strikes balance:
-            #   • verdict computation cost (~200ms) still <1% CPU
-            #   • signal-to-pending latency halved (60s → 30s)
-            #   • pending-to-fire latency unchanged (relies on momentum confirm)
-            # Override via VERDICT_CYCLE_SEC env if needed.
-            try:
-                _vc = int(os.environ.get("VERDICT_CYCLE_SEC", "30"))
-            except (TypeError, ValueError):
-                _vc = 30
-            if now - self.trade_manager._last_verdict_check >= _vc:
+            # Verdict check every 60s — always attempted, independent of SL monitor
+            if now - self.trade_manager._last_verdict_check >= 60:
                 try:
                     threading.Thread(target=self._background_verdict_check, daemon=True).start()
                     self.trade_manager._last_verdict_check = now  # Only advance after successful start
@@ -5118,16 +5010,11 @@ class MarketEngine:
             except Exception as e:
                 print(f"[TRADE] check_position_alerts error: {e}")
 
-            # Clear stale pending entries per-index — synced with PENDING_TTL_SEC
-            # 2026-06-11 v2: reverted 180s → 90s per user feedback.
-            try:
-                _stale_ttl = int(os.environ.get("PENDING_TTL_SEC", "90"))
-            except (TypeError, ValueError):
-                _stale_ttl = 90
+            # Clear stale pending entries per-index (>5 min old)
             now_ts = time.time()
             for pidx in list(self.trade_manager._pending_entry.keys()):
                 pt = self.trade_manager._pending_entry_time.get(pidx, 0)
-                if now_ts - pt > _stale_ttl:
+                if now_ts - pt > 300:
                     print(f"[TRADE] Pending {pidx} expired ({now_ts - pt:.0f}s old) — clearing")
                     self.trade_manager._pending_entry.pop(pidx, None)
                     self.trade_manager._pending_entry_time.pop(pidx, None)
@@ -5166,7 +5053,6 @@ class MarketEngine:
                                     entry_bull_pct=v.get("bullPct", 0),
                                     entry_bear_pct=v.get("bearPct", 0),
                                     entry_spot=spot_ltp,
-                                    verdict_data=v,
                                 )
 
                     # ── EARLY-MOVE INDEPENDENT FIRE (2026-05-22) ──
@@ -5218,7 +5104,6 @@ class MarketEngine:
                                         entry_reasoning=f"EARLY-MOVE: {fire.get('reason', '')}",
                                         entry_bull_pct=0, entry_bear_pct=0,
                                         entry_spot=spot_ltp,
-                                        verdict_data=em_verdict,
                                     )
                     except Exception as e:
                         print(f"[SCALPER] early-move fire error: {e}")
@@ -5289,64 +5174,6 @@ class MarketEngine:
                     # so ATM drift doesn't reset the pending.
                     pending = self.trade_manager._pending_entry.get(idx)
 
-                    # ── INSTANT FIRE (2026-06-10 user request) ──
-                    # User: "PnL tab me 1 bhi trade nahi liya aaj, scalper jaisa
-                    # instant fire chahiye". When verdict prob >= INSTANT_NEW_TRADE_PROB
-                    # AND no pending exists, create pending immediately so the
-                    # fire path below executes in SAME cycle (no 30s wait).
-                    # confirm_threshold=1.0 at prob>=60 means premium == entry
-                    # passes the momentum check, so trade fires this iteration.
-                    # All A2-A12 safety gates still apply — instant fire only
-                    # skips the pending+wait step, not the safety checks.
-                    if not pending or pending.get("action") != action:
-                        prob_now = v.get("winProbability", 0)
-                        try:
-                            # 2026-06-13: restored 55 → 65 after deep forensic.
-                            # 60d data: 55-59% bucket = 35% WR, ₹-55,790 LOSS.
-                            # 65-69% bucket = sweet spot (55.6% WR, +₹98,790).
-                            # Calibration audit explicit verdict: "RESTORE 65".
-                            # Trust quality over quantity.
-                            _instant_new = int(os.environ.get("INSTANT_NEW_TRADE_PROB", "65"))
-                        except (TypeError, ValueError):
-                            _instant_new = 65
-
-                        # ── FAST REACTIVE ENTRY (Task #88, 2026-06-23) ──
-                        # When structure_gate says ALIGNED + day_classifier all
-                        # gates pass, lower instant-fire threshold by 7pts.
-                        # Rationale: strict alignment already filters quality
-                        # (Task #82), day gates filter bad days (Task #88) —
-                        # the trade pre-qualifies as high-confidence. React
-                        # faster to those without the marginal-prob risk.
-                        # Env: INSTANT_FIRE_ALIGNED_PROB (default 58)
-                        try:
-                            import structure_gate as _sg_fast
-                            import day_classifier as _dc_fast
-                            sg_fast = _sg_fast.evaluate_entry(
-                                engine=self, idx=idx,
-                                proposed_action=action,
-                                source="engine.fast_react",
-                            )
-                            day_blocked, _ = _dc_fast.check_day_gates(self, idx, action)
-                            if (sg_fast.get("mode") == "aligned"
-                                    and not day_blocked
-                                    and sg_fast.get("allow", False)):
-                                _aligned_thr = int(os.environ.get(
-                                    "INSTANT_FIRE_ALIGNED_PROB", "58"))
-                                if _aligned_thr < _instant_new:
-                                    _instant_new = _aligned_thr
-                        except Exception:
-                            pass
-
-                        if prob_now >= _instant_new:
-                            self.trade_manager._pending_entry[idx] = {
-                                "idx": idx, "action": action, "strike": int(atm),
-                                "entry_price": fresh_entry, "probability": prob_now,
-                            }
-                            self.trade_manager._pending_entry_time[idx] = time.time()
-                            pending = self.trade_manager._pending_entry[idx]
-                            print(f"[TRADE] INSTANT FIRE: {action} {idx} {atm} @ "
-                                  f"₹{fresh_entry} ({prob_now}% — no wait, gates apply)")
-
                     if pending and pending["action"] == action:
                         # ── G0: EXPIRY DAY GUARD ──
                         # Tuesday = NIFTY weekly expiry. 60d audit: -₹116k MAIN loss.
@@ -5395,23 +5222,13 @@ class MarketEngine:
                             pass
 
                         # ── G0c: CALIBRATION GATE (Fix 6) ──
-                        # 2026-06-11 v2: PER-TAB threshold (data-driven flip).
-                        # 60d audit revealed asymmetric profiles:
-                        #   SCALPER 55-59% bucket: 37.5% WR, ₹-1,681/trade
-                        #     → gate at 55% protects from coin-flip leak ✓
-                        #   MAIN 70-79% bucket: 43.6% WR but ₹+2,169/trade
-                        #     (asymmetric R:R — small losses, big wins)
-                        #     MAIN 80+% bucket: 42.9% WR but ₹+3,787/trade
-                        #     → gate at 55% would BLOCK ₹+1.64L profitable bucket!
-                        # Solution: Main uses 35% min WR (allows asymmetric R:R),
-                        # scalper uses 55% (blocks coin-flip leak).
-                        # Failsafe: cal_wr=None (no data) → allow.
+                        # Skip when calibrated_wr < threshold (default 55%).
+                        # Audit found probability is inverse: high raw_prob = low actual WR.
                         try:
                             import os as _os
-                            if _os.environ.get("CALIBRATION_GATE_ENABLED", "on").lower() == "on":
+                            if _os.environ.get("CALIBRATION_GATE_ENABLED", "off").lower() == "on":
                                 from calibration import calibrated_wr as _cal_wr_fn
-                                # Per-tab min WR. Main lower (asymmetric R:R OK).
-                                cal_min = float(_os.environ.get("MAIN_CALIBRATION_MIN_WR", "35"))
+                                cal_min = float(_os.environ.get("CALIBRATION_MIN_WR", "55"))
                                 raw_prob = pending.get("probability", 0)
                                 cal_wr = _cal_wr_fn(int(raw_prob), engine_type="main", action=action)
                                 print(f"[CALIB_SHADOW] main {action} raw_prob={raw_prob}% "
@@ -5425,30 +5242,7 @@ class MarketEngine:
                         except Exception as _e:
                             print(f"[TRADE] calibration_gate error (allow): {_e}")
 
-                        # ── G0f: STRUCTURE GATE (Phase 2 — 2026-05-27) ──
-                        # Multi-timeframe HH/HL/LH/LL check for main engine.
-                        # Default STRUCTURE_MODE=off → no behavior change.
-                        # Fail-safe: any error → allow (never block legit trade).
-                        try:
-                            import structure_gate as sg
-                            if sg.master_mode() != "off" and sg.main_enabled():
-                                sg_decision = sg.evaluate_entry(
-                                    engine=self, idx=idx,
-                                    proposed_action=action,
-                                    source="engine.pending_confirmation",
-                                )
-                                if not sg_decision.get("allow", True):
-                                    print(
-                                        f"[TRADE] BLOCKED by structure gate (G0f): "
-                                        f"{sg_decision.get('reason', '')}"
-                                    )
-                                    self.trade_manager._pending_entry.pop(idx, None)
-                                    self.trade_manager._pending_entry_time.pop(idx, None)
-                                    continue
-                        except Exception as _e:
-                            print(f"[TRADE] structure_gate error (allow): {_e}")
-
-                    # ── G0e: EARLY-MOVE ENTRY GATE (2026-05-22) ──
+                        # ── G0e: EARLY-MOVE ENTRY GATE (2026-05-22) ──
                         # Aggregator of 5 leading detectors. veto/full mode can
                         # BLOCK when leading panel says BLOCKED (IV crush /
                         # fakeout / exhaustion) or FIRE opposite direction.
@@ -5485,39 +5279,22 @@ class MarketEngine:
                             continue
 
                         age = time.time() - self.trade_manager._pending_entry_time.get(idx, 0)
-                        # ENTRY TIMING FIX v2 (2026-06-03) — loosened thresholds.
-                        # Today's 1267-pt BANKNIFTY rally: verdict was 60% but
-                        # premium move was already saturating by time the 0.2%
-                        # confirm fired. New tiers catch the rally earlier:
-                        #   prob ≥ 65 → INSTANT (was 75)
-                        #   prob 55–65 → 0.1% confirm (was 0.2% at 60–75)
-                        #   prob < 55  → 0.3% confirm (was 0.5%)
-                        # Pending TTL 120s → 90s so stuck pendings clear faster.
-                        # Override via PROB_INSTANT_FIRE / PENDING_TTL_SEC envs.
+                        # ENTRY TIMING FIX (A7): Tiered confirmation based on confidence
+                        # High confidence (>75%) = INSTANT entry (no wait)
+                        # Medium confidence (60-75%) = 0.2% confirmation (was 0.5%)
+                        # Low confidence (<60%) = 0.5% confirmation (was 0.5%)
+                        # Result: Catch real moves earlier, avoid late peak entries
                         prob = pending.get("probability", 0)
-                        try:
-                            # 2026-06-13: synced with INSTANT_NEW_TRADE_PROB at 65.
-                            # Both thresholds MUST match — if pending creates at
-                            # X% but momentum fires at higher Y%, trades stuck
-                            # in limbo (June 12 wasted full day).
-                            # Forensic-driven default: 65%.
-                            _instant_at = int(os.environ.get("PROB_INSTANT_FIRE", "65"))
-                        except (TypeError, ValueError):
-                            _instant_at = 65
-                        if prob >= _instant_at:
+                        if prob >= 75:
                             confirm_threshold = 1.0  # instant — no wait
-                        elif prob >= 55:
-                            confirm_threshold = 1.001  # 0.1% confirmation
+                        elif prob >= 60:
+                            confirm_threshold = 1.002  # 0.2% confirmation
                         else:
-                            confirm_threshold = 1.003  # 0.3% confirmation
+                            confirm_threshold = 1.005  # 0.5% (default)
                         momentum_confirmed = locked_ltp >= pending["entry_price"] * confirm_threshold
                         signal_reversed = locked_ltp < pending["entry_price"] * 0.98
-                        try:
-                            # 2026-06-11 v2: reverted 180s → 90s per user feedback.
-                            _pending_ttl = int(os.environ.get("PENDING_TTL_SEC", "90"))
-                        except (TypeError, ValueError):
-                            _pending_ttl = 90
-                        pending_expired = age > _pending_ttl
+                        # Reduced 5min → 2min expiry (faster cycle, catch fresh signals)
+                        pending_expired = age > 120
 
                         if momentum_confirmed:
                             # ── A2: OI Shift Detector — block if trade against shifted wall ──
@@ -5627,30 +5404,24 @@ class MarketEngine:
                             except Exception as _e:
                                 pass
 
-                            # ── A12: Entry Filters — PERMISSIVE MODE (2026-06-05) ──
-                            # User concern: "system jaise pehle trades lera tha waise
-                            # hi le, miss na kare. SL smart hai."
-                            # Default: WARN only — let trade fire, damage control catches
-                            # bad setups at exit side. Set ENTRY_FILTER_MODE=strict to
-                            # restore old hard-block.
+                            # ── A12: Entry Filters (5-min trend + greeks + regime) ──
+                            # Final quality gate before main-trade entry. Rejects
+                            # counter-trend, deep OTM/ITM, and CHOP-regime entries.
+                            # CHOP can be overridden if winProbability >= 75 (high conviction).
                             try:
-                                _ef_mode = os.environ.get("ENTRY_FILTER_MODE", "permissive").lower()
                                 from entry_filters import check_all_filters
                                 ef_ok, ef_reason, ef_regime = check_all_filters(
                                     self, idx, int(pending_strike), action
                                 )
                                 if not ef_ok:
-                                    if _ef_mode == "strict":
-                                        high_conv = v.get("winProbability", 0) >= 75
-                                        if ef_regime.get("regime") == "CHOP" and high_conv:
-                                            print(f"[TRADE] CHOP override (high conviction): {ef_reason}")
-                                        else:
-                                            print(f"[TRADE] BLOCKED by A12 (strict): {ef_reason}")
-                                            self.trade_manager._pending_entry.pop(idx, None)
-                                            self.trade_manager._pending_entry_time.pop(idx, None)
-                                            continue
+                                    high_conv = v.get("winProbability", 0) >= 75
+                                    if ef_regime.get("regime") == "CHOP" and high_conv:
+                                        print(f"[TRADE] CHOP override (high conviction): {ef_reason}")
                                     else:
-                                        print(f"[TRADE] A12 WARN (allow, damage-control catches): {ef_reason}")
+                                        print(f"[TRADE] BLOCKED by A12 entry_filters: {ef_reason}")
+                                        self.trade_manager._pending_entry.pop(idx, None)
+                                        self.trade_manager._pending_entry_time.pop(idx, None)
+                                        continue
                                 else:
                                     if ef_regime.get("regime") == "BREAKOUT":
                                         print(f"[TRADE] BREAKOUT regime — {ef_regime.get('reason')}")
@@ -5674,7 +5445,6 @@ class MarketEngine:
                                     straddle=straddle,
                                     whale_aligned=whale_aligned,
                                     engine=self,  # for ATR target calc
-                                    verdict_data=v,  # for engine attribution capture
                                 )
                             except Exception as e:
                                 print(f"[TRADE] log_trade FAILED for {idx}: {e}")

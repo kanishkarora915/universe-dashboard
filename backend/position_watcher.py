@@ -82,12 +82,8 @@ DEFAULT_CONFIG = {
     # request: "agar position lete hi trade loss mein jara hai toh
     # max 5-8% loss hona chahiye". These run as hard exits regardless
     # of any other gating.
-    # 2026-06-17 (90d audit): WATCHER_EXIT = -₹4.96L over 90d, with
-    # bypass triggers firing on noise. -8% cap was hitting at same point
-    # as natural SL (7.7% avg), causing premature watcher kills.
-    # Raised to -10% so true SL handles normal cases.
     "hard_loss_enforce": True,         # master switch for the floor
-    "hard_loss_cap_pct": -10.0,        # absolute floor — exit if profit_pct <= this
+    "hard_loss_cap_pct": -8.0,         # absolute floor — exit if profit_pct <= this
     "fast_loss_cap_pct": -5.0,         # tighter floor within first window
     "fast_loss_window_min": 10,        # minutes from entry for fast-loss rule
     # ────── PEAK-AWARE FLOOR (NEW: user's 2-rule simplification) ──────
@@ -445,45 +441,17 @@ def _evaluate_triggers(trade: Dict, health: Dict, action: str,
         if peak >= peak_threshold and profit_pct <= peak_floor:
             return "PEAK_FLOOR_HIT"
 
-    # ──── WATCHER OPENING LOCKOUT (Task #89, 2026-06-25) ────
-    # Skip SOFT triggers (OI_REVERSAL, REVERSAL_PATTERN, THETA_WINS, etc)
-    # for the first N minutes of a trade. HARD safety triggers
-    # (HARD_LOSS_CAP, FAST_LOSS_CAP, PEAK_FLOOR_HIT) already evaluated
-    # ABOVE this point — they stay active.
-    #
-    # Forensic agent finding (14d):
-    #   WATCHER_EXIT  7 trades  avg -₹13,709
-    #   Multiple kills in 1-2 minute holds (e.g. today 11:56-11:56 -₹429)
-    #   System panics on opening-noise OI flicker / candle wick patterns
-    #   that would have settled if given air.
-    #
-    # Default: skip soft triggers for first 5 min.
-    # Env: WATCHER_OPENING_LOCKOUT_MIN (default 5; set 0 to disable).
-    import os as _os_ol
-    try:
-        _open_lockout_min = float(_os_ol.environ.get("WATCHER_OPENING_LOCKOUT_MIN", "5"))
-    except Exception:
-        _open_lockout_min = 5.0
-    if hold_min < _open_lockout_min:
-        return None  # in lockout — hard caps already passed, soft signals suppressed
-
     # ──── PRIORITY 1: OI REVERSAL (per-strike writer/buyer activity) ────
-    # 2026-06-17 BUG FIX (user feedback "reversal exit + watcher exit bugs"):
-    # Previously fired when profit_pct < 5 → killed trades at +3-4% real
-    # profit because OI shifted slightly. Tightened to profit_pct < 1
-    # so only LOSING / scratch trades get watcher-exit on OI reversal.
-    # Profits ≥ +1% are protected by profit_floor / trailing SL instead.
-    # Env: WATCHER_OI_REV_PROFIT_THRESH (default 1.0)
+    # New: per-trade-strike OI delta from oi_minute_capture.
+    # Fires when writers HOSTILE to our position are stacking AND we're
+    # not already in solid profit. Profit ≥ +5% lets Profit-Trail manage.
     oi_comp = comps.get("oi", {})
     oi_penalty = oi_comp.get("penalty", 0)
-    import os as _os_wr
-    _oi_rev_thresh = float(_os_wr.environ.get("WATCHER_OI_REV_PROFIT_THRESH", "1.0"))
-    if oi_penalty >= 1.0 and profit_pct < _oi_rev_thresh:
+    if oi_penalty >= 1.0 and profit_pct < 5:
         return "OI_REVERSAL"
 
     candle = comps.get("candle", {})
-    _rev_pat_thresh = float(_os_wr.environ.get("WATCHER_REV_PATTERN_PROFIT_THRESH", "1.0"))
-    if candle.get("penalty", 0) >= 1.5 and profit_pct < _rev_pat_thresh:
+    if candle.get("penalty", 0) >= 1.5 and profit_pct < 5:
         # Strong reversal pattern post-entry, not in profit
         return "REVERSAL_PATTERN"
 
@@ -492,8 +460,7 @@ def _evaluate_triggers(trade: Dict, health: Dict, action: str,
         return "THETA_WINS"
 
     vix = comps.get("vix", {})
-    _vix_thresh = float(_os_wr.environ.get("WATCHER_VIX_PROFIT_THRESH", "1.0"))
-    if vix.get("severity") == "HIGH" and profit_pct < _vix_thresh:
+    if vix.get("severity") == "HIGH" and profit_pct < 5:
         return "VIX_CRUSH"
 
     prox = comps.get("proximity", {})
@@ -524,49 +491,14 @@ def _evaluate_triggers(trade: Dict, health: Dict, action: str,
 # ──────────────────────────────────────────────────────────────
 
 def _tighten_main_sl(trade_id: int, new_sl: float, reason: str):
-    """RACE-SAFE SL update.
-
-    2026-06-11 BUG FIX: prior version did blind UPDATE which could
-    DOWNGRADE SL set by profit_floor / profit_trailing_sl in the
-    same cycle. Watcher runs on 30s cycle, trade_logger runs on tick;
-    if watcher's SL was lower than the just-raised floor, the floor lock
-    got wiped.
-
-    Fix: SELECT current sl_price first, take max(), then UPDATE only
-    if new_sl strictly raises it. Idempotent + race-safe.
-    """
     try:
         conn = sqlite3.connect(_trades_db_path())
-        row = conn.execute(
-            "SELECT sl_price FROM trades WHERE id=? AND status='OPEN'",
-            (trade_id,)
-        ).fetchone()
-        if not row:
-            conn.close()
-            return False
-        current_sl = row[0] or 0
-        # NEVER LOWER — invariant from profit_floor / profit_trail
-        if new_sl <= current_sl:
-            conn.close()
-            return False
         conn.execute(
-            "UPDATE trades SET sl_price=?, alerts=COALESCE(alerts,'') || ? "
-            "WHERE id=? AND status='OPEN' AND sl_price < ?",
-            (new_sl, f" | watcher: {reason}", trade_id, new_sl)
+            "UPDATE trades SET sl_price=?, alerts=COALESCE(alerts,'') || ? WHERE id=? AND status='OPEN'",
+            (new_sl, f" | watcher: {reason}", trade_id)
         )
         conn.commit()
         conn.close()
-        # SL attribution log
-        try:
-            from profit_floor import attribution_log
-            attribution_log(
-                trade_id=trade_id, tab="MAIN",
-                old_sl=current_sl, new_sl=new_sl,
-                source="position_watcher",
-                extra=reason[:60],
-            )
-        except Exception:
-            pass
         return True
     except Exception as e:
         print(f"[WATCHER] tighten main SL error: {e}")
@@ -574,54 +506,22 @@ def _tighten_main_sl(trade_id: int, new_sl: float, reason: str):
 
 
 def _tighten_scalper_sl(trade_id: int, new_sl: float, reason: str):
-    """RACE-SAFE SL update for scalper (same fix as _tighten_main_sl).
-
-    2026-06-11: was blind UPDATE — could overwrite SL raised by
-    profit_floor or aggressive_trail in same cycle. Now reads current,
-    takes max, only raises.
-    """
     try:
         conn = sqlite3.connect(_scalper_db_path())
-        row = conn.execute(
-            "SELECT sl_price, smart_sl_value FROM scalper_trades "
-            "WHERE id=? AND status='OPEN'",
-            (trade_id,)
-        ).fetchone()
-        if not row:
-            conn.close()
-            return False
-        current_sl = row[0] or 0
-        current_smart = row[1] or 0
-        # NEVER LOWER — take max across both fields
-        target_sl = max(new_sl, current_sl, current_smart)
-        if target_sl <= current_sl:
-            conn.close()
-            return False
+        # scalper has both static sl_price + smart_sl_value
         conn.execute(
-            "UPDATE scalper_trades SET sl_price=?, smart_sl_value=? "
-            "WHERE id=? AND status='OPEN' AND sl_price < ?",
-            (target_sl, target_sl, trade_id, target_sl)
+            "UPDATE scalper_trades SET sl_price=?, smart_sl_value=? WHERE id=? AND status='OPEN'",
+            (new_sl, new_sl, trade_id)
         )
         conn.commit()
         conn.close()
-        # SL attribution log
-        try:
-            from profit_floor import attribution_log
-            attribution_log(
-                trade_id=trade_id, tab="SCALPER",
-                old_sl=current_sl, new_sl=target_sl,
-                source="position_watcher",
-                extra=reason[:60],
-            )
-        except Exception:
-            pass
         return True
     except Exception as e:
         print(f"[WATCHER] tighten scalper SL error: {e}")
         return False
 
 
-def _force_close_main(trade_id: int, exit_price: float, reason: str, trigger: str = ""):
+def _force_close_main(trade_id: int, exit_price: float, reason: str):
     try:
         conn = sqlite3.connect(_trades_db_path())
         now_iso = _ist_now_iso()  # B1.2 — was naive UTC datetime.now()
@@ -633,12 +533,11 @@ def _force_close_main(trade_id: int, exit_price: float, reason: str, trigger: st
         entry_price, qty = row
         pnl_pts = round(exit_price - entry_price, 2)
         pnl_rupees = round(pnl_pts * qty, 2)
-        # 2026-06-17 (auditor NOTE #11): store trigger for attribution
         conn.execute("""
             UPDATE trades SET status='WATCHER_EXIT', exit_price=?, exit_time=?,
-                pnl_pts=?, pnl_rupees=?, exit_reason=?, watcher_trigger=?
+                pnl_pts=?, pnl_rupees=?, exit_reason=?
             WHERE id=? AND status='OPEN'
-        """, (exit_price, now_iso, pnl_pts, pnl_rupees, reason, trigger, trade_id))
+        """, (exit_price, now_iso, pnl_pts, pnl_rupees, reason, trade_id))
         conn.commit()
         conn.close()
         # Capital tracker hook
@@ -654,7 +553,7 @@ def _force_close_main(trade_id: int, exit_price: float, reason: str, trigger: st
         return False
 
 
-def _force_close_scalper(trade_id: int, exit_price: float, reason: str, trigger: str = ""):
+def _force_close_scalper(trade_id: int, exit_price: float, reason: str):
     try:
         conn = sqlite3.connect(_scalper_db_path())
         # B1.2 FIX — must use IST so exit_time matches entry_time's tz
@@ -680,12 +579,11 @@ def _force_close_scalper(trade_id: int, exit_price: float, reason: str, trigger:
                 hold_sec = 0  # safety against clock skew
         except Exception:
             hold_sec = 0
-        # 2026-06-17 (auditor NOTE #11): store trigger for attribution
         conn.execute("""
             UPDATE scalper_trades SET status='WATCHER_EXIT', exit_price=?, exit_time=?,
-                exit_reason=?, pnl_pts=?, pnl_rupees=?, hold_seconds=?, watcher_trigger=?
+                exit_reason=?, pnl_pts=?, pnl_rupees=?, hold_seconds=?
             WHERE id=? AND status='OPEN'
-        """, (exit_price, now_iso, reason, pnl_pts, pnl_rupees, hold_sec, trigger, trade_id))
+        """, (exit_price, now_iso, reason, pnl_pts, pnl_rupees, hold_sec, trade_id))
         conn.commit()
         conn.close()
         try:
@@ -993,21 +891,6 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
     # Tracks highest profit_pct ever seen for THIS open trade. Once peak
     # crosses +5%, the loss floor tightens to -5% (vs default -8%).
     cur_profit_pct = health.get("profit_pct") or 0
-    # 2026-06-17 (auditor): on first health computation per process, seed
-    # cache from DB peak_ltp so deploy/restart doesn't wipe the peak.
-    # Previously after deploy, all PEAK_FLOOR_HIT logic broke until trade
-    # exceeded its prior peak again (never happens on decaying trades).
-    sid = f"{source}:{trade_id}"
-    if sid not in _peak_profit_cache:
-        try:
-            db_peak = float(trade.get("peak_ltp") or 0)
-            entry_p = float(trade.get("entry_price") or 0)
-            if db_peak > 0 and entry_p > 0:
-                seed_pct = (db_peak - entry_p) / entry_p * 100
-                if seed_pct > 0:
-                    _peak_profit_cache[sid] = seed_pct
-        except Exception:
-            pass
     peak_now = update_peak_profit(source, trade_id, cur_profit_pct)
     health["peak_profit_pct"] = peak_now
 
@@ -1108,9 +991,9 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
         if profit_pct <= -3:
             reason_str = (f"OI_REVERSAL: hostile writers + losing {profit_pct:.2f}% — "
                           + " · ".join(oi_signals[:2]))
-            ok = (_force_close_main(trade_id, current_premium, reason_str, trigger)
+            ok = (_force_close_main(trade_id, current_premium, reason_str)
                   if source == "MAIN"
-                  else _force_close_scalper(trade_id, current_premium, reason_str, trigger))
+                  else _force_close_scalper(trade_id, current_premium, reason_str))
             if ok:
                 action_taken = "EXIT"
                 _log_exit(source, trade, current_premium, trigger,
@@ -1130,45 +1013,30 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
 
     # ──── PEAK_FLOOR_HIT — bypass-gate exit ────
     # User's Rule 1: trade peaked ≥+5%, now down to ≤-5% → exit immediately.
-    # Saves the "I touched +12%, now I'm -10%" pain.
-    # 2026-06-17 BUG FIX: Previously exited at current_premium (already
-    # at -5%) — defeats the purpose. Now mirrors trade_logger.py:
-    # exit at peak × 0.4 floor (lock saved profit) IF current still above.
-    # Else fall through to natural HARD_LOSS_CAP.
-    # Env: WATCHER_PEAK_FLOOR_FACTOR (default 0.4 matches trade_logger).
+    # Saves the "I touched +12%, now I'm -10%" pain. Same bypass behavior
+    # as HARD_LOSS_CAP (ignores auto_exit_main/scalper gating).
     if trigger == "PEAK_FLOOR_HIT" and cfg.get("peak_aware_floor_enable", True) and not _warn_only:
         profit_pct = health.get("profit_pct", 0)
         peak = health.get("peak_profit_pct", 0)
-        import os as _os_wpf
-        _wpf_factor = float(_os_wpf.environ.get("WATCHER_PEAK_FLOOR_FACTOR", "0.4"))
-        try:
-            entry_price = float(trade.get("entry_price") or 0)
-        except Exception:
-            entry_price = 0.0
-        # Compute target lock price: entry × (1 + peak×factor/100)
-        floor_pct = peak * _wpf_factor
-        floor_price = (round(entry_price * (1 + floor_pct/100), 1)
-                       if entry_price > 0 else current_premium)
-        # Use floor price only if current is still above (otherwise market exit)
-        actual_exit_price = floor_price if (entry_price > 0 and current_premium >= floor_price) else current_premium
-        reason_str = (f"PEAK_FLOOR_HIT: peaked {peak:+.2f}% → exit @ "
-                      f"₹{actual_exit_price} (lock +{floor_pct:.1f}%)")
-        ok = (_force_close_main(trade_id, actual_exit_price, reason_str, trigger)
+        peak_floor = float(cfg.get("peak_aware_floor_pct", -5.0))
+        reason_str = (f"PEAK_FLOOR_HIT: peaked {peak:+.2f}% then fell to "
+                      f"{profit_pct:+.2f}% — capped at {peak_floor:.0f}%")
+        ok = (_force_close_main(trade_id, current_premium, reason_str)
               if source == "MAIN"
-              else _force_close_scalper(trade_id, actual_exit_price, reason_str, trigger))
+              else _force_close_scalper(trade_id, current_premium, reason_str))
         if ok:
             action_taken = "EXIT"
-            _log_exit(source, trade, actual_exit_price, trigger,
+            _log_exit(source, trade, current_premium, trigger,
                       [reason_str] + (health.get("reasons") or []))
             snapshot["actions"].append({
                 "source": source, "trade_id": trade_id, "trigger": trigger,
-                "action": "EXIT", "exit_price": actual_exit_price,
+                "action": "EXIT", "exit_price": current_premium,
                 "profit_pct": profit_pct, "peak_profit_pct": peak,
-                "floor_lock_pct": round(floor_pct, 2),
+                "peak_floor_pct": peak_floor,
                 "bypass_gate": True,
             })
             print(f"[WATCHER] PEAK_FLOOR exit · {source} #{trade_id} · "
-                  f"peak {peak:+.2f}% → exit ₹{actual_exit_price} (lock +{floor_pct:.1f}%)")
+                  f"peak {peak:+.2f}% → now {profit_pct:+.2f}% (cap {peak_floor:.0f}%)")
             _log_health(source, trade_id, idx, action, health, trigger, action_taken)
             return
 
@@ -1183,9 +1051,9 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
                    else cfg.get("fast_loss_cap_pct", -5.0))
         reason_str = (f"{trigger}: loss {profit_pct:.2f}% breached cap {cap_pct:.1f}% — "
                       f"hold {health.get('hold_minutes',0):.1f}m")
-        ok = (_force_close_main(trade_id, current_premium, reason_str, trigger)
+        ok = (_force_close_main(trade_id, current_premium, reason_str)
               if source == "MAIN"
-              else _force_close_scalper(trade_id, current_premium, reason_str, trigger))
+              else _force_close_scalper(trade_id, current_premium, reason_str))
         if ok:
             action_taken = "EXIT"
             _log_exit(source, trade, current_premium, trigger,
@@ -1209,9 +1077,9 @@ def _process_trade_inner(trade: Dict, source: str, engine, cfg: Dict, snapshot: 
 
         # CRITICAL exits get hard close (if auto-exit on AND not warn_only)
         if health["score"] < cfg["min_score_for_exit"] and auto_exit and not _warn_only:
-            ok = (_force_close_main(trade_id, current_premium, f"{trigger}: {health['reasons'][0] if health['reasons'] else trigger}", trigger)
+            ok = (_force_close_main(trade_id, current_premium, f"{trigger}: {health['reasons'][0] if health['reasons'] else trigger}")
                   if source == "MAIN"
-                  else _force_close_scalper(trade_id, current_premium, f"{trigger}: {health['reasons'][0] if health['reasons'] else trigger}", trigger))
+                  else _force_close_scalper(trade_id, current_premium, f"{trigger}: {health['reasons'][0] if health['reasons'] else trigger}"))
             if ok:
                 action_taken = "EXIT"
                 _log_exit(source, trade, current_premium, trigger, health.get("reasons", []))

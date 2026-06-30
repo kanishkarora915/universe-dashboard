@@ -20,7 +20,7 @@ MAX_RISK_PER_TRADE_PCT = 3.0  # Risk 3% of capital per trade (₹30k on ₹10L) 
 MAX_RISK_WHALE_ALIGNED_PCT = 5.0  # 5% on whale-aligned trades (₹50k risk) — was 2.5%
 MAX_DAILY_LOSS_PCT = 8  # Stop trading after 8% daily loss (was 5% — let trades breathe)
 MAX_SIMULTANEOUS_TRADES = 10  # No practical limit
-MAX_DAILY_TRADES = 24  # Raised 15→24 (user req 2026-06-15)
+MAX_DAILY_TRADES = 15  # Real trades per day (raised from 6 per user request)
 
 # NSE Holidays — Auto-fetched from Kite API, fallback to hardcoded
 _NSE_HOLIDAYS_CACHE = None
@@ -91,8 +91,8 @@ def save_nse_holidays_from_kite(kite):
     return _NSE_HOLIDAYS_FALLBACK
 
 LOT_CONFIG = {
-    "NIFTY": {"lot_size": 65},      # VERIFIED 2026-06-10 from Kite NFO
-    "BANKNIFTY": {"lot_size": 30},  # VERIFIED 2026-06-10 from Kite NFO
+    "NIFTY": {"lot_size": 75},      # updated Jan 2025 (was 25 → 50 → 75)
+    "BANKNIFTY": {"lot_size": 35},  # updated Apr 2025 (was 15 → 25 → 35)
 }
 
 
@@ -153,21 +153,18 @@ def calc_position_size(idx, entry_price, sl_price=0, conviction=70, whale_aligne
     if entry_price <= 0:
         return 1, lot_size, lot_size
 
-    # Conviction multiplier — DATA-DRIVEN (199-trade audit 2026-06-10)
-    # Sweet spot from audit: 70-79% bucket = 43 wins (41% of all wins), ₹+5.42L.
-    # 100% conviction trades had 2 wins / 5 losses (overconfidence trap).
-    # 50-59% bucket: 18 wins, ₹+2.37L (counter-intuitive — still positive).
-    # New scaling: BOOST sweet spot, REDUCE extreme conviction.
+    # Conviction multiplier — AGGRESSIVE for ₹10L capital
+    # Goal: deploy 30-60% of capital per trade on high conviction
     if conviction >= 90:
-        conv_mult = 0.7    # OVERCONFIDENCE TRAP — data shows 90%+ lose
+        conv_mult = 2.0    # MAX — beast mode (₹60k risk = 6%)
     elif conviction >= 80:
-        conv_mult = 1.3    # Good but smaller sample
-    elif conviction >= 65:
-        conv_mult = 1.5    # SWEET SPOT (data-validated 65-79% = best wins)
-    elif conviction >= 55:
-        conv_mult = 1.0    # Standard
+        conv_mult = 1.5    # Aggressive (₹45k risk = 4.5%)
+    elif conviction >= 70:
+        conv_mult = 1.2    # Full (₹36k risk = 3.6%)
+    elif conviction >= 60:
+        conv_mult = 1.0    # Standard (₹30k risk = 3%)
     else:
-        conv_mult = 0.7    # Cautious (low conv, smaller bet)
+        conv_mult = 0.7    # Smaller (₹21k risk = 2.1%)
 
     running_capital = _get_running_capital()
     base_risk_pct = MAX_RISK_WHALE_ALIGNED_PCT if whale_aligned else MAX_RISK_PER_TRADE_PCT
@@ -277,26 +274,6 @@ def init_trades_db(db_path):
         "trailing_active": "INTEGER DEFAULT 0",
         "trail_level": "TEXT DEFAULT ''",
         "alerts": "TEXT DEFAULT ''",
-        # 2026-06-15: Regime capture at entry — for chop/structure analysis
-        "regime_at_entry": "TEXT DEFAULT ''",
-        "range_pct_at_entry": "REAL DEFAULT 0",
-        "candle_pct_at_entry": "REAL DEFAULT 0",
-        "structure_5m": "TEXT DEFAULT ''",
-        "structure_15m": "TEXT DEFAULT ''",
-        "structure_1h": "TEXT DEFAULT ''",
-        # 2026-06-16: Per-engine attribution at entry (JSON blobs)
-        "engine_scores_json": "TEXT DEFAULT ''",
-        "signals_triggered": "TEXT DEFAULT ''",
-        "gates_passed": "TEXT DEFAULT ''",
-        # 2026-06-16: Level context at entry (PDH/PDL/PDC/gap/day_high/low)
-        "level_context_json": "TEXT DEFAULT ''",
-        "level_zone_at_entry": "TEXT DEFAULT ''",
-        # 2026-06-17 (auditor NOTE #11): which watcher trigger caused exit
-        # (HARD_LOSS_CAP / FAST_LOSS_CAP / PEAK_FLOOR_HIT / OI_REVERSAL /
-        # REVERSAL_PATTERN / THETA_WINS / VIX_CRUSH / DAY_HIGH_TRAP /
-        # POST_LUNCH_STALL / PATTERN_LOSER). Status column always says
-        # WATCHER_EXIT — this column tells us which gate actually fired.
-        "watcher_trigger": "TEXT DEFAULT ''",
     }
     for col, col_type in migrations.items():
         if col not in existing_cols:
@@ -579,7 +556,7 @@ class TradeManager:
         return "NORMAL"
 
     def log_trade(self, idx, action, strike, entry_price, probability, source="verdict", expiry="",
-                  straddle=0, big_wall=0, whale_aligned=False, engine=None, verdict_data=None):
+                  straddle=0, big_wall=0, whale_aligned=False, engine=None):
         """Log a new trade entry with ATR-based realistic SL/targets (A6).
         whale_aligned=True → uses larger position (smart money agrees with direction).
 
@@ -661,36 +638,6 @@ class TradeManager:
             print(f"[TRADE] Fallback targets (no ATR): SL ₹{sl_price} (-5%) "
                   f"T1 ₹{t1_price} (+5%) T2 ₹{t2_price} (+12%)")
 
-        # ── ADAPTIVE SL DISTANCE CAP BY PREMIUM (Fix 3, 2026-06-15) ──
-        # ATR-based SL can be 11-15% wide on fat BANKNIFTY ATM (₹1200+).
-        # When wrong-direction, -12% × 60 lots = ₹80k single trade blast.
-        # Audit: top losses S-106 (-₹88k), S-63 (-₹80k) — both 11.98% wide.
-        # Cap SL distance by premium size to bound worst-case damage.
-        # Env kill: MAIN_ADAPTIVE_SL_DISABLED=1
-        try:
-            import os as _os_asl
-            if _os_asl.environ.get("MAIN_ADAPTIVE_SL_DISABLED", "").strip() not in ("1","true","on"):
-                _asl_fat = float(_os_asl.environ.get("MAIN_ADAPTIVE_SL_FAT_PREMIUM", "1000"))
-                _asl_mid = float(_os_asl.environ.get("MAIN_ADAPTIVE_SL_MID_PREMIUM", "500"))
-                _asl_fat_cap = float(_os_asl.environ.get("MAIN_ADAPTIVE_SL_FAT_PCT", "7.0"))
-                _asl_mid_cap = float(_os_asl.environ.get("MAIN_ADAPTIVE_SL_MID_PCT", "9.0"))
-                _asl_def_cap = float(_os_asl.environ.get("MAIN_ADAPTIVE_SL_DEFAULT_PCT", "12.0"))
-                current_sl_dist_pct = (entry_price - sl_price) / entry_price * 100 if entry_price > 0 else 0
-                if entry_price >= _asl_fat:
-                    cap_pct = _asl_fat_cap
-                elif entry_price >= _asl_mid:
-                    cap_pct = _asl_mid_cap
-                else:
-                    cap_pct = _asl_def_cap
-                if current_sl_dist_pct > cap_pct:
-                    new_sl_price = round(entry_price * (1 - cap_pct/100), 1)
-                    print(f"[TRADE] ADAPTIVE_SL: premium ₹{entry_price:.1f} → "
-                          f"capping SL distance from {current_sl_dist_pct:.1f}% to {cap_pct:.1f}% "
-                          f"(SL ₹{sl_price} → ₹{new_sl_price})")
-                    sl_price = new_sl_price
-        except Exception as _asl_e:
-            print(f"[TRADE] ADAPTIVE_SL error (keeping original): {_asl_e}")
-
         # Position size SCALED by conviction + whale alignment + ADAPTIVE TIER (A5)
         try:
             from risk_tier_manager import get_tier_qty_multiplier
@@ -707,118 +654,6 @@ class TradeManager:
             qty = max(lot_size, int(qty * tier_mult))
             lots = qty // lot_size
 
-        # ── ASYMMETRIC SIZING by direction × structure (Fix H + I, 2026-06-15) ──
-        # Data (60d backfill):
-        #   PE aligned 5m+15m DN: 100% WR, ₹+89k (8 trades) → BOOST 1.5x
-        #   CE aligned 5m+15m UP: 53% WR, ₹-10k    (15 trades) → CUT 0.5x
-        # Other buckets get 1.0x (no change).
-        # Try to read structure from cache; failure → fall back to neutral.
-        # 2026-06-17: DEFAULT DISABLED. PE 1.5x boost backfired —
-        # see scalper_mode.py for full reasoning.
-        try:
-            import os as _os_as
-            if _os_as.environ.get("ASYM_SIZE_DISABLED", "1").strip() not in ("1","true","on"):
-                _pe_boost = float(_os_as.environ.get("ASYM_SIZE_PE_ALIGNED_MULT", "1.5"))
-                _ce_cut = float(_os_as.environ.get("ASYM_SIZE_CE_ALIGNED_MULT", "0.5"))
-                from structure_gate import get_cached_structure as _gcs
-                _cache = _gcs(idx) or {}
-                _structs = _cache.get("structures", {})
-                _s5m = (_structs.get("5m") or {}).get("verdict", "")
-                _s15m = (_structs.get("15m") or {}).get("verdict", "")
-                _is_ce = "CE" in action
-                _asym_mult = 1.0
-                if (not _is_ce) and _s5m == "DOWNTREND" and _s15m == "DOWNTREND":
-                    _asym_mult = _pe_boost
-                    print(f"[TRADE] ASYM_SIZE: PE aligned 5m+15m DN → boost {_asym_mult}x")
-                elif _is_ce and _s5m == "UPTREND" and _s15m == "UPTREND":
-                    _asym_mult = _ce_cut
-                    print(f"[TRADE] ASYM_SIZE: CE aligned 5m+15m UP → cut {_asym_mult}x")
-                if _asym_mult != 1.0:
-                    qty = max(lot_size, int(qty * _asym_mult))
-                    lots = qty // lot_size
-        except Exception as _as_e:
-            print(f"[TRADE] ASYM_SIZE error (keep base size): {_as_e}")
-
-        # ── REGIME CAPTURE AT ENTRY (2026-06-15) ──
-        # Snapshot of market regime so we can audit chop/structure post-hoc.
-        # Wrapped in try — never blocks trade if computation fails.
-        _regime, _range_pct, _candle_pct = "", 0.0, 0.0
-        _s5m, _s15m, _s1h = "", "", ""
-        # ── ENGINE ATTRIBUTION CAPTURE (2026-06-16) ──
-        # Snapshot of 9-engine breakdown, signals fired, gates passed.
-        # All JSON-serialized text for portability.
-        _engine_scores_json = ""
-        _signals_triggered = ""
-        _gates_passed = ""
-        try:
-            import json as _json_es
-            _es_blob = {"probability": probability, "action": action, "source": source}
-            if verdict_data:
-                # Pull useful fields from verdict_data
-                for _k in ("winProbability", "bull", "bear", "reasons",
-                           "engineScores", "engine_scores",
-                           "voters", "council_votes", "modules", "callout"):
-                    _v = verdict_data.get(_k)
-                    if _v is not None:
-                        _es_blob[_k] = _v
-                # Reasons list often holds the most useful "why fired" info
-                _signals_triggered = " | ".join(
-                    str(r) for r in (verdict_data.get("reasons") or [])
-                )[:1000]
-            # Capitulation engine state
-            try:
-                from capitulation_engine import get_live_state as _gls
-                _cap = (_gls() or {}).get("results", {}).get(idx, {})
-                _es_blob["capit_bull"] = (_cap.get("bullish") or {}).get("score", 0)
-                _es_blob["capit_bear"] = (_cap.get("bearish") or {}).get("score", 0)
-            except Exception:
-                pass
-            _engine_scores_json = _json_es.dumps(_es_blob, default=str)[:4000]
-        except Exception as _es_e:
-            print(f"[TRADE] engine_attribution capture failed: {_es_e}")
-
-        # ── LEVEL CONTEXT CAPTURE AT ENTRY (2026-06-16) ──
-        # User insight: system buys expensive (near day_high for CE / day_low for PE)
-        # Capture PDH/PDL/PDC/gap/day_open/day_high/low to audit which level-zones
-        # produce wins vs losses.
-        _level_context_json = ""
-        _level_zone = ""
-        try:
-            from levels_context import get_levels_context as _glc
-            _spot_for_ctx = None
-            try:
-                if engine is not None:
-                    _tok = engine.spot_tokens.get(idx)
-                    if _tok:
-                        _spot_for_ctx = (engine.prices.get(_tok, {}) or {}).get("ltp")
-            except Exception:
-                pass
-            _ctx = _glc(engine, idx, _spot_for_ctx)
-            import json as _json_lc
-            _level_context_json = _json_lc.dumps(_ctx, default=str)[:2000]
-            _level_zone = (_ctx.get("zone") or "")[:32]
-        except Exception as _lc_e:
-            print(f"[TRADE] level_context capture failed: {_lc_e}")
-        try:
-            from entry_filters import detect_market_regime as _dmr
-            spot_hist = getattr(engine, "_spot_history", {}).get(idx, []) if engine else []
-            if spot_hist:
-                _r = _dmr(spot_hist)
-                _regime = _r.get("regime", "")
-                _range_pct = float(_r.get("range_pct") or 0)
-                _candle_pct = float(_r.get("candle_pct") or 0)
-        except Exception as _re:
-            print(f"[TRADE] regime capture failed: {_re}")
-        try:
-            from structure_gate import get_cached_structure as _gcs
-            _cache = _gcs(idx) or {}
-            _structs = _cache.get("structures", {})
-            _s5m = (_structs.get("5m") or {}).get("verdict", "")
-            _s15m = (_structs.get("15m") or {}).get("verdict", "")
-            _s1h = (_structs.get("1h") or {}).get("verdict", "")
-        except Exception as _se:
-            print(f"[TRADE] structure capture failed: {_se}")
-
         now = ist_now()
         conn = _conn()
         cursor = conn.execute("""
@@ -826,23 +661,14 @@ class TradeManager:
                 entry_price, sl_price, original_sl, t1_price, t2_price,
                 current_ltp, peak_ltp,
                 lots, lot_size, qty, status, probability, source,
-                breakeven_active, trailing_active, trail_level, alerts,
-                regime_at_entry, range_pct_at_entry, candle_pct_at_entry,
-                structure_5m, structure_15m, structure_1h,
-                engine_scores_json, signals_triggered, gates_passed,
-                level_context_json, level_zone_at_entry)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, 0, 0, '', '',
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                breakeven_active, trailing_active, trail_level, alerts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, 0, 0, '', '')
         """, (
             now.isoformat(), idx, action, strike, expiry,
             entry_price, sl_price, sl_price, t1_price, t2_price,
             entry_price, entry_price,
             lots, lot_size, qty,
             probability, source,
-            _regime, _range_pct, _candle_pct,
-            _s5m, _s15m, _s1h,
-            _engine_scores_json, _signals_triggered, _gates_passed,
-            _level_context_json, _level_zone,
         ))
         trade_id = cursor.lastrowid
         conn.commit()
@@ -1002,14 +828,6 @@ class TradeManager:
             pnl_pts = round(current_ltp - entry, 2)
             pnl_rupees = round(pnl_pts * t["qty"], 2)
             profit_pct = round((current_ltp - entry) / entry * 100, 1) if entry > 0 else 0
-            peak_pct = round((peak - entry) / entry * 100, 1) if entry > 0 else 0
-
-            # ── MAIN MODE: hold time for EARLY_CUT / PEAK_GIVEBACK ──
-            try:
-                _ent_time = datetime.fromisoformat(t["entry_time"])
-                hold_sec_main = (ist_now() - _ent_time).total_seconds()
-            except Exception:
-                hold_sec_main = 0
 
             new_status = "OPEN"
             exit_reason = None
@@ -1017,228 +835,6 @@ class TradeManager:
             new_sl = sl
             alerts_list = []
             trail_level = t.get("trail_level", "")
-
-            # ════════════════════════════════════════════════
-            # MAIN MODE DAMAGE CONTROL (2026-06-10)
-            # Ported from scalper_mode. Smart not strict — small loss vs big loss.
-            # User data: 79 SL_HIT losses (₹-10.20L) = 82% of total losses.
-            # Many had brief positive then died — caught by these rules.
-            # All env-toggleable for safety.
-            # ════════════════════════════════════════════════
-
-            # ── EARLY_CUT — "never positive" detection ──
-            # 2026-06-11 v2: window extended 3 → 10 min (60d data audit).
-            # 14 NEVER_POSITIVE trades held 22+ min before SL_HIT (-₹3.08L
-            # leak). Slipped past 3-min window because bled slowly.
-            try:
-                import os as _os_ec
-                # 2026-06-17: DEFAULT DISABLED after audit showed -₹136k bleed
-                # on scalper + -₹48k bleed on main. T1_HIT collapsed 28→4 trades
-                # because EARLY_CUT killed trades before they could develop.
-                # HARD_LOSS_CAP at -10% already catches catastrophic losses.
-                if (_os_ec.environ.get("MAIN_EARLY_CUT_DISABLED", "1").strip() not in ("1","true","on")
-                        and new_status == "OPEN"):
-                    ec_window = float(_os_ec.environ.get("MAIN_EARLY_CUT_WINDOW_MIN", "10")) * 60
-                    ec_trigger = float(_os_ec.environ.get("MAIN_EARLY_CUT_TRIGGER", "-2.5"))
-                    if (60 <= hold_sec_main <= ec_window
-                            and peak_pct <= 0.5
-                            and profit_pct <= ec_trigger):
-                        new_status = "EARLY_CUT"
-                        exit_price = current_ltp
-                        exit_reason = (f"EARLY_CUT: setup wrong from start (peak {peak_pct:+.1f}%, "
-                                       f"now {profit_pct:+.1f}%, hold {hold_sec_main/60:.1f}m) — "
-                                       f"small loss not big loss")
-                        print(f"[TRADE] EARLY_CUT · {action} {idx} {strike} · "
-                              f"never positive in {hold_sec_main/60:.1f}m, cut at {profit_pct:+.1f}%")
-            except Exception as _ec_e:
-                print(f"[TRADE] EARLY_CUT error (allow): {_ec_e}")
-
-            # ── STALE_TRADE_KILL (Fix 4, 2026-06-15) ──
-            # Catches the GAP between EARLY_CUT (10min, -2.5%) and ZOMBIE_KILL
-            # (30min, profit band -1..+1). Bleed-trades that drift below -1%
-            # before 30min escape ZOMBIE_KILL. Audit: 14 such trades held 180m
-            # avg, lost ₹3.08L. Kill at 15min if peak <1% and loss between
-            # -2% and -5% — direction wrong, theta+slippage will only widen it.
-            # Env kill: MAIN_STALE_KILL_DISABLED=1
-            try:
-                import os as _os_sk
-                if (_os_sk.environ.get("MAIN_STALE_KILL_DISABLED", "").strip() not in ("1","true","on")
-                        and new_status == "OPEN"):
-                    # 2026-06-17 (auditor): min_hold 15→10 min so STALE_KILL
-                    # picks up immediately after EARLY_CUT's 10-min window.
-                    # Previously trades in the 10-15 min slot had no specific
-                    # guard if they bled past -2.5% (EARLY_CUT trigger).
-                    sk_min_hold = float(_os_sk.environ.get("MAIN_STALE_KILL_MIN_HOLD_MIN", "10")) * 60
-                    sk_max_hold = float(_os_sk.environ.get("MAIN_STALE_KILL_MAX_HOLD_MIN", "30")) * 60
-                    sk_max_peak = float(_os_sk.environ.get("MAIN_STALE_KILL_MAX_PEAK_PCT", "1.0"))
-                    sk_loss_low = float(_os_sk.environ.get("MAIN_STALE_KILL_LOSS_LOW", "-5.0"))
-                    sk_loss_high = float(_os_sk.environ.get("MAIN_STALE_KILL_LOSS_HIGH", "-2.0"))
-                    if (sk_min_hold <= hold_sec_main <= sk_max_hold
-                            and peak_pct <= sk_max_peak
-                            and sk_loss_low <= profit_pct <= sk_loss_high):
-                        new_status = "STALE_TRADE_KILL"
-                        exit_price = current_ltp
-                        exit_reason = (f"STALE_TRADE_KILL: hold {hold_sec_main/60:.0f}m, "
-                                       f"peak {peak_pct:+.1f}% (never broke {sk_max_peak}%), "
-                                       f"loss {profit_pct:+.1f}% — direction wrong, "
-                                       f"prevent slow-bleed to -5% SL")
-                        print(f"[TRADE] STALE_KILL · {action} {idx} {strike} · "
-                              f"hold {hold_sec_main/60:.0f}m, peak {peak_pct:+.1f}%, "
-                              f"now {profit_pct:+.1f}% — bleeding stopped")
-            except Exception as _sk_e:
-                print(f"[TRADE] STALE_KILL error (allow): {_sk_e}")
-
-            # ── INSTANT_REJECT — < 90s crash exit (2026-06-11) ──
-            # 2026-06-11 v2: DEFAULT DISABLED per user feedback.
-            # User: trade just entered, normal price wiggle shouldn't kill it.
-            # Env: MAIN_INSTANT_REJECT_DISABLED=0 to re-enable.
-            try:
-                import os as _os_ir
-                if (_os_ir.environ.get("MAIN_INSTANT_REJECT_DISABLED", "1").strip() not in ("1","true","on")
-                        and new_status == "OPEN"):
-                    ir_max_hold = float(_os_ir.environ.get("MAIN_INSTANT_REJECT_HOLD_SEC", "90"))
-                    ir_trigger = float(_os_ir.environ.get("MAIN_INSTANT_REJECT_TRIGGER", "-1.0"))
-                    if (hold_sec_main <= ir_max_hold
-                            and profit_pct <= ir_trigger
-                            and peak_pct <= 0.5):
-                        new_status = "INSTANT_REJECT"
-                        exit_price = current_ltp
-                        exit_reason = (f"INSTANT_REJECT: hold {hold_sec_main:.0f}s, peak {peak_pct:+.2f}%, "
-                                       f"now {profit_pct:+.2f}% — market rejected entry, cut quick")
-                        print(f"[TRADE] INSTANT_REJECT · {action} {idx} {strike} · "
-                              f"crashed at {profit_pct:+.1f}% in {hold_sec_main:.0f}s")
-            except Exception as _ir_e:
-                print(f"[TRADE] INSTANT_REJECT error (allow): {_ir_e}")
-
-            # ── CROSS-ASSET CONFIRMATION (Phase 3 — 2026-06-10) ──
-            # If NIFTY trade + BANKNIFTY moving SAME direction → confirmed.
-            # Tighten trail (catch more profit). Loosen trail if divergent.
-            # Data: 80%+ correlation between NIFTY and BANKNIFTY intraday.
-            # Confirmation = boost trail aggression, hold longer.
-            # Divergence = give more room (single-index move can fade).
-            # Env: MAIN_CROSS_ASSET_DISABLED=1 to revert
-            try:
-                import os as _os_ca
-                if _os_ca.environ.get("MAIN_CROSS_ASSET_DISABLED", "").strip() not in ("1","true","on"):
-                    # Get both index spots from prices dict
-                    nifty_token = spot_tokens.get("NIFTY")
-                    bnf_token = spot_tokens.get("BANKNIFTY")
-                    nifty_spot = prices.get(nifty_token, {}).get("ltp", 0) if nifty_token else 0
-                    bnf_spot = prices.get(bnf_token, {}).get("ltp", 0) if bnf_token else 0
-                    nifty_prev = prices.get(nifty_token, {}).get("close", nifty_spot) if nifty_token else 0
-                    bnf_prev = prices.get(bnf_token, {}).get("close", bnf_spot) if bnf_token else 0
-                    # % change today
-                    nifty_chg = (nifty_spot - nifty_prev) / nifty_prev if nifty_prev > 0 else 0
-                    bnf_chg = (bnf_spot - bnf_prev) / bnf_prev if bnf_prev > 0 else 0
-                    # Is current trade direction aligned with index movements?
-                    is_ce = "CE" in action
-                    # CE trade benefits when spot UP. PE when spot DOWN.
-                    own_chg = nifty_chg if idx == "NIFTY" else bnf_chg
-                    other_chg = bnf_chg if idx == "NIFTY" else nifty_chg
-                    # Cross-asset confirms when BOTH move in our trade direction
-                    if is_ce:
-                        confirmed = (own_chg > 0.001 and other_chg > 0.001)  # both rallying
-                        divergent = (own_chg > 0.001 and other_chg < -0.001)  # our up, other down
-                    else:
-                        confirmed = (own_chg < -0.001 and other_chg < -0.001)  # both falling
-                        divergent = (own_chg < -0.001 and other_chg > 0.001)  # our down, other up
-                    # Apply effect: only when trade is in profit
-                    if profit_pct > 1 and new_status == "OPEN":
-                        if confirmed:
-                            # Cross-asset confirms direction → tighten trail by 5%
-                            # New SL = current_ltp × 0.97 (3% tight trail vs default 5%)
-                            tight_sl = round(current_ltp * 0.97, 2)
-                            if tight_sl > new_sl and tight_sl > entry:
-                                new_sl = tight_sl
-                                trail_level = f"{trail_level}+XAFCONF"
-                                alerts_list.append(
-                                    f"CROSS-ASSET CONFIRMED ({idx} {action} aligned with "
-                                    f"{'BNF' if idx=='NIFTY' else 'NIFTY'}) — tight trail ₹{new_sl}"
-                                )
-                        elif divergent:
-                            # Divergence — loosen trail by 2% (give more room, might recover)
-                            loose_sl = round(current_ltp * 0.93, 2)  # 7% from current
-                            # Don't loosen below entry
-                            if loose_sl < new_sl and loose_sl > entry:
-                                new_sl = loose_sl
-                                alerts_list.append(
-                                    f"CROSS-ASSET DIVERGENT — loose trail ₹{new_sl} (other index opposite)"
-                                )
-            except Exception as _ca_e:
-                print(f"[TRADE] CROSS_ASSET error (allow): {_ca_e}")
-
-            # ── PEAK_GIVEBACK — "brief hope then crash" detection ──
-            # Peak +0.5% to +3% reached, then dropped ≥1.5% from peak,
-            # current PnL ≤-1% → exit at small loss
-            # Catches: trade peaked briefly then died (the #267 BANKNIFTY pattern)
-            try:
-                import os as _os_pg
-                # 2026-06-17: DEFAULT DISABLED. PEAK_GIVEBACK only fired in narrow
-                # 1.5% band (after today's tightening) — essentially dead code.
-                # MINI_PEAK_FLOOR (peak ≥2%) handles real cases better.
-                if (_os_pg.environ.get("MAIN_PEAK_GIVEBACK_DISABLED", "1").strip() not in ("1","true","on")
-                        and new_status == "OPEN"):
-                    # 2026-06-15: min raised 0.5 → 1.0
-                    # 2026-06-17 (auditor review): 1.0 still too aggressive —
-                    # PEAK_GIVEBACK overlaps with MINI_PEAK_FLOOR (peak 2-5%).
-                    # Setting min_peak=1.5% means PEAK_GIVEBACK only fires for
-                    # narrow band 1.5-1.99% (above MINI floor starts at 2%).
-                    pg_min_peak = float(_os_pg.environ.get("MAIN_PG_MIN_PEAK_PCT", "1.5"))
-                    # 2026-06-11: capped 3.0 → 1.5. Above +1.5% peak, profit_floor
-                    # locks SL at entry (zero loss). PEAK_GIVEBACK would exit at
-                    # current_ltp (possibly -1% loss) — STRICTLY WORSE outcome.
-                    # Keep PEAK_GIVEBACK only for tiny peaks (1.0-1.5%) where
-                    # profit_floor doesn't yet activate.
-                    pg_max_peak = float(_os_pg.environ.get("MAIN_PG_MAX_PEAK_PCT", "1.5"))
-                    pg_drop_from_peak = float(_os_pg.environ.get("MAIN_PG_DROP_PCT", "1.5"))
-                    pg_min_loss = float(_os_pg.environ.get("MAIN_PG_MIN_LOSS", "-1.0"))
-                    hold_min_main = hold_sec_main / 60
-                    drop_from_peak_pct = peak_pct - profit_pct
-                    if (2 <= hold_min_main <= 15  # window: 2-15 min
-                            and pg_min_peak <= peak_pct <= pg_max_peak
-                            and drop_from_peak_pct >= pg_drop_from_peak
-                            and profit_pct <= pg_min_loss):
-                        new_status = "PEAK_GIVEBACK"
-                        exit_price = current_ltp
-                        exit_reason = (f"PEAK_GIVEBACK: peaked +{peak_pct:.1f}% then dropped "
-                                       f"{drop_from_peak_pct:.1f}% from peak (now {profit_pct:+.1f}%) — "
-                                       f"brief hope killed, exit small")
-                        print(f"[TRADE] PEAK_GIVEBACK · {action} {idx} {strike} · "
-                              f"peak +{peak_pct:.1f}% → now {profit_pct:+.1f}%")
-            except Exception as _pg_e:
-                print(f"[TRADE] PEAK_GIVEBACK error (allow): {_pg_e}")
-
-            # ── ZOMBIE_TRADE_KILL — exit theta-bleeding zombies ──
-            # 2026-06-11 (bear-trader fix). PEAK_GIVEBACK was shrunk to peak
-            # ≤ +1.5% to avoid overlap with profit_floor. But profit_floor
-            # only RAISES SL — it doesn't EXIT. Trades sitting at +0.3%
-            # above entry for 30+ min bleed theta until SL hits.
-            #
-            # ZOMBIE rule: hold > 30 min, profit stuck in (-1%, +1%) band,
-            # peak < +2% (no real momentum ever) → exit small, free capital.
-            #
-            # Disabled by env: MAIN_ZOMBIE_KILL_DISABLED=1
-            try:
-                import os as _os_zk
-                if (_os_zk.environ.get("MAIN_ZOMBIE_KILL_DISABLED", "").strip() not in ("1","true","on")
-                        and new_status == "OPEN"):
-                    zk_min_hold_min = float(_os_zk.environ.get("MAIN_ZOMBIE_MIN_HOLD_MIN", "30"))
-                    zk_max_peak_pct = float(_os_zk.environ.get("MAIN_ZOMBIE_MAX_PEAK_PCT", "2.0"))
-                    zk_band_low = float(_os_zk.environ.get("MAIN_ZOMBIE_BAND_LOW", "-1.0"))
-                    zk_band_high = float(_os_zk.environ.get("MAIN_ZOMBIE_BAND_HIGH", "1.0"))
-                    hold_min_main = hold_sec_main / 60
-                    if (hold_min_main >= zk_min_hold_min
-                            and peak_pct < zk_max_peak_pct
-                            and zk_band_low <= profit_pct <= zk_band_high):
-                        new_status = "ZOMBIE_KILL"
-                        exit_price = current_ltp
-                        exit_reason = (f"ZOMBIE_KILL: hold {hold_min_main:.0f}m, no momentum "
-                                       f"(peak {peak_pct:+.1f}%, now {profit_pct:+.1f}%) — "
-                                       f"free capital, theta bleeding")
-                        print(f"[TRADE] ZOMBIE_KILL · {action} {idx} {strike} · "
-                              f"hold {hold_min_main:.0f}m, stuck at {profit_pct:+.1f}%")
-            except Exception as _zk_e:
-                print(f"[TRADE] ZOMBIE_KILL error (allow): {_zk_e}")
 
             # ── BUYER MODE thresholds (loaded EARLY — used by adaptive SL below) ──
             # BUG FIX 2026-05-08: _bm was used at line 836 before being defined at
@@ -1306,37 +902,6 @@ class TradeManager:
             # NULLIFY their protection. So skip widening when new systems active.
             # ══════════════════════════════════════════════
             sl_raised_by_new_system = (new_sl > sl)  # sl = original DB value
-
-            # ─── MAIN AGGRESSIVE PEAK FLOOR (Fix A, 2026-06-15) ──────────
-            # Belt-and-suspenders independent of profit_floor chain.
-            # Locks SL based on peak — guarantees peak-based protection
-            # even if other systems missed the band. Mirrors scalper Fix A
-            # but tuned for main mode (slightly more conservative).
-            # Env kill: MAIN_AGG_FLOOR_DISABLED=1
-            try:
-                import os as _os_maf
-                if _os_maf.environ.get("MAIN_AGG_FLOOR_DISABLED", "").strip() not in ("1","true","on"):
-                    _maf_peak_pct = peak_pct
-                    if _maf_peak_pct >= 3.0:
-                        if _maf_peak_pct >= 12.0:
-                            _maf_floor_pct = 6.0
-                        elif _maf_peak_pct >= 8.0:
-                            _maf_floor_pct = 4.0
-                        elif _maf_peak_pct >= 5.0:
-                            _maf_floor_pct = 2.5
-                        elif _maf_peak_pct >= 3.5:
-                            _maf_floor_pct = 1.5
-                        else:  # 3.0 - 3.5
-                            _maf_floor_pct = 0.5
-                        _maf_floor_price = round(entry * (1 + _maf_floor_pct/100), 1)
-                        if _maf_floor_price > new_sl:
-                            print(f"[TRADE] AGG_FLOOR id={t['id']}: peak {_maf_peak_pct:.1f}% → "
-                                  f"floor +{_maf_floor_pct}% (SL ₹{new_sl} → ₹{_maf_floor_price})")
-                            new_sl = _maf_floor_price
-                            sl_raised_by_new_system = True
-            except Exception:
-                pass
-
             if not breakeven_active:
                 context = self._detect_trade_context(t, idx, action, chain, current_ltp)
                 original_sl = t.get("original_sl", sl) or sl
@@ -1362,15 +927,6 @@ class TradeManager:
                         trail_level = "STOP_HUNT_CAPPED"
                         alerts_list.append(f"STOP HUNT detected — SL set to max-loss floor ₹{new_sl} (was wider, capped).")
                 elif context == "STOP_HUNT" and sl_raised_by_new_system:
-                    # 2026-06-17 (auditor NOTE #19): tag the detection so we
-                    # can grep history for trades where STOP_HUNT was seen but
-                    # not acted on (because Profit-Trail/Time-Decay already
-                    # raised SL above where widening would have placed it).
-                    trail_level = "STOP_HUNT_DETECTED_NO_ACTION"
-                    alerts_list.append(
-                        f"STOP_HUNT detected but skipped — Profit-Trail/Time-Decay "
-                        f"already raised SL to ₹{new_sl} (no widening needed)."
-                    )
                     print(f"[TRADE] STOP_HUNT detected but skipping — Profit-Trail/Time-Decay raised SL to ₹{new_sl}")
 
             # ══════════════════════════════════════════════
@@ -1389,50 +945,19 @@ class TradeManager:
                     and profit_pct > _bm.get("conviction_exit_min_profit", 5)
                     and current_conviction < _bm.get("conviction_exit_threshold", 50)):
                 breakeven_active = 1
-                # 2026-06-11 BUG FIX: was `new_sl = entry` blindly, which
-                # DOWNGRADED any profit_floor lock set during peak. E.g. peak
-                # hit +8% → profit_floor locked SL at entry × 1.04 (+4%), then
-                # conviction dropped → this line reset SL to entry (lost +4%).
-                # Now: take max of entry-floor and existing locked SL.
-                try:
-                    from profit_floor import get_minimum_sl as _pf_min
-                    peak_p = trade.get("peak_ltp", current_ltp) or current_ltp
-                    if peak_p < current_ltp:
-                        peak_p = current_ltp
-                    floor_min = _pf_min(
-                        entry_price=entry, peak_price=peak_p, current_sl=sl,
-                        idx=idx,  # per-index bands (BNF noise-shifted)
-                    )
-                    new_sl = max(entry, floor_min, sl)
-                except Exception:
-                    new_sl = max(entry, sl)
+                new_sl = entry
                 trail_level = "CONVICTION_BE"
-                alerts_list.append(f"EARLY BREAKEVEN [{_bm['mode']}]: Conviction dropped to {current_conviction}% but profit +{profit_pct:.0f}%. SL raised to ₹{new_sl} (floor-aware).")
-                print(f"[TRADE] EARLY BREAKEVEN (conviction): {action} {idx} {strike} — conviction {current_conviction}%, profit +{profit_pct:.0f}%, SL ₹{new_sl}")
+                alerts_list.append(f"EARLY BREAKEVEN [{_bm['mode']}]: Conviction dropped to {current_conviction}% but profit +{profit_pct:.0f}%. SL moved to entry ₹{entry}.")
+                print(f"[TRADE] EARLY BREAKEVEN (conviction): {action} {idx} {strike} — conviction {current_conviction}%, profit +{profit_pct:.0f}%")
 
             # STAGE 1: BREAKEVEN — HEDGER: +2% / BUYER: +20%
             be_threshold = _bm.get("breakeven_pct", 2.0)
             if not breakeven_active and profit_pct >= be_threshold:
                 breakeven_active = 1
-                # 2026-06-11: take max with existing SL + profit_floor.
-                # profit_floor at +5% peak locks +2.5%. If profit drops back to
-                # +3% (BE threshold), this line previously set new_sl=entry
-                # (lost the +2.5% lock). max() preserves the higher floor.
-                try:
-                    from profit_floor import get_minimum_sl as _pf_min
-                    peak_p = trade.get("peak_ltp", current_ltp) or current_ltp
-                    if peak_p < current_ltp:
-                        peak_p = current_ltp
-                    floor_min = _pf_min(
-                        entry_price=entry, peak_price=peak_p, current_sl=sl,
-                        idx=idx,  # per-index bands (BNF noise-shifted)
-                    )
-                    new_sl = max(entry, floor_min, sl)
-                except Exception:
-                    new_sl = max(entry, sl)
+                new_sl = entry
                 trail_level = "BREAKEVEN"
-                alerts_list.append(f"BREAKEVEN [{_bm['mode']}] activated at +{profit_pct:.1f}% (threshold {be_threshold}%) — SL raised to ₹{new_sl}")
-                print(f"[TRADE] BREAKEVEN [{_bm['mode']}]: {action} {idx} {strike} — SL ₹{new_sl} (was ₹{sl})")
+                alerts_list.append(f"BREAKEVEN [{_bm['mode']}] activated at +{profit_pct:.1f}% (threshold {be_threshold}%) — SL moved to entry ₹{entry}")
+                print(f"[TRADE] BREAKEVEN [{_bm['mode']}]: {action} {idx} {strike} — SL moved to entry ₹{entry} (was ₹{sl})")
 
             # STAGE 1.5: REVERSAL EXIT — MAX LOSS CAP at -5% (BUYER mode default)
             #
@@ -1457,193 +982,24 @@ class TradeManager:
                 # Capital preservation: in fast-moving markets, position could blow
                 # through -5% to -15% in <2 min. Must fire on first tick at -5%.
                 # This OVERRIDES every other system (engines-hold, STOP_HUNT, etc.).
-                #
-                # ── PEAK-AWARE FLOOR (Fix 2, 2026-06-15) ──
-                # If trade peaked +5%+ before crashing, don't exit at -5%.
-                # Lock at peak × 0.4 floor instead — preserves earned profit.
-                # Catches Trade #51 (peak +17% → exit -8%): would lock at +6.8%.
-                # Env kill: MAIN_PEAK_FLOOR_DISABLED=1
                 if profit_pct <= rev_pct:
-                    import os as _os_pf
-                    _pf_disabled = _os_pf.environ.get("MAIN_PEAK_FLOOR_DISABLED", "").strip() in ("1","true","on")
-                    _pf_peak_thresh = float(_os_pf.environ.get("MAIN_PEAK_FLOOR_PEAK_PCT", "5.0"))
-                    _pf_factor = float(_os_pf.environ.get("MAIN_PEAK_FLOOR_FACTOR", "0.4"))
-                    # 2026-06-17 BUG FIX: intermediate peak floor for peak 2-5%.
-                    # Previously trades that peaked +2-4.99% had no protection —
-                    # exited at -5% market price. Now use mini-floor:
-                    #   peak 2-3%   → lock at +0.3%
-                    #   peak 3-4%   → lock at +0.8%
-                    #   peak 4-5%   → lock at +1.3%
-                    #   peak 5%+    → existing peak × 0.4 floor (e.g. 10% → 4%)
-                    if (not _pf_disabled) and peak_pct >= _pf_peak_thresh:
-                        floor_pct = peak_pct * _pf_factor
-                        floor_price = round(entry * (1 + floor_pct/100), 1)
-                        # 2026-06-17 (auditor NOTE #17): respect AGG_FLOOR's
-                        # already-raised SL. If something else raised new_sl
-                        # ABOVE our computed floor, use the higher value.
-                        # Locks more profit when both gates agree.
-                        if new_sl > floor_price:
-                            floor_price = new_sl
-                            floor_pct = round((floor_price / entry - 1) * 100, 1)
-                        if current_ltp >= floor_price:
-                            new_status = "TRAIL_EXIT"
-                            exit_price = floor_price
-                            exit_reason = (f"PEAK_FLOOR_LOCK [{_bm['mode']}] at ₹{floor_price} "
-                                           f"(+{floor_pct:.1f}%) — trade peaked +{peak_pct:.1f}% then "
-                                           f"reversed past -5% cap. Floor saved profit.")
-                            print(f"[TRADE] PEAK_FLOOR [{_bm['mode']}]: {action} {idx} {strike} "
-                                  f"peak +{peak_pct:.1f}% → exit +{floor_pct:.1f}% (was about to -5%)")
-                        else:
-                            new_status = "REVERSAL_EXIT"
-                            exit_price = current_ltp
-                            exit_reason = (f"HARD MAX-LOSS CAP [{_bm['mode']}] at ₹{current_ltp:.1f} "
-                                           f"({profit_pct:.1f}%) — peak was +{peak_pct:.1f}% but crash "
-                                           f"past floor ₹{floor_price}. Exit at market.")
-                            print(f"[TRADE] MAX-LOSS (past floor) [{_bm['mode']}]: {action} {idx} {strike} "
-                                  f"peak +{peak_pct:.1f}% but crashed past +{floor_pct:.1f}% floor")
-                    elif (not _pf_disabled) and peak_pct >= 2.0:
-                        # MINI-FLOOR for peak 2-5% (was unprotected — closing gap)
-                        # Tiered: peak 2→+0.3, peak 3→+0.8, peak 4→+1.3
-                        _mini_floor_pct = round(0.3 + (peak_pct - 2.0) * 0.5, 1)  # 2%→0.3, 3%→0.8, 4%→1.3
-                        _mini_floor_price = round(entry * (1 + _mini_floor_pct/100), 1)
-                        # 2026-06-17 (auditor NOTE #17): respect AGG_FLOOR
-                        if new_sl > _mini_floor_price:
-                            _mini_floor_price = new_sl
-                            _mini_floor_pct = round((_mini_floor_price / entry - 1) * 100, 1)
-                        if current_ltp >= _mini_floor_price:
-                            new_status = "TRAIL_EXIT"
-                            exit_price = _mini_floor_price
-                            exit_reason = (f"MINI_PEAK_FLOOR [{_bm['mode']}] at ₹{_mini_floor_price} "
-                                           f"(+{_mini_floor_pct}%) — peak +{peak_pct:.1f}% saved from -5% cap.")
-                            print(f"[TRADE] MINI_PEAK_FLOOR [{_bm['mode']}]: {action} {idx} {strike} "
-                                  f"peak +{peak_pct:.1f}% → +{_mini_floor_pct}% (was about to -5%)")
-                        else:
-                            new_status = "REVERSAL_EXIT"
-                            exit_price = current_ltp
-                            exit_reason = f"HARD MAX-LOSS CAP [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — peak only +{peak_pct:.1f}%, crashed past mini-floor."
-                            print(f"[TRADE] MAX-LOSS (past mini-floor) [{_bm['mode']}]: peak +{peak_pct:.1f}%, mini-floor +{_mini_floor_pct}% but below.")
-                    else:
-                        # Genuine wrong-direction trade (peak < +2%) — accept -5% cap
-                        new_status = "REVERSAL_EXIT"
-                        exit_price = current_ltp
-                        exit_reason = f"HARD MAX-LOSS CAP [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — capital preservation, no overrides."
-                        print(f"[TRADE] MAX-LOSS EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}% after {int(hold_sec/60)}min)")
+                    new_status = "REVERSAL_EXIT"
+                    exit_price = current_ltp
+                    exit_reason = f"HARD MAX-LOSS CAP [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — capital preservation, no overrides."
+                    print(f"[TRADE] MAX-LOSS EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}% after {int(hold_sec/60)}min)")
 
                 # Tier (a): early exit on confirmed downtrend (saves 2%, requires hold)
                 # Only checks if hard cap didn't already fire AND we've held >= rev_min_hold.
-                #
-                # 2026-06-11 v2: "LET RUNNERS RUN" guard added.
-                # If peak ever reached +3%, don't early-exit — profit_floor has
-                # already locked SL above entry, so worst case = small profit.
-                # User feedback: "system catches move but exits small, want big wins"
                 elif hold_sec >= rev_min_hold and profit_pct <= early_neg_pct and profit_pct > rev_pct:
-                    # ── SMART EARLY_NEG (Task #90, 2026-06-25) ──────────────
-                    # Distinguishes PULLBACK from REVERSAL using structure_15m.
-                    #
-                    # The old EARLY_NEG used a 30-min STRIKE PREMIUM trend
-                    # which conflates spot move + theta + bid/ask — noisy +
-                    # lagging. It cut pullbacks that would have recovered.
-                    #
-                    # New rule at -3% drawdown:
-                    #   Read live structure_15m for this index.
-                    #   - structure_15m STILL aligned with trade direction
-                    #     (CE held + UPTREND, PE held + DOWNTREND)
-                    #       → PULLBACK. HOLD. Let HARD_LOSS_CAP handle if
-                    #         it truly fails.
-                    #   - structure_15m FLIPPED against trade
-                    #     (CE held + DOWNTREND, PE held + UPTREND)
-                    #       → REAL REVERSAL. CUT now at -3% (save 2% before
-                    #         HARD_LOSS_CAP at -5%).
-                    #   - structure_15m CHOP / UNKNOWN
-                    #       → UNCERTAIN. Don't preemptively cut. Let
-                    #         HARD_LOSS_CAP handle.
-                    #
-                    # Disable: MAIN_SMART_EARLY_NEG_DISABLED=1
-                    # Revert to legacy 30-min check: MAIN_EARLY_NEG_LEGACY=1
-                    try:
-                        import os as _os_lr
-                        _smart_off = _os_lr.environ.get(
-                            "MAIN_SMART_EARLY_NEG_DISABLED", "").strip() in ("1","true","on")
-                        _legacy = _os_lr.environ.get(
-                            "MAIN_EARLY_NEG_LEGACY", "").strip() in ("1","true","on")
-
-                        if _smart_off:
-                            # Skip entirely — same as pre-#90 disabled state
-                            pass
-                        elif _legacy:
-                            # Pre-#90 behaviour for emergency rollback
-                            runner_peak_thresh = float(_os_lr.environ.get(
-                                "MAIN_RUNNER_PEAK_PCT", "3.0"))
-                            if (peak_pct >= runner_peak_thresh
-                                    and _os_lr.environ.get(
-                                        "MAIN_LET_RUNNERS_DISABLED", "").strip()
-                                    not in ("1","true","on")):
-                                print(f"[TRADE] EARLY-NEG SUPPRESSED [{_bm['mode']}] "
-                                      f"(legacy mode, runner): peak +{peak_pct:.1f}%")
-                            else:
-                                _t = self._get_strike_30min_trend(idx, strike, opt, current_ltp)
-                                if _t in ("DOWN", "DOWN_HARD"):
-                                    new_status = "REVERSAL_EXIT"
-                                    exit_price = current_ltp
-                                    exit_reason = (
-                                        f"Early neg LEGACY at ₹{current_ltp:.1f} "
-                                        f"({profit_pct:.1f}%) — 30-min trend {_t}")
-                        else:
-                            # ── SMART path: structure_15m gate ──
-                            sg_v5 = ""
-                            sg_v15 = ""
-                            try:
-                                from structure_gate import get_cached_structure as _gcs_sn
-                                _cached = _gcs_sn(idx)
-                                if _cached:
-                                    _structs = _cached.get("structures", {}) or {}
-                                    sg_v5 = (_structs.get("5m") or {}).get("verdict", "") or ""
-                                    sg_v15 = (_structs.get("15m") or {}).get("verdict", "") or ""
-                            except Exception as _sn_e:
-                                print(f"[TRADE] smart-early-neg structure read failed: {_sn_e}")
-
-                            is_ce = "CE" in (action or "").upper()
-                            structure_against = (
-                                (is_ce and sg_v15 == "DOWNTREND")
-                                or ((not is_ce) and sg_v15 == "UPTREND")
-                            )
-
-                            # Runner protection still applies — peak ≥+3% means
-                            # profit_floor has already locked SL above entry.
-                            runner_peak_thresh = float(_os_lr.environ.get(
-                                "MAIN_RUNNER_PEAK_PCT", "3.0"))
-                            is_runner = (
-                                peak_pct >= runner_peak_thresh
-                                and _os_lr.environ.get(
-                                    "MAIN_LET_RUNNERS_DISABLED", "").strip()
-                                not in ("1","true","on")
-                            )
-
-                            if is_runner:
-                                # Runners stay — profit_floor handles them.
-                                print(f"[TRADE] SMART-EARLY-NEG SUPPRESS (runner): "
-                                      f"{action} {idx} {strike} peak +{peak_pct:.1f}%")
-                            elif structure_against:
-                                # Real reversal — cut now (save 2% before HARD CAP).
-                                new_status = "REVERSAL_EXIT"
-                                exit_price = current_ltp
-                                exit_reason = (
-                                    f"SMART_REVERSAL_CUT [{_bm['mode']}] at ₹{current_ltp:.1f} "
-                                    f"({profit_pct:.1f}%) — structure_15m={sg_v15} "
-                                    f"FLIPPED against {action}. Held {int(hold_sec/60)}min."
-                                )
-                                print(f"[TRADE] SMART_REVERSAL_CUT [{_bm['mode']}]: "
-                                      f"{action} {idx} {strike} @ ₹{current_ltp} "
-                                      f"({profit_pct:.1f}%, s15={sg_v15}, s5={sg_v5})")
-                            else:
-                                # Aligned OR chop/unknown → treat as pullback.
-                                # Let HARD_LOSS_CAP handle if truly failing.
-                                print(f"[TRADE] SMART-EARLY-NEG HOLD (pullback "
-                                      f"likely): {action} {idx} {strike} "
-                                      f"@ {profit_pct:.1f}%, s15={sg_v15 or 'UNK'}")
-                    except Exception:
-                        # On any failure, do nothing (don't preemptively cut)
-                        pass
+                    trend = self._get_strike_30min_trend(idx, strike, opt, current_ltp)
+                    if trend in ("DOWN", "DOWN_HARD"):
+                        new_status = "REVERSAL_EXIT"
+                        exit_price = current_ltp
+                        exit_reason = (
+                            f"Early neg exit [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — "
+                            f"30-min trend {trend}, no recovery likely. Held {int(hold_sec/60)}min."
+                        )
+                        print(f"[TRADE] EARLY-NEG EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}%, trend={trend})")
 
             # STAGE 2: TRAILING SL — HEDGER: 50%/25% give-back / BUYER: 25%/15% give-back
             if breakeven_active and new_status == "OPEN":
@@ -1718,87 +1074,6 @@ class TradeManager:
             sl_zone = current_ltp <= new_sl * 1.03
             sl_breached = current_ltp <= new_sl
 
-            # ── MULTI-TICK SL CONFIRMATION (Fix B, 2026-06-15) ─────────────
-            # Mirrors scalper's wick-hunt protection (scalper_mode.py:2280-2295).
-            # Targets STOP_HUNTED ₹4.84L bleed (46 trades, avg peak 0.86%,
-            # hold 3.3 min — pattern matches institutional wick hunt).
-            # Tick-based (≈sub-second), unlike old time-buffer (30s) that the
-            # user disabled because it delayed real exits.
-            # Env: MAIN_SL_CONFIRM_TICKS (default 2; set 1 = old single-tick).
-            if sl_breached:
-                try:
-                    import os as _os_mt
-                    _confirm_ticks = max(1, int(_os_mt.environ.get("MAIN_SL_CONFIRM_TICKS", "2") or 2))
-                    if not hasattr(self, '_main_sl_breach_count'):
-                        self._main_sl_breach_count = {}
-                    tid_mt = t["id"]
-                    self._main_sl_breach_count[tid_mt] = self._main_sl_breach_count.get(tid_mt, 0) + 1
-                    if self._main_sl_breach_count[tid_mt] < _confirm_ticks:
-                        print(f"[TRADE] SL_TICK_GUARD · {action} {idx} {strike}: "
-                              f"premium ₹{current_ltp:.2f} ≤ SL ₹{new_sl:.2f} "
-                              f"({self._main_sl_breach_count[tid_mt]}/{_confirm_ticks} ticks)")
-                        sl_breached = False
-                except Exception as _mt_e:
-                    print(f"[TRADE] multi_tick check error (allow exit): {_mt_e}")
-            else:
-                # Reset breach counter the moment premium climbs back above SL
-                try:
-                    if hasattr(self, '_main_sl_breach_count'):
-                        self._main_sl_breach_count.pop(t["id"], None)
-                except Exception:
-                    pass
-
-            # ── ANTI-STOP-HUNT BUFFER (2026-06-11 — data-driven) ──
-            # 60d audit: 45 STOP_HUNTED trades = ₹-4.52L. Pattern:
-            #   - Premium dips to SL momentarily, then recovers
-            #   - System DETECTED these post-hoc but still exited
-            #   - All were "institutional flush" wicks
-            # Fix: when SL first touched, give 30s grace window. If premium
-            # recovers above SL+buffer, cancel the exit. If still below
-            # after 30s, confirm exit.
-            # Tracks per-trade first-touch time in memory.
-            # Env: MAIN_STOP_HUNT_BUFFER_DISABLED=1, MAIN_STOP_HUNT_BUFFER_SEC=30
-            if sl_breached:
-                try:
-                    import os as _os_sh, time as _t_sh
-                    # 2026-06-11 v2: DEFAULT DISABLED per user feedback.
-                    # Was delaying real SL exits by 30s causing bigger losses.
-                    # Env: MAIN_STOP_HUNT_BUFFER_DISABLED=0 to re-enable.
-                    if _os_sh.environ.get("MAIN_STOP_HUNT_BUFFER_DISABLED", "1").strip() not in ("1","true","on"):
-                        if not hasattr(self, '_sl_first_touch'):
-                            self._sl_first_touch = {}
-                        tid = t["id"]
-                        buf_sec = float(_os_sh.environ.get("MAIN_STOP_HUNT_BUFFER_SEC", "30"))
-                        # Buffer: SL price × 1.005 (premium must recover 0.5%)
-                        recovery_threshold = new_sl * 1.005
-                        first_touch = self._sl_first_touch.get(tid)
-                        if first_touch is None:
-                            # First time hitting SL — mark, don't exit
-                            self._sl_first_touch[tid] = _t_sh.time()
-                            print(f"[TRADE] STOP_HUNT_BUFFER · {action} {idx} {strike}: "
-                                  f"SL touched at ₹{current_ltp:.2f}, holding {buf_sec:.0f}s for confirmation")
-                            sl_breached = False  # don't exit this cycle
-                        elif (_t_sh.time() - first_touch) < buf_sec:
-                            # Still in buffer window
-                            if current_ltp >= recovery_threshold:
-                                # Premium recovered → CANCEL exit (was a wick)
-                                self._sl_first_touch.pop(tid, None)
-                                print(f"[TRADE] STOP_HUNT_AVOIDED · {action} {idx} {strike}: "
-                                      f"recovered to ₹{current_ltp:.2f} (SL ₹{new_sl:.2f}) — stayed in trade")
-                                sl_breached = False
-                            else:
-                                # Still below SL, keep waiting
-                                sl_breached = False
-                        else:
-                            # Buffer expired, still below SL → confirm exit
-                            print(f"[TRADE] STOP_HUNT_CONFIRMED · {action} {idx} {strike}: "
-                                  f"premium ₹{current_ltp:.2f} stayed below SL ₹{new_sl:.2f} for "
-                                  f"{buf_sec:.0f}s — confirming exit")
-                            self._sl_first_touch.pop(tid, None)
-                            # sl_breached stays True → falls through to exit logic
-                except Exception as _sh_e:
-                    print(f"[TRADE] stop_hunt_buffer error (allow exit): {_sh_e}")
-
             if sl_breached:
                 if breakeven_active and new_sl >= entry:
                     exit_price = new_sl
@@ -1850,21 +1125,9 @@ class TradeManager:
 
             # Check T1 — PARTIAL PROFIT BOOKING (HEDGER only)
             # BUYER MODE: skip partial book, just activate BE and ride full position to T2
-            # 2026-06-10: BUYER mode now also gets T1 FLOOR LOCK — SL promoted
-            # to T1 (not just entry). Trade keeps running with locked profit.
             elif current_ltp >= t1 and not breakeven_active:
                 breakeven_active = 1
-                # ── T1 FLOOR LOCK (2026-06-10) ──
-                # Default: lock SL just below T1 (T1 × 0.995) so trade rides on
-                # with profit floor. Worst case = T1 profit. Best case = T2.
-                # Set MAIN_T1_FLOOR_LOCK=off to revert to entry-only (old behavior).
-                import os as _os_t1
-                _t1_lock_on = _os_t1.environ.get("MAIN_T1_FLOOR_LOCK", "on").lower() != "off"
-                if _t1_lock_on:
-                    t1_floor_sl = round(t1 * 0.995, 2)  # T1 - 0.5% buffer
-                    new_sl = max(entry, t1_floor_sl)  # never below entry
-                else:
-                    new_sl = entry  # Move SL to entry (zero loss on remaining)
+                new_sl = entry  # Move SL to entry (zero loss on remaining)
 
                 if _bm.get("t1_partial_booking", True):
                     # HEDGER: book 50% qty at T1
@@ -1953,15 +1216,6 @@ class TradeManager:
                 """, (current_ltp, peak, final_pnl_pts, total_pnl,
                       new_sl, breakeven_active, trailing_active, trail_level,
                       new_status, exit_price, ist_now().isoformat(), exit_reason, alerts_str, t["id"]))
-                # 2026-06-17 (auditor): clean per-trade in-memory counters
-                # on exit so they don't leak across trades.
-                try:
-                    if hasattr(self, '_main_sl_breach_count'):
-                        self._main_sl_breach_count.pop(t["id"], None)
-                    if hasattr(self, '_sl_first_touch'):
-                        self._sl_first_touch.pop(t["id"], None)
-                except Exception:
-                    pass
                 print(f"[TRADE] CLOSED: {action} {idx} {strike} — {new_status} — PnL: ₹{total_pnl:+,.0f} (partial: ₹{already_booked_pnl:+,.0f} + exit: ₹{remaining_pnl_for_log:+,.0f})")
                 try:
                     from structured_logger import log
@@ -2038,19 +1292,12 @@ class TradeManager:
                     conn.execute("UPDATE trades SET sl_hit_time=?, oi_at_sl_hit=? WHERE id=?",
                                  (ist_now().isoformat(), oi_at_sl, t["id"]))
             else:
-                # 2026-06-17 (auditor): race-safe SL update.
-                # Previously blind UPDATE could DOWNGRADE sl_price that the
-                # position_watcher (separate thread) just raised in same
-                # cycle. Use CASE to keep the MAX of current DB and new_sl.
-                # Other fields update normally (they're per-cycle local state).
                 conn.execute("""
                     UPDATE trades SET current_ltp=?, peak_ltp=?, pnl_pts=?, pnl_rupees=?,
-                        sl_price=CASE WHEN sl_price > ? THEN sl_price ELSE ? END,
-                        breakeven_active=?, trailing_active=?, trail_level=?, alerts=?
+                        sl_price=?, breakeven_active=?, trailing_active=?, trail_level=?, alerts=?
                     WHERE id=?
                 """, (current_ltp, peak, pnl_pts, pnl_rupees,
-                      new_sl, new_sl,
-                      breakeven_active, trailing_active, trail_level, alerts_str, t["id"]))
+                      new_sl, breakeven_active, trailing_active, trail_level, alerts_str, t["id"]))
             conn.commit()
             conn.close()
 
@@ -2240,134 +1487,8 @@ class TradeManager:
                 min_prob = 45
         except Exception:
             pass
-        # ── DOWN_DAY CE THRESHOLD BUMP (Task #88, 2026-06-23) ──
-        # 60d data: DOWN day + CE = 72 trades, 51% WR, -₹147,389.
-        # Raise threshold +10pts for CE on days where spot is ≥0.2% below open.
-        # Filters marginal 50-55% signals where direction confluence is weak.
-        # Env: DOWN_DAY_CE_PENALTY_DISABLED=on / DOWN_DAY_THRESHOLD_BUMP=N
-        # 2026-06-23 wiring fix: `session` dict only holds api_key/kite —
-        # the engine is a SEPARATE module-level global in main.py. Earlier
-        # session.get("engine") returned None silently, bypassing the gate.
-        try:
-            from day_classifier import down_day_ce_threshold_bump as _dd_bump
-            _engine_dc = None
-            try:
-                import main as _m_dc
-                _engine_dc = getattr(_m_dc, "engine", None)
-            except Exception:
-                pass
-            bump = _dd_bump(_engine_dc, idx, action)
-            if bump > 0:
-                old_min = min_prob
-                min_prob = min(95, min_prob + bump)
-                print(f"[TRADE] DOWN_DAY CE penalty: threshold {old_min}% → {min_prob}% "
-                      f"(60d data: DOWN+CE bucket -₹147k)")
-        except Exception as _dc_e:
-            print(f"[TRADE] day_classifier bump error (no bump): {_dc_e}")
-
         if win_pct < min_prob:
             return False
-
-        # ── DRAWDOWN GUARD (2026-06-18 — user feedback) ──
-        # Today gave back ₹80k of ₹100k morning profits. Lock daily peak.
-        # Default: stop entries if current < 65% of today's peak realized P&L,
-        # but only after peak ≥ ₹20k (don't protect tiny gains).
-        # Env: DRAWDOWN_GUARD_DISABLED=1 to revert; DRAWDOWN_KEEP_PCT,
-        # DRAWDOWN_MIN_PEAK to tune.
-        try:
-            from drawdown_guard import check_drawdown_block as _ddb
-            blocked, reason = _ddb("main")
-            if blocked:
-                print(f"[TRADE] REJECT entry: {reason}")
-                return False
-        except Exception as _dd_e:
-            print(f"[TRADE] drawdown_guard error (allow): {_dd_e}")
-
-        # ── DAY GATES (Task #88, 2026-06-23 — CSV-driven) ──
-        # DEAD_MARKET_HALT — 30min range < 0.2% = theta vampire territory.
-        #   60d data: 91 trades / -₹89k aggregate.
-        # STRONG_TREND_FADE — block counter-trend on big move days.
-        #   60d data: 10 trades / 10% WR / -₹48k bucket.
-        try:
-            from day_classifier import check_day_gates as _dgates
-            _engine_dg = None
-            try:
-                import main as _m_dg
-                _engine_dg = getattr(_m_dg, "engine", None)
-            except Exception:
-                pass
-            blocked, reason = _dgates(_engine_dg, idx, action)
-            if blocked:
-                print(f"[TRADE] REJECT entry: {reason}")
-                return False
-        except Exception as _dg_e:
-            print(f"[TRADE] day_classifier gates error (allow): {_dg_e}")
-
-        # ── PDC ZONE BLOCK (2026-06-17 — mirror scalper) ──
-        # Main mode at_PDC bucket -₹2,812/trade. PDC = magnet zone.
-        # Env: MAIN_PDC_BLOCK_DISABLED=1 to revert.
-        # 2026-06-23 wiring fix: was reading session.get("engine") which
-        # returns None (session only holds Kite credentials, not engine).
-        # Read the module-level global engine instead.
-        try:
-            import os as _os_pdc_m
-            if _os_pdc_m.environ.get("MAIN_PDC_BLOCK_DISABLED", "").strip() not in ("1","true","on"):
-                from levels_context import get_levels_context as _glc_m
-                _engine_m = None
-                try:
-                    import main as _m_pdc
-                    _engine_m = getattr(_m_pdc, "engine", None)
-                except Exception:
-                    pass
-                _spot_m = 0
-                try:
-                    if _engine_m is not None:
-                        _tok_m = _engine_m.spot_tokens.get(idx)
-                        if _tok_m:
-                            _spot_m = (_engine_m.prices.get(_tok_m, {}) or {}).get("ltp") or 0
-                except Exception:
-                    pass
-                _ctx_m = _glc_m(_engine_m, idx, _spot_m)
-                _zone_m = (_ctx_m.get("zone") or "")
-                if _zone_m in ("NEAR_PDC",):
-                    print(f"[TRADE] REJECT entry: PDC_ZONE_BLOCK — spot {_spot_m} in {_zone_m}")
-                    return False
-        except Exception as _pdc_e_m:
-            print(f"[TRADE] PDC_ZONE_BLOCK error (allow): {_pdc_e_m}")
-
-        # ── STEP 2 SURGICAL FIXES (2026-06-03 — 445-trade audit) ──
-        # MAIN-mode specific fixes. Env-overridable, all default-safe.
-        try:
-            import os as _os
-            # FIX C: 13:30-14:00 IST bleed-zone — SMART CONDITIONAL block
-            # See scalper_mode.py for full reasoning. Big moves DO happen
-            # in this window; we only block the loss-prone setups:
-            #   • BANKNIFTY with conviction < 75%
-            #   • Multi-TF ALL_BULLISH/ALL_BEARISH (saturated alignment)
-            # BLEED_HOURS_MODE: smart (default) | strict | off
-            _bleed_mode = _os.environ.get("BLEED_HOURS_MODE", "off").lower()
-            hm = now.hour * 60 + now.minute
-            if _bleed_mode != "off" and 13 * 60 + 30 <= hm < 14 * 60:
-                if _bleed_mode == "strict":
-                    return False
-                # SMART: BANKNIFTY high bar
-                if idx == "BANKNIFTY" and win_pct < 75:
-                    return False
-                # SMART: Multi-TF saturated alignment in this window = reversal risk
-                reasons = verdict_data.get("reasons") or []
-                reasons_txt = ' '.join(str(r) for r in reasons).lower() if isinstance(reasons, list) else str(reasons).lower()
-                if 'all_bullish' in reasons_txt or 'all_bearish' in reasons_txt:
-                    return False
-
-            # FIX D: Over-conviction cap
-            # 2026-06-17 (90d audit): probability INVERTED. 85%+ bucket
-            # = -₹2.07L NET. Lowered 90→80, removed capit bypass.
-            overconv_cap = float(_os.environ.get("OVERCONVICTION_BLOCK", "80"))
-            if win_pct >= overconv_cap:
-                return False
-        except Exception:
-            # NEVER let surgical-fix block a legit trade on its own error
-            pass
 
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         conn = _conn()

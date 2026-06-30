@@ -66,32 +66,12 @@ def init_db(db_path):
     print(f"[TRAP] Database initialized at {db_path}")
 
 
-def _purge_old(days=14):
-    """Purge trap_snapshots older than `days`.
-
-    Changed 2026-06-04: default 30 → 14 days. The 4.3 GB disk-full
-    incident showed 30 days of tick-level snapshots (~3 GB beyond useful
-    history). 14 days is plenty for pattern detection — the engine
-    pulls last-7-days context per scan.
-
-    VACUUM after DELETE reclaims the deleted-row space (SQLite doesn't
-    shrink the file otherwise). Without this, purge runs but disk usage
-    stays constant. Vacuum is heavy (locks DB briefly) but runs on
-    startup only.
-    """
+def _purge_old(days=30):
     cutoff = (ist_now() - timedelta(days=days)).isoformat()
     conn = sqlite3.connect(DB_PATH)
-    cur = conn.execute("DELETE FROM trap_snapshots WHERE timestamp < ?", (cutoff,))
-    deleted = cur.rowcount
+    conn.execute("DELETE FROM trap_snapshots WHERE timestamp < ?", (cutoff,))
     conn.commit()
-    # Reclaim disk space — without VACUUM, SQLite file size stays huge
-    try:
-        conn.execute("VACUUM")
-        conn.commit()
-    except Exception as _e:
-        print(f"[TRAP] VACUUM failed (purge still committed): {_e}")
     conn.close()
-    print(f"[TRAP] Purged {deleted} rows older than {days} days + VACUUM")
 
 
 def _get_conn():
