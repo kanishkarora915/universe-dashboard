@@ -202,6 +202,21 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         print(f"[STARTUP] engine self-heal monitor spawn failed: {_e}")
 
+    # ── Tick watchdog (isolated, separate module) ──
+    # Independent tick-freshness monitor with multi-stage recovery.
+    # Kept in its own module (tick_watchdog.py) so future edits to
+    # engine/main can't silently break it. Read-only on engine.
+    # Stage 1 warn → Stage 2 restart ticker → Stage 3 restart engine
+    # → Stage 4 process self-kill (Render auto-restarts container).
+    # Diagnostics: GET /api/admin/tick-watchdog
+    # Env: TICK_WATCHDOG_DISABLED=1 to turn off
+    try:
+        import tick_watchdog as _tw
+        _tw.start_watchdog(lambda: engine)
+        print("[STARTUP] tick_watchdog spawned")
+    except Exception as _e:
+        print(f"[STARTUP] tick_watchdog spawn failed: {_e}")
+
     # ── Health monitor (periodic Telegram status + trade reports) ──
     # Every 30 min during market hours (09:15-15:30 IST), sends a
     # health snapshot + today's trade activity to Telegram. Plus an
@@ -912,6 +927,21 @@ async def get_status():
         "has_cached_data": has_cache,
         "api_key": session["api_key"][:4] + "****" if session["api_key"] else None,
     }
+
+
+@app.get("/api/admin/tick-watchdog")
+async def admin_tick_watchdog():
+    """Independent tick-freshness watchdog state.
+
+    Returns thresholds, current stage, cycle counters, per-stage fire
+    counts, recoveries, thread status. Used to verify the watchdog is
+    alive and reporting freshness independently from engine state.
+    """
+    try:
+        import tick_watchdog as _tw
+        return _tw.diagnostics()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.get("/api/ws/health")
