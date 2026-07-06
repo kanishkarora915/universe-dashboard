@@ -90,6 +90,7 @@ _state: Dict[str, Any] = {
     "last_action_ts": 0.0,
     "last_action": "",
     "last_tick_seen_ts": 0.0,
+    "engine_first_running_ts": 0.0,   # for startup grace calc
     "cycles": 0,
     "stage_1_fired": 0,
     "stage_2_fired": 0,
@@ -296,6 +297,7 @@ def _loop(engine_getter: Callable[[], Any]) -> None:
                 with _state_lock:
                     _state["current_stage"] = 0
                     _state["stale_since_ts"] = 0.0
+                    _state["engine_first_running_ts"] = 0.0
                 _stop_event.wait(check_interval)
                 continue
 
@@ -303,11 +305,38 @@ def _loop(engine_getter: Callable[[], Any]) -> None:
             last_tick_ts = _read_last_tick_ts(engine)
             with _state_lock:
                 _state["last_tick_seen_ts"] = last_tick_ts
+                # Remember when we first saw engine.running=True
+                if not _state.get("engine_first_running_ts"):
+                    _state["engine_first_running_ts"] = now
+                engine_up_for = now - _state["engine_first_running_ts"]
 
-            # If engine.running is True but _last_tick_time is 0, the engine
-            # hasn't observed a first tick yet. Treat this like a slow start
-            # (age 999) so the escalation clock starts.
-            tick_age = (now - last_tick_ts) if last_tick_ts > 0 else 999.0
+            # ── CRITICAL FIX 2026-06-25 ─────────────────────────────
+            # STARTUP GRACE PERIOD: if the engine has never seen a tick
+            # yet, do NOT escalate through stages. This can happen for
+            # ~5-30s after each engine.start() — subscriptions and
+            # websocket handshake need time. Treating "no tick yet" as
+            # "999s stale" caused an infinite kill-restart-kill loop on
+            # first deploy: watchdog fired Stage 4 on cycle 1, process
+            # exited, container restarted, watchdog started, killed
+            # again ad infinitum.
+            #
+            # Rule: while _last_tick_time == 0, wait TICK_STARTUP_GRACE_SEC
+            # (default 60s) before starting the stale clock. After the
+            # grace window, if still no tick, treat it as normally-stale
+            # (age counted from engine_first_running_ts + grace).
+            startup_grace_sec = _f("TICK_STARTUP_GRACE_SEC", 60.0)
+            if last_tick_ts <= 0:
+                if engine_up_for < startup_grace_sec:
+                    with _state_lock:
+                        _state["current_stage"] = 0
+                        _state["stale_since_ts"] = 0.0
+                        _state["last_action"] = "startup_grace"
+                    _stop_event.wait(check_interval)
+                    continue
+                # Past grace, still no tick — count age from end-of-grace
+                tick_age = engine_up_for - startup_grace_sec
+            else:
+                tick_age = now - last_tick_ts
 
             # ── Healthy ──────────────────────────────────────────────
             if tick_age <= warn_sec:

@@ -232,6 +232,55 @@ class TestEscalation:
         import tick_watchdog as tw
         assert tw._state["current_stage"] == 4
 
+    # ── STARTUP GRACE PERIOD (bug fix 2026-06-25) ────────────────────
+
+    def test_startup_grace_never_ticked_stays_stage_0(self, monkeypatch):
+        """Engine.running=True but _last_tick_time=0 within grace window.
+
+        This is the CRITICAL BUG that killed the container in a loop on
+        first deploy. Watchdog fired Stage 4 on cycle 1 because it
+        treated 'engine hasn't seen a tick yet' as 999s stale.
+        """
+        engine = MagicMock()
+        engine.running = True
+        engine._last_tick_time = 0  # never seen a tick
+        # Default grace is 60s — engine just started, well within grace.
+        self._one_cycle(engine, monkeypatch)
+        import tick_watchdog as tw
+        assert tw._state["current_stage"] == 0
+        assert tw._state["last_action"] == "startup_grace"
+        assert tw._state["stage_4_fired"] == 0
+
+    def test_startup_grace_expired_escalates(self, monkeypatch):
+        """After grace window with still no tick, escalation begins."""
+        engine = MagicMock()
+        engine.running = True
+        engine._last_tick_time = 0
+        # Short grace so we can test escalation
+        monkeypatch.setenv("TICK_STARTUP_GRACE_SEC", "1")
+        monkeypatch.setenv("TICK_WATCHDOG_STAGE_COOLDOWN_SEC", "0")
+        # Prime state: pretend engine has been up for 30s already
+        import tick_watchdog as tw
+        with tw._state_lock:
+            tw._state["engine_first_running_ts"] = time.time() - 30
+        self._one_cycle(engine, monkeypatch)
+        # 30s - 1s grace = 29s effective age → past warn (20s), Stage 1
+        assert tw._state["current_stage"] == 1
+        assert tw._state["stage_1_fired"] == 1
+
+    def test_engine_not_running_resets_first_running_ts(self, monkeypatch):
+        """When engine goes from running→stopped, the first-running timestamp
+        must reset so the next start gets a fresh grace window."""
+        engine = MagicMock()
+        engine.running = False  # not running
+        engine._last_tick_time = 0
+        # Pretend a prior startup had recorded a first-running ts
+        import tick_watchdog as tw
+        with tw._state_lock:
+            tw._state["engine_first_running_ts"] = time.time() - 500
+        self._one_cycle(engine, monkeypatch)
+        assert tw._state["engine_first_running_ts"] == 0.0
+
 
 # ── Optional side-channel absence (no telegram/log) ──────────────────
 
