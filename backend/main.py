@@ -929,6 +929,19 @@ async def get_status():
     }
 
 
+@app.get("/api/admin/trade-dedupe-debug")
+async def admin_trade_dedupe_debug(idx: str = "NIFTY", strike: int = 24450, action: str = "BUY CE"):
+    """Debug: run dedupe check with detailed intermediate values.
+
+    Usage: /api/admin/trade-dedupe-debug?idx=NIFTY&strike=24450&action=BUY+CE
+    """
+    try:
+        import trade_dedupe as _td
+        return _td.debug_test(idx, int(strike), action)
+    except Exception as e:
+        return JSONResponse({"error": str(e), "type": type(e).__name__}, status_code=500)
+
+
 @app.get("/api/admin/trade-dedupe")
 async def admin_trade_dedupe():
     """Cross-engine dedupe module state.

@@ -273,3 +273,90 @@ def diagnostics() -> Dict[str, Any]:
             "DEDUPE_INCLUDE_CLOSED": os.environ.get("DEDUPE_INCLUDE_CLOSED", ""),
         },
     }
+
+
+def debug_test(idx: str, strike: int, action: str) -> Dict[str, Any]:
+    """Debug helper — run check_dedupe with detailed intermediate values.
+
+    Returns everything the check saw: cutoff, DB paths, actual SQL queries,
+    matched rows (if any), and final block decision. Use to diagnose why
+    dedupe is/isn't firing.
+    """
+    now_ist = datetime.now(_IST)
+    now_naive = now_ist.replace(tzinfo=None)
+    window_min = _f("DEDUPE_WINDOW_MIN", 30.0)
+    cutoff = now_naive - timedelta(minutes=window_min)
+    cutoff_prefix = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
+    side = _side_from_action(action)
+
+    result: Dict[str, Any] = {
+        "input": {
+            "idx": idx, "strike": strike, "action": action,
+            "parsed_side": side,
+        },
+        "config": {
+            "enabled": _enabled("CROSS_ENGINE_DEDUPE", True),
+            "window_min": window_min,
+            "include_closed": _enabled("DEDUPE_INCLUDE_CLOSED", True),
+        },
+        "time": {
+            "now_ist_str": str(now_ist),
+            "now_naive_str": str(now_naive),
+            "cutoff_str": str(cutoff),
+            "cutoff_prefix_for_sql": cutoff_prefix,
+        },
+        "main_lookup": None,
+        "scalper_lookup": None,
+    }
+
+    if side is None:
+        result["error"] = "side parse failed"
+        return result
+
+    # Raw SQL to see what DB returns (top 5 matching rows within a WIDER window)
+    for db_path, table, key in [
+        (_main_db_path(), "trades", "main_lookup"),
+        (_scalper_db_path(), "scalper_trades", "scalper_lookup"),
+    ]:
+        info: Dict[str, Any] = {"db_path": db_path, "exists": os.path.exists(db_path)}
+        if not info["exists"]:
+            result[key] = info
+            continue
+        try:
+            conn = sqlite3.connect(db_path, timeout=3.0)
+            conn.row_factory = sqlite3.Row
+            # First — count matching by idx+strike+side (without time filter)
+            cnt = conn.execute(
+                f"SELECT COUNT(*) FROM {table} "
+                f"WHERE idx = ? AND strike = ? AND action LIKE ?",
+                (idx, int(strike), f"%{side}%")
+            ).fetchone()[0]
+            info["total_matching_ever"] = int(cnt)
+
+            # Second — WHERE entry_time >= cutoff (the actual dedupe query)
+            in_window = conn.execute(
+                f"SELECT id, entry_time, action, status, pnl_rupees FROM {table} "
+                f"WHERE idx = ? AND strike = ? AND action LIKE ? AND entry_time >= ? "
+                f"ORDER BY entry_time DESC LIMIT 5",
+                (idx, int(strike), f"%{side}%", cutoff_prefix)
+            ).fetchall()
+            info["in_window_rows"] = [dict(r) for r in in_window]
+
+            # Third — top 5 recent matches WITHOUT time filter for comparison
+            recent = conn.execute(
+                f"SELECT id, entry_time, action, status, pnl_rupees FROM {table} "
+                f"WHERE idx = ? AND strike = ? AND action LIKE ? "
+                f"ORDER BY entry_time DESC LIMIT 5",
+                (idx, int(strike), f"%{side}%")
+            ).fetchall()
+            info["recent_rows_no_time_filter"] = [dict(r) for r in recent]
+
+            conn.close()
+        except Exception as e:
+            info["error"] = str(e)
+        result[key] = info
+
+    # Actual check_dedupe result
+    blocked, reason = check_dedupe(idx, strike, action, "debug")
+    result["actual_dedupe_result"] = {"blocked": blocked, "reason": reason}
+    return result
