@@ -929,6 +929,20 @@ async def get_status():
     }
 
 
+@app.get("/api/admin/trade-dedupe")
+async def admin_trade_dedupe():
+    """Cross-engine dedupe module state.
+
+    Returns whether dedupe is active, the window in minutes, and
+    whether both DB files exist on disk. Used to verify Task #91.
+    """
+    try:
+        import trade_dedupe as _td
+        return _td.diagnostics()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/api/admin/tick-watchdog")
 async def admin_tick_watchdog():
     """Independent tick-freshness watchdog state.

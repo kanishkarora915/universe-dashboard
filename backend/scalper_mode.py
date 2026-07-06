@@ -873,6 +873,19 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
 
     Returns trade_id on success, None if skipped/rejected.
     """
+    # ── CROSS_ENGINE_DEDUPE (Task #91, 2026-07-06) ──────────────
+    # Same rule as main mode's log_trade — prevent scalper firing on
+    # the same (idx, strike, side) that main just fired on within
+    # the DEDUPE_WINDOW_MIN window.
+    try:
+        from trade_dedupe import check_dedupe as _dedupe
+        _blocked, _reason = _dedupe(idx, int(strike), action, requesting_tab="scalper")
+        if _blocked:
+            print(f"[SCALPER] REJECT entry: {_reason}")
+            return None
+    except Exception as _de:
+        print(f"[SCALPER] dedupe error (allow): {_de}")
+
     # ── KILL SWITCH: auto-trading disabled? ──
     # When SCALPER_AUTO_TRADE_ENABLED is False, all entry-firing is
     # suppressed but signal generation + analytics keep working.

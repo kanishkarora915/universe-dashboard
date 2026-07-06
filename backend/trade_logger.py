@@ -567,6 +567,21 @@ class TradeManager:
         if entry_price <= 0:
             return None
 
+        # ── CROSS_ENGINE_DEDUPE (Task #91, 2026-07-06) ──────────────
+        # Prevent main+scalper from double-firing the SAME (idx, strike, side)
+        # within the dedupe window. Forensic: 86 same-strike revenge fires
+        # cost -₹8.73L over 60d. Aaj (2026-07-06) exact case: scalper 12:18
+        # + main 12:20 both NIFTY 24450 CE within 3 min = both lost.
+        # Fail-safe: any error → allow (never block on infra).
+        try:
+            from trade_dedupe import check_dedupe as _dedupe
+            _blocked, _reason = _dedupe(idx, int(strike), action, requesting_tab="main")
+            if _blocked:
+                print(f"[TRADE] REJECT entry: {_reason}")
+                return None
+        except Exception as _de:
+            print(f"[TRADE] dedupe error (allow): {_de}")
+
         # ── REVERSAL ZONE: skip ATR, use hard -5% SL + placeholder T1/T2 ──
         if source == "reversal_zone":
             sl_price = round(entry_price * 0.95, 1)        # -5% hard
