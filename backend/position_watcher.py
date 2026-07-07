@@ -86,6 +86,8 @@ DEFAULT_CONFIG = {
     "hard_loss_cap_pct": -8.0,         # absolute floor — exit if profit_pct <= this
     "fast_loss_cap_pct": -5.0,         # tighter floor within first window
     "fast_loss_window_min": 10,        # minutes from entry for fast-loss rule
+    # 12 fires, 0 winners, -₹2.10L. Default OFF; enable via FAST_LOSS_CAP_ENABLED=on
+    "fast_loss_enforce": os.environ.get("FAST_LOSS_CAP_ENABLED", "off").lower() == "on",
     # ────── PEAK-AWARE FLOOR (NEW: user's 2-rule simplification) ──────
     # Rule 1: trade ever peaked ≥+5% → exit floor tightens to -5%
     # Rule 2: never peaked +5%      → exit floor stays at HARD_LOSS_CAP (-8%)
@@ -423,13 +425,13 @@ def _evaluate_triggers(trade: Dict, health: Dict, action: str,
     # User-requested safety net. Bypasses everything else.
     if cfg.get("hard_loss_enforce", True):
         hard_cap = float(cfg.get("hard_loss_cap_pct", -8.0))
-        fast_cap = float(cfg.get("fast_loss_cap_pct", -5.0))
-        fast_window = float(cfg.get("fast_loss_window_min", 10))
-
         if profit_pct <= hard_cap:
             return "HARD_LOSS_CAP"
-        if hold_min <= fast_window and profit_pct <= fast_cap:
-            return "FAST_LOSS_CAP"
+        if cfg.get("fast_loss_enforce", False):
+            fast_cap = float(cfg.get("fast_loss_cap_pct", -5.0))
+            fast_window = float(cfg.get("fast_loss_window_min", 10))
+            if hold_min <= fast_window and profit_pct <= fast_cap:
+                return "FAST_LOSS_CAP"
 
     # ──── PRIORITY 0.5: PEAK-AWARE FLOOR (user's 2-rule simplification) ────
     # If trade EVER peaked ≥+5%, the loss cap tightens to -5%.

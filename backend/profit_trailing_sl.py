@@ -33,6 +33,7 @@ LOGGING:
   Every successful trail action writes to trail_log table for audit.
 """
 
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -42,6 +43,10 @@ from typing import Optional, Dict, List, Tuple
 
 _DATA_DIR = Path("/data") if Path("/data").is_dir() else Path(__file__).parent
 LOG_DB_PATH = str(_DATA_DIR / "profit_trail.db")
+
+
+def _ladder_enabled() -> bool:
+    return os.environ.get("PROFIT_TRAILING_SL_ENABLED", "on").lower() == "on"
 
 
 # ── Ladder config ─────────────────────────────────────────────────────
@@ -203,7 +208,7 @@ def update_main_trail(trade: Dict, current_premium: float) -> Optional[Dict]:
     if entry <= 0 or current_premium <= 0:
         return None
 
-    calc = calculate_trail_sl(entry, current_premium, current_sl, LADDER_MAIN)
+    calc = calculate_trail_sl(entry, current_premium, current_sl, LADDER_MAIN) if _ladder_enabled() else None
 
     # ── PEAK TRACKING (always) ──
     peak_price = trade.get("peak_ltp", 0) or current_premium
@@ -329,7 +334,7 @@ def update_scalper_trail(trade: Dict, current_premium: float) -> Optional[Dict]:
     if entry <= 0 or current_premium <= 0:
         return None
 
-    calc = calculate_trail_sl(entry, current_premium, current_sl, LADDER_SCALPER)
+    calc = calculate_trail_sl(entry, current_premium, current_sl, LADDER_SCALPER) if _ladder_enabled() else None
 
     # ── PEAK TRACKING ──
     peak_price = trade.get("peak_ltp", 0) or current_premium

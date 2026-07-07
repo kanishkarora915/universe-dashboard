@@ -7,6 +7,7 @@ Lot sizes: NIFTY = 65 qty, BANKNIFTY = 30 qty, ALWAYS 20 lots
 Max SL = 15% of entry premium
 """
 
+import os
 import sqlite3
 import time
 from datetime import datetime, timedelta
@@ -14,6 +15,31 @@ import pytz
 
 IST = pytz.timezone("Asia/Kolkata")
 DB_PATH = None
+
+# ── Multi-tick SL confirmation state ─────────────────────────────
+# 55 STOP_HUNTED = -₹5.51L historical (single-tick SL fire).
+# Only applies to LOSS exits; profit lockins fire immediately.
+# Env-gated: SL_MULTI_TICK_CONFIRM_ENABLED (default 'on')
+#            SL_CONFIRM_MIN_TICKS (default 3)
+#            SL_CONFIRM_MIN_SECS  (default 6.0)
+_SL_BREACH_STATE: dict = {}
+
+
+def _sl_confirmed_for_trade(trade_id: int, breached: bool) -> bool:
+    if os.environ.get("SL_MULTI_TICK_CONFIRM_ENABLED", "on").lower() != "on":
+        return breached
+    if not breached:
+        _SL_BREACH_STATE.pop(trade_id, None)
+        return False
+    try:
+        min_ticks = int(os.environ.get("SL_CONFIRM_MIN_TICKS", "3"))
+        min_secs = float(os.environ.get("SL_CONFIRM_MIN_SECS", "6.0"))
+    except Exception:
+        min_ticks, min_secs = 3, 6.0
+    now = time.time()
+    st = _SL_BREACH_STATE.setdefault(trade_id, {"count": 0, "first_ts": now})
+    st["count"] = st.get("count", 0) + 1
+    return st["count"] >= min_ticks and (now - st.get("first_ts", now)) >= min_secs
 
 INITIAL_CAPITAL = 1000000  # ₹10 lakh starting capital
 MAX_RISK_PER_TRADE_PCT = 3.0  # Risk 3% of capital per trade (₹30k on ₹10L) — was 1.5%
@@ -1087,7 +1113,15 @@ class TradeManager:
 
             # Check SL zone (within 3% of SL)
             sl_zone = current_ltp <= new_sl * 1.03
-            sl_breached = current_ltp <= new_sl
+            sl_breached_raw = current_ltp <= new_sl
+
+            # Multi-tick SL confirm for LOSS exits; profit lockins fire immediately
+            if sl_breached_raw and new_sl < entry and not breakeven_active:
+                sl_breached = _sl_confirmed_for_trade(t["id"], True)
+            else:
+                if not sl_breached_raw:
+                    _SL_BREACH_STATE.pop(t["id"], None)
+                sl_breached = sl_breached_raw
 
             if sl_breached:
                 if breakeven_active and new_sl >= entry:
