@@ -34,9 +34,12 @@ DB_PATH = _data_dir / "buyer_mode.db"
 HEDGER_DEFAULTS = {
     "mode": "HEDGER",
     "breakeven_pct": 2.0,            # +2% triggers BE
-    "trail_giveback_pct": 50.0,      # 50% peak trail
-    "tight_trail_giveback_pct": 25.0,  # @ +35% profit, 75% lock
-    "tight_trail_trigger_pct": 35.0,
+    "trail_giveback_pct": 50.0,      # 50% peak trail (loose fallback)
+    # Post 07-08 forensic: HEDGER peaks avg +4.4%, locked avg +2.2% (50%
+    # giveback). Old trigger +35% was unreachable on real moves. Lower to
+    # +2% so tight-trail actually activates. Giveback 30% preserves upside.
+    "tight_trail_giveback_pct": 30.0,
+    "tight_trail_trigger_pct": 2.0,
     "reversal_exit_pct": -3.0,       # -3% after 10min
     "reversal_exit_min_hold_sec": 600,  # 10 min minimum hold
     "t1_partial_booking": True,      # T1 books 50% qty

@@ -3414,8 +3414,27 @@ class MarketEngine:
             bull_pct = round(bull_prob / total * 100)
             bear_pct = round(bear_prob / total * 100)
 
+            # CHOP VETO — block trades when engines split narrowly (chop day
+            # signature). Post 07-08 forensic: 07-07 was CHOP DAY (no direction)
+            # yet scalper still thrashed CE→PE→PE. Env-gated: CHOP_VETO_ENABLED
+            # (default on), CHOP_VETO_BAND (default 10) → abs(bull-bear) < 10 → veto.
+            import os as _os_chop
+            _chop_veto_on = _os_chop.environ.get("CHOP_VETO_ENABLED", "on").lower() == "on"
+            try:
+                _chop_band = float(_os_chop.environ.get("CHOP_VETO_BAND", "10"))
+            except Exception:
+                _chop_band = 10.0
+            _chop_gate = _chop_veto_on and abs(bull_pct - bear_pct) < _chop_band
+
             # Need >50% edge for a trade (trust the engines — minimal threshold)
-            if bull_pct >= 50:
+            if _chop_gate:
+                action = "NO TRADE"
+                direction = "CHOP"
+                win_pct = max(bull_pct, bear_pct)
+                reasons = [f"CHOP VETO — bull {bull_pct}% vs bear {bear_pct}% split too narrow (<{_chop_band:.0f}% band)"]
+                against = []
+                entry = 0
+            elif bull_pct >= 50:
                 action = "BUY CE"
                 direction = "BULLISH"
                 win_pct = bull_pct

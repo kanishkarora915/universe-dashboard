@@ -41,6 +41,54 @@ def _sl_confirmed_for_trade(trade_id: int, breached: bool) -> bool:
     st["count"] = st.get("count", 0) + 1
     return st["count"] >= min_ticks and (now - st.get("first_ts", now)) >= min_secs
 
+
+# ── REVERSAL_EXIT (hard loss cap) wick-confirm state ─────────────────
+# Prevents single-tick nasty wicks from tripping the hard -3%/-5% cap.
+# Only applies to the max-loss cap tier; early_neg_exit already has min-hold.
+_REVERSAL_BREACH_STATE: dict = {}
+
+
+def _reversal_confirmed_for_trade(trade_id: int, breached: bool) -> bool:
+    if os.environ.get("REVERSAL_MULTI_TICK_CONFIRM_ENABLED", "on").lower() != "on":
+        return breached
+    if not breached:
+        _REVERSAL_BREACH_STATE.pop(trade_id, None)
+        return False
+    try:
+        min_ticks = int(os.environ.get("REVERSAL_CONFIRM_MIN_TICKS", "3"))
+        min_secs = float(os.environ.get("REVERSAL_CONFIRM_MIN_SECS", "6.0"))
+    except Exception:
+        min_ticks, min_secs = 3, 6.0
+    now = time.time()
+    st = _REVERSAL_BREACH_STATE.setdefault(trade_id, {"count": 0, "first_ts": now})
+    st["count"] = st.get("count", 0) + 1
+    return st["count"] >= min_ticks and (now - st.get("first_ts", now)) >= min_secs
+
+
+# ── Post-loss cooldown state ──────────────────────────────────────────
+# After any losing trade, block new entries for POST_LOSS_COOLDOWN_MIN
+# minutes on same idx. Prevents revenge trades / counter-trend re-entries.
+_LAST_LOSS_TS_PER_IDX: dict = {}
+
+
+def _register_loss(idx: str) -> None:
+    _LAST_LOSS_TS_PER_IDX[idx] = time.time()
+
+
+def _post_loss_cooldown_active(idx: str) -> tuple:
+    if os.environ.get("POST_LOSS_COOLDOWN_ENABLED", "on").lower() != "on":
+        return False, 0.0
+    last_ts = _LAST_LOSS_TS_PER_IDX.get(idx)
+    if not last_ts:
+        return False, 0.0
+    try:
+        cooldown_min = float(os.environ.get("POST_LOSS_COOLDOWN_MIN", "10"))
+    except Exception:
+        cooldown_min = 10.0
+    elapsed_min = (time.time() - last_ts) / 60.0
+    remaining = cooldown_min - elapsed_min
+    return remaining > 0, remaining
+
 INITIAL_CAPITAL = 1000000  # ₹10 lakh starting capital
 MAX_RISK_PER_TRADE_PCT = 3.0  # Risk 3% of capital per trade (₹30k on ₹10L) — was 1.5%
 MAX_RISK_WHALE_ALIGNED_PCT = 5.0  # 5% on whale-aligned trades (₹50k risk) — was 2.5%
@@ -608,6 +656,19 @@ class TradeManager:
         except Exception as _de:
             print(f"[TRADE] dedupe error (allow): {_de}")
 
+        # ── POST-LOSS COOLDOWN (2026-07-13) ──────────────────────────
+        # After any losing trade, block new entries on same idx for
+        # POST_LOSS_COOLDOWN_MIN (default 10 min). Prevents revenge trades /
+        # panic re-entries. Env-gated; disabled by setting env=off.
+        try:
+            _in_cd, _remaining = _post_loss_cooldown_active(idx)
+            if _in_cd:
+                print(f"[TRADE] REJECT entry: post-loss cooldown active on {idx} "
+                      f"({_remaining:.1f} min remaining)")
+                return None
+        except Exception as _ce:
+            print(f"[TRADE] cooldown check error (allow): {_ce}")
+
         # ── REVERSAL ZONE: skip ATR, use hard -5% SL + placeholder T1/T2 ──
         if source == "reversal_zone":
             sl_price = round(entry_price * 0.95, 1)        # -5% hard
@@ -1019,14 +1080,15 @@ class TradeManager:
             rev_min_hold = _bm.get("reversal_exit_min_hold_sec", 600)
 
             if not breakeven_active:
-                # Tier (b) FIRST: HARD MAX-LOSS CAP — fires IMMEDIATELY (no min hold).
-                # Capital preservation: in fast-moving markets, position could blow
-                # through -5% to -15% in <2 min. Must fire on first tick at -5%.
-                # This OVERRIDES every other system (engines-hold, STOP_HUNT, etc.).
-                if profit_pct <= rev_pct:
+                # Tier (b) FIRST: HARD MAX-LOSS CAP — wick-confirmed (3 ticks / 6 sec).
+                # Single-tick nasty wicks previously tripped this. Multi-tick confirm
+                # prevents that while still catching real breakdowns quickly.
+                rev_breached_raw = profit_pct <= rev_pct
+                rev_confirmed = _reversal_confirmed_for_trade(t["id"], rev_breached_raw)
+                if rev_confirmed:
                     new_status = "REVERSAL_EXIT"
                     exit_price = current_ltp
-                    exit_reason = f"HARD MAX-LOSS CAP [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — capital preservation, no overrides."
+                    exit_reason = f"HARD MAX-LOSS CAP [{_bm['mode']}] at ₹{current_ltp:.1f} ({profit_pct:.1f}%) — wick-confirmed, capital preservation."
                     print(f"[TRADE] MAX-LOSS EXIT [{_bm['mode']}]: {action} {idx} {strike} @ ₹{current_ltp} ({profit_pct:.1f}% after {int(hold_sec/60)}min)")
 
                 # Tier (a): early exit on confirmed downtrend (saves 2%, requires hold)
@@ -1266,6 +1328,11 @@ class TradeManager:
                       new_sl, breakeven_active, trailing_active, trail_level,
                       new_status, exit_price, ist_now().isoformat(), exit_reason, alerts_str, t["id"]))
                 print(f"[TRADE] CLOSED: {action} {idx} {strike} — {new_status} — PnL: ₹{total_pnl:+,.0f} (partial: ₹{already_booked_pnl:+,.0f} + exit: ₹{remaining_pnl_for_log:+,.0f})")
+                if total_pnl < 0:
+                    try:
+                        _register_loss(idx)
+                    except Exception as _re:
+                        print(f"[TRADE] register_loss error (skip): {_re}")
                 try:
                     from structured_logger import log
                     _hold_min = round(hold_sec / 60, 1) if hold_sec else None

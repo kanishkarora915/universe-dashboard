@@ -886,6 +886,44 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
     except Exception as _de:
         print(f"[SCALPER] dedupe error (allow): {_de}")
 
+    # ── SCALPER DIRECTION-FLIP COOLDOWN (2026-07-13) ─────────────
+    # Prevents CE→PE→PE thrash on chop days. If the most recent scalper
+    # trade on this idx was OPPOSITE side and closed within the cooldown
+    # window, block the flip. Env-gated: SCALPER_FLIP_COOLDOWN_ENABLED=on.
+    if os.environ.get("SCALPER_FLIP_COOLDOWN_ENABLED", "on").lower() == "on":
+        try:
+            _flip_cd_min = float(os.environ.get("SCALPER_FLIP_COOLDOWN_MIN", "15"))
+            _new_side = "CE" if "CE" in (action or "") else "PE"
+            _conn_ = _conn()
+            _row = _conn_.execute(
+                """
+                SELECT action, exit_time FROM scalper_trades
+                WHERE idx=? AND exit_time IS NOT NULL
+                ORDER BY id DESC LIMIT 1
+                """,
+                (idx,),
+            ).fetchone()
+            _conn_.close()
+            if _row and _row[1]:
+                _prev_action, _prev_exit = _row[0] or "", _row[1] or ""
+                _prev_side = "CE" if "CE" in _prev_action else ("PE" if "PE" in _prev_action else None)
+                if _prev_side and _prev_side != _new_side:
+                    from datetime import datetime as _dt
+                    try:
+                        _et = _dt.fromisoformat(_prev_exit)
+                        _elapsed_min = (ist_now() - (_et if _et.tzinfo else _et.replace(tzinfo=ist_now().tzinfo))).total_seconds() / 60.0
+                    except Exception:
+                        _elapsed_min = 999.0
+                    if _elapsed_min < _flip_cd_min:
+                        print(
+                            f"[SCALPER] REJECT entry: flip cooldown active on {idx} "
+                            f"(prev {_prev_side}, new {_new_side}, "
+                            f"elapsed {_elapsed_min:.1f}m < {_flip_cd_min:.0f}m)"
+                        )
+                        return None
+        except Exception as _fce:
+            print(f"[SCALPER] flip-cooldown check error (allow): {_fce}")
+
     # ── KILL SWITCH: auto-trading disabled? ──
     # When SCALPER_AUTO_TRADE_ENABLED is False, all entry-firing is
     # suppressed but signal generation + analytics keep working.
