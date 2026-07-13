@@ -26,7 +26,9 @@ _SL_BREACH_STATE: dict = {}
 
 
 def _sl_confirmed_for_trade(trade_id: int, breached: bool) -> bool:
-    if os.environ.get("SL_MULTI_TICK_CONFIRM_ENABLED", "on").lower() != "on":
+    # Peak (May) had no multi-tick confirm — winners ran cleanly.
+    # Default OFF; opt-in only via SL_MULTI_TICK_CONFIRM_ENABLED=on.
+    if os.environ.get("SL_MULTI_TICK_CONFIRM_ENABLED", "off").lower() != "on":
         return breached
     if not breached:
         _SL_BREACH_STATE.pop(trade_id, None)
@@ -49,7 +51,9 @@ _REVERSAL_BREACH_STATE: dict = {}
 
 
 def _reversal_confirmed_for_trade(trade_id: int, breached: bool) -> bool:
-    if os.environ.get("REVERSAL_MULTI_TICK_CONFIRM_ENABLED", "on").lower() != "on":
+    # Peak had no wick-confirm; hard cap fired on breach and worked fine
+    # because winners weren't being choked. Default OFF.
+    if os.environ.get("REVERSAL_MULTI_TICK_CONFIRM_ENABLED", "off").lower() != "on":
         return breached
     if not breached:
         _REVERSAL_BREACH_STATE.pop(trade_id, None)
@@ -76,7 +80,9 @@ def _register_loss(idx: str) -> None:
 
 
 def _post_loss_cooldown_active(idx: str) -> tuple:
-    if os.environ.get("POST_LOSS_COOLDOWN_ENABLED", "on").lower() != "on":
+    # Peak allowed re-entries after loss. Cooldown blocked
+    # good recoveries. Default OFF.
+    if os.environ.get("POST_LOSS_COOLDOWN_ENABLED", "off").lower() != "on":
         return False, 0.0
     last_ts = _LAST_LOSS_TS_PER_IDX.get(idx)
     if not last_ts:

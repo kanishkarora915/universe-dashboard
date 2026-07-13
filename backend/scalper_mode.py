@@ -887,10 +887,8 @@ def log_scalp_trade(idx, action, strike, entry_price, probability, expiry="",
         print(f"[SCALPER] dedupe error (allow): {_de}")
 
     # ── SCALPER DIRECTION-FLIP COOLDOWN (2026-07-13) ─────────────
-    # Prevents CE→PE→PE thrash on chop days. If the most recent scalper
-    # trade on this idx was OPPOSITE side and closed within the cooldown
-    # window, block the flip. Env-gated: SCALPER_FLIP_COOLDOWN_ENABLED=on.
-    if os.environ.get("SCALPER_FLIP_COOLDOWN_ENABLED", "on").lower() == "on":
+    # Peak scalper had no flip cooldown. Default OFF; opt-in via env.
+    if os.environ.get("SCALPER_FLIP_COOLDOWN_ENABLED", "off").lower() == "on":
         try:
             _flip_cd_min = float(os.environ.get("SCALPER_FLIP_COOLDOWN_MIN", "15"))
             _new_side = "CE" if "CE" in (action or "") else "PE"

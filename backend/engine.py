@@ -3414,12 +3414,11 @@ class MarketEngine:
             bull_pct = round(bull_prob / total * 100)
             bear_pct = round(bear_prob / total * 100)
 
-            # CHOP VETO — block trades when engines split narrowly (chop day
-            # signature). Post 07-08 forensic: 07-07 was CHOP DAY (no direction)
-            # yet scalper still thrashed CE→PE→PE. Env-gated: CHOP_VETO_ENABLED
-            # (default on), CHOP_VETO_BAND (default 10) → abs(bull-bear) < 10 → veto.
+            # CHOP VETO — optional entry-blocker for chop-day 51-49 splits.
+            # Peak system took CE/PE at ≥50% without a chop veto.
+            # Default OFF; opt-in via CHOP_VETO_ENABLED=on.
             import os as _os_chop
-            _chop_veto_on = _os_chop.environ.get("CHOP_VETO_ENABLED", "on").lower() == "on"
+            _chop_veto_on = _os_chop.environ.get("CHOP_VETO_ENABLED", "off").lower() == "on"
             try:
                 _chop_band = float(_os_chop.environ.get("CHOP_VETO_BAND", "10"))
             except Exception:
