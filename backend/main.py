@@ -276,6 +276,16 @@ async def lifespan(app: FastAPI):
                         c.close()
                         print(f"[DISK-PRUNE] council.db: {deleted} rows deleted + VACUUM")
 
+                    # Trap data prune (14d) — the 7.5 GB repeat offender
+                    try:
+                        import trap_engine
+                        if getattr(trap_engine, "DB_PATH", None) is None:
+                            trap_engine.DB_PATH = str(_PP(_data_dir) / "trap_data.db")
+                        trap_engine._purge_old(14)
+                        print("[DISK-PRUNE] trap_data.db purged >14d")
+                    except Exception as _te:
+                        print(f"[DISK-PRUNE] trap prune skipped: {_te}")
+
                     import shutil as _sh
                     usage = _sh.disk_usage(str(_data_dir))
                     free_mb = usage.free / 1024 / 1024
@@ -1216,6 +1226,23 @@ async def admin_disk_cleanup(body: dict = None):
             results["steps"].append(_vacuum_dbs())
         elif action == "prune_council":
             results["steps"].extend(_prune_council())
+        elif action == "drop_trap_data":
+            # Trap engine data — shadow-only, not used in production trades.
+            # Engine rebuilds from live ticks. Jun 04: 4.3 GB; Jul 20: 7.5 GB.
+            # Filesystem-level delete — works even at 0 bytes free when
+            # SQLite DELETE can't (needs WAL write space).
+            removed = []
+            for name in ("trap_data.db", "trap_data.db-wal",
+                         "trap_data.db-shm", "trap_data.db-journal"):
+                p = _P(_data_dir) / name
+                try:
+                    if p.exists():
+                        size = p.stat().st_size
+                        p.unlink()
+                        removed.append(f"{name} ({size/1024/1024:.1f} MB)")
+                except Exception as _e:
+                    removed.append(f"{name}: ERROR {_e}")
+            results["steps"].append(f"dropped: {removed}")
         elif action == "all_safe":
             results["steps"].append(_wal_checkpoint())
             results["steps"].append(
