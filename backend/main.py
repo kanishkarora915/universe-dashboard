@@ -217,6 +217,97 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         print(f"[STARTUP] tick_watchdog spawn failed: {_e}")
 
+    # ── Disk auto-prune daemon (restored 2026-07-20) ──
+    # Originally added Jun 05 (ec34044); lost in Jul 06 rollback.
+    # Runs prune at startup (+60s) then daily at 05:00 IST:
+    # WAL checkpoint + council.db 14d prune + VACUUM.
+    # Prevents the recurring /data disk-full → "disk I/O error" incidents.
+    try:
+        import threading as _th_dp
+        import time as _time_dp
+        import pytz as _pytz_dp
+        from datetime import datetime as _dt_dp
+
+        def _disk_auto_prune():
+            _IST_dp = _pytz_dp.timezone("Asia/Kolkata")
+            print("[DISK-PRUNE] daemon started — runs at 05:00 IST daily")
+            last_prune_date = None
+
+            def _do_prune():
+                try:
+                    import sqlite3 as _sq3
+                    from pathlib import Path as _PP
+                    count = 0
+                    for p in _PP(_data_dir).glob("*.db"):
+                        try:
+                            c = _sq3.connect(str(p), timeout=5.0)
+                            c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                            c.close()
+                            count += 1
+                        except Exception:
+                            pass
+                    print(f"[DISK-PRUNE] WAL checkpoint: {count} DBs")
+
+                    council_path = _PP(_data_dir) / "council.db"
+                    if council_path.exists():
+                        from datetime import timedelta as _td_dp
+                        cutoff_14d = (_dt_dp.now(_IST_dp) - _td_dp(days=14)).isoformat()
+                        cutoff_30d = (_dt_dp.now(_IST_dp) - _td_dp(days=30)).isoformat()
+                        c = _sq3.connect(str(council_path), timeout=30.0)
+                        deleted = 0
+                        for tbl, col, cutoff in [
+                            ("engine_votes", "timestamp", cutoff_14d),
+                            ("council_verdicts", "timestamp", cutoff_14d),
+                            ("perf_samples", "iso", cutoff_14d),
+                            ("auto_login_attempts", "timestamp", cutoff_30d),
+                        ]:
+                            try:
+                                cur = c.execute(
+                                    f"DELETE FROM {tbl} WHERE {col} < ?", (cutoff,))
+                                deleted += cur.rowcount
+                            except Exception:
+                                pass
+                        c.commit()
+                        try:
+                            c.execute("VACUUM")
+                            c.commit()
+                        except Exception:
+                            pass
+                        c.close()
+                        print(f"[DISK-PRUNE] council.db: {deleted} rows deleted + VACUUM")
+
+                    import shutil as _sh
+                    usage = _sh.disk_usage(str(_data_dir))
+                    free_mb = usage.free / 1024 / 1024
+                    pct = (usage.total - usage.free) / usage.total * 100
+                    print(f"[DISK-PRUNE] done — free {free_mb:.0f} MB, used {pct:.1f}%")
+                except Exception as e:
+                    print(f"[DISK-PRUNE] error: {e}")
+
+            _time_dp.sleep(60)
+            _do_prune()
+
+            while True:
+                try:
+                    now = _dt_dp.now(_IST_dp)
+                    today_iso = now.strftime("%Y-%m-%d")
+                    if (now.hour == 5 and now.minute < 10
+                            and last_prune_date != today_iso):
+                        _do_prune()
+                        last_prune_date = today_iso
+                except Exception as e:
+                    print(f"[DISK-PRUNE] loop error: {e}")
+                _time_dp.sleep(60)
+
+        _th_dp.Thread(
+            target=_disk_auto_prune,
+            daemon=True,
+            name="disk-auto-prune",
+        ).start()
+        print("[STARTUP] disk auto-prune daemon spawned")
+    except Exception as _e:
+        print(f"[STARTUP] disk auto-prune spawn failed: {_e}")
+
     # ── Health monitor (periodic Telegram status + trade reports) ──
     # Every 30 min during market hours (09:15-15:30 IST), sends a
     # health snapshot + today's trade activity to Telegram. Plus an
@@ -967,6 +1058,178 @@ async def admin_tick_watchdog():
     try:
         import tick_watchdog as _tw
         return _tw.diagnostics()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── EMERGENCY DISK ADMIN (restored 2026-07-20) ────────────────────────
+# Originally added Jun 05 (98a1db1) after the 4.3 GB disk-full incident;
+# lost in the Jul 06 rollback to d6eb600. Restored after /data went
+# "disk I/O error" again on Jul 19 — same disease, same cure.
+
+@app.get("/api/admin/disk")
+async def admin_disk_usage():
+    """Per-file breakdown of /data — what's eating the persistent disk.
+    Returns total, free, per-file size (top 50 largest).
+    """
+    import shutil
+    from pathlib import Path as _P
+    try:
+        usage = shutil.disk_usage(str(_data_dir))
+        total_mb = usage.total / 1024 / 1024
+        free_mb = usage.free / 1024 / 1024
+        used_mb = total_mb - free_mb
+        pct = (used_mb / total_mb * 100) if total_mb > 0 else 0
+
+        files = []
+        for p in _P(_data_dir).rglob("*"):
+            try:
+                if p.is_file():
+                    files.append({
+                        "path": str(p.relative_to(_data_dir)),
+                        "size_mb": round(p.stat().st_size / 1024 / 1024, 2),
+                        "modified_iso": datetime.fromtimestamp(p.stat().st_mtime).isoformat(),
+                    })
+            except Exception:
+                continue
+        files.sort(key=lambda x: -x["size_mb"])
+        return {
+            "total_mb": round(total_mb, 1),
+            "used_mb": round(used_mb, 1),
+            "free_mb": round(free_mb, 1),
+            "used_pct": round(pct, 1),
+            "is_critical": pct > 95,
+            "file_count": len(files),
+            "top_50_files": files[:50],
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/admin/disk/cleanup")
+async def admin_disk_cleanup(body: dict = None):
+    """SAFE targeted cleanup of /data. Pass {"action": "..."} with one of:
+
+      "wal_checkpoint"       — SQLite WAL/SHM truncation (no data loss).
+      "delete_backups_old"   — Delete .backup/.bak/.sql.gz older than 7d.
+      "delete_structured_logs_old" — Delete log output >7d.
+      "vacuum_dbs"           — VACUUM all .db files (SLOW, biggest win).
+      "prune_council"        — 14d council votes/verdicts/perf, 30d logins.
+      "all_safe"             — wal_checkpoint + old backups + old logs
+                               + prune_council (NO vacuum).
+    """
+    import shutil, sqlite3, time as _time_mod
+    from pathlib import Path as _P
+    action = (body or {}).get("action", "")
+    if not action:
+        return JSONResponse({"error": "action required"}, status_code=400)
+    try:
+        before = shutil.disk_usage(str(_data_dir)).free
+        results = {"action": action, "steps": []}
+
+        def _wal_checkpoint():
+            count = 0
+            for p in _P(_data_dir).glob("*.db"):
+                try:
+                    c = sqlite3.connect(str(p), timeout=5.0)
+                    c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    c.close()
+                    count += 1
+                except Exception:
+                    pass
+            return f"checkpointed {count} DBs"
+
+        def _delete_old(patterns, days):
+            cutoff = _time_mod.time() - days * 86400
+            removed = 0
+            for pat in patterns:
+                for p in _P(_data_dir).rglob(pat):
+                    try:
+                        if p.is_file() and p.stat().st_mtime < cutoff:
+                            p.unlink()
+                            removed += 1
+                    except Exception:
+                        pass
+            return f"removed {removed} files matching {patterns} older than {days}d"
+
+        def _vacuum_dbs():
+            count = 0
+            for p in _P(_data_dir).glob("*.db"):
+                try:
+                    c = sqlite3.connect(str(p), timeout=30.0)
+                    c.execute("VACUUM")
+                    c.close()
+                    count += 1
+                except Exception:
+                    pass
+            return f"vacuumed {count} DBs"
+
+        def _prune_council():
+            steps = []
+            try:
+                from datetime import timedelta as _td
+                import pytz as _pytz
+                _IST_pc = _pytz.timezone("Asia/Kolkata")
+                now_ist = datetime.now(_IST_pc)
+                cutoff_14d = (now_ist - _td(days=14)).isoformat()
+                cutoff_30d = (now_ist - _td(days=30)).isoformat()
+                council_path = _P(_data_dir) / "council.db"
+                if not council_path.exists():
+                    return ["council.db not found"]
+                c = sqlite3.connect(str(council_path), timeout=30.0)
+                total_deleted = 0
+                for table, col, cutoff in [
+                    ("engine_votes", "timestamp", cutoff_14d),
+                    ("council_verdicts", "timestamp", cutoff_14d),
+                    ("perf_samples", "iso", cutoff_14d),
+                    ("auto_login_attempts", "timestamp", cutoff_30d),
+                ]:
+                    try:
+                        cur = c.execute(
+                            f"DELETE FROM {table} WHERE {col} < ?", (cutoff,))
+                        total_deleted += cur.rowcount
+                        steps.append(f"{table}: deleted {cur.rowcount} rows")
+                    except Exception as _te:
+                        steps.append(f"{table}: {_te}")
+                c.commit()
+                try:
+                    c.execute("VACUUM")
+                    c.commit()
+                    steps.append("VACUUM complete")
+                except Exception as _ve:
+                    steps.append(f"VACUUM error: {_ve}")
+                c.close()
+                steps.append(f"total deleted: {total_deleted}")
+            except Exception as _e:
+                steps.append(f"prune_council error: {_e}")
+            return steps
+
+        if action == "wal_checkpoint":
+            results["steps"].append(_wal_checkpoint())
+        elif action == "delete_backups_old":
+            results["steps"].append(
+                _delete_old(["*.backup", "*.bak", "*.sql.gz", "backups/*"], 7))
+        elif action == "delete_structured_logs_old":
+            results["steps"].append(
+                _delete_old(["structured_log*", "*.log", "logs/*"], 7))
+        elif action == "vacuum_dbs":
+            results["steps"].append(_vacuum_dbs())
+        elif action == "prune_council":
+            results["steps"].extend(_prune_council())
+        elif action == "all_safe":
+            results["steps"].append(_wal_checkpoint())
+            results["steps"].append(
+                _delete_old(["*.backup", "*.bak", "*.sql.gz", "backups/*"], 7))
+            results["steps"].append(
+                _delete_old(["structured_log*", "*.log", "logs/*"], 7))
+            results["steps"].extend(_prune_council())
+        else:
+            return JSONResponse({"error": f"unknown action: {action}"}, status_code=400)
+
+        after = shutil.disk_usage(str(_data_dir)).free
+        results["freed_mb"] = round((after - before) / 1024 / 1024, 1)
+        results["free_after_mb"] = round(after / 1024 / 1024, 1)
+        return results
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
