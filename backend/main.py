@@ -1072,6 +1072,37 @@ async def admin_tick_watchdog():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/admin/trades-db-direct")
+async def admin_trades_db_direct(limit: int = 500, since: str = ""):
+    """DB-direct read of trades.db — no engine dependency.
+
+    The public /api/trades/closed serves from engine.trade_manager, which
+    is None whenever the engine isn't booted (nights, weekends, failed
+    logins). This endpoint reads the SQLite file directly so trade history
+    is inspectable 24/7. Read-only.
+    """
+    import sqlite3
+    from pathlib import Path as _P
+    try:
+        db = _P(_data_dir) / "trades.db"
+        if not db.exists():
+            return JSONResponse({"error": "trades.db not found"}, status_code=404)
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10.0)
+        conn.row_factory = sqlite3.Row
+        q = "SELECT * FROM trades WHERE status != 'OPEN'"
+        params = []
+        if since:
+            q += " AND entry_time >= ?"
+            params.append(since)
+        q += " ORDER BY entry_time DESC LIMIT ?"
+        params.append(int(limit))
+        rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+        conn.close()
+        return {"count": len(rows), "trades": rows}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── EMERGENCY DISK ADMIN (restored 2026-07-20) ────────────────────────
 # Originally added Jun 05 (98a1db1) after the 4.3 GB disk-full incident;
 # lost in the Jul 06 rollback to d6eb600. Restored after /data went
