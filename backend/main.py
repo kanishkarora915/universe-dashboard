@@ -318,6 +318,18 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         print(f"[STARTUP] disk auto-prune spawn failed: {_e}")
 
+    # ── Token pusher (isolated, additive) ──
+    # Mints + pushes Kite tokens for OTHER projects (KHABAR, Stock Audition)
+    # using the same account creds already on Render. Fully fail-safe —
+    # cannot affect this system's engine. Config: EXTRA_KITE_APPS env.
+    # Diagnostics: GET /api/admin/token-pusher
+    try:
+        import token_pusher as _tp
+        _tp.start()
+        print("[STARTUP] token_pusher spawned")
+    except Exception as _e:
+        print(f"[STARTUP] token_pusher spawn failed: {_e}")
+
     # ── Health monitor (periodic Telegram status + trade reports) ──
     # Every 30 min during market hours (09:15-15:30 IST), sends a
     # health snapshot + today's trade activity to Telegram. Plus an
@@ -1068,6 +1080,27 @@ async def admin_tick_watchdog():
     try:
         import tick_watchdog as _tw
         return _tw.diagnostics()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/admin/token-pusher")
+async def admin_token_pusher():
+    """Token pusher diagnostics — which extra apps, last push results."""
+    try:
+        import token_pusher as _tp
+        return _tp.diagnostics()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/admin/token-pusher/run")
+async def admin_token_pusher_run():
+    """Trigger an immediate token push (manual). Returns diagnostics after."""
+    try:
+        import token_pusher as _tp
+        _tp._run_once()
+        return _tp.diagnostics()
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
